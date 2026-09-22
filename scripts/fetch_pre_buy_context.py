@@ -34,22 +34,27 @@ MAX_PRIOR_TO_FETCH = 12  # cap per-token detailed parsing cost
 
 def rpc_call(method, params, retries=6):
     payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+    last_err = None
     for attempt in range(retries):
         req = urllib.request.Request(RPC_URL, data=payload, headers={"Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 body = json.loads(resp.read())
                 if "error" in body:
-                    raise RuntimeError(body["error"])
+                    last_err = body["error"]
+                    time.sleep(min(1.5 ** attempt, 15))
+                    continue
                 return body["result"]
         except urllib.error.HTTPError as e:
+            last_err = f"HTTP {e.code}"
             if e.code == 429:
                 time.sleep(min(2 ** attempt, 20))
                 continue
-            raise
-        except Exception:
             time.sleep(min(1.5 ** attempt, 15))
-    raise RuntimeError(f"RPC call {method} failed after retries")
+        except Exception as e:
+            last_err = str(e)
+            time.sleep(min(1.5 ** attempt, 15))
+    raise RuntimeError(f"RPC call {method} failed after retries: {last_err}")
 
 
 def get_first_buys():
@@ -181,13 +186,18 @@ def main():
     first_buys = get_first_buys()
     print(f"{len(first_buys)} tokens à traiter")
     done = 0
+    failed = 0
     for mint, ev in first_buys.items():
-        process_mint(mint, ev)
+        try:
+            process_mint(mint, ev)
+        except Exception as e:
+            failed += 1
+            print(f"  ERROR mint={mint}: {e}", flush=True)
         done += 1
         if done % 10 == 0:
-            print(f"  {done}/{len(first_buys)}", flush=True)
+            print(f"  {done}/{len(first_buys)} ({failed} erreurs)", flush=True)
         time.sleep(0.15)
-    print("done")
+    print(f"done ({failed} erreurs au total)")
 
 
 if __name__ == "__main__":
