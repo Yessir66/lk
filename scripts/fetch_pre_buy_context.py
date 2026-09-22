@@ -29,7 +29,7 @@ os.makedirs(PRE_BUY_DIR, exist_ok=True)
 
 RPC_URL = "https://api.mainnet-beta.solana.com"
 WALLET = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_WALLET
-MAX_PRIOR_TO_FETCH = 12  # cap per-token detailed parsing cost
+MAX_PRIOR_TO_FETCH = 15  # cap per-token detailed parsing cost (earliest N txs only)
 
 
 def rpc_call(method, params, retries=6):
@@ -150,18 +150,22 @@ def process_mint(mint, first_buy_event):
     if not bonding_curve:
         return
 
-    sigs = rpc_call("getSignaturesForAddress", [bonding_curve, {"before": first_buy_event["sig"], "limit": 100}])
+    sigs = rpc_call("getSignaturesForAddress", [bonding_curve, {"before": first_buy_event["sig"], "limit": 1000}])
     prior_count = len(sigs)
     result = {
         "mint": mint,
         "creator": creator,
         "prior_tx_count": prior_count,
+        "prior_tx_count_capped": prior_count >= 1000,
         "prior_events": [],
         "dev_buy_sol": None,
         "distinct_prior_buyers": 0,
+        "early_buyers_sample_size": min(prior_count, MAX_PRIOR_TO_FETCH),
     }
 
-    to_fetch = sigs[:MAX_PRIOR_TO_FETCH]
+    # sigs is newest-first (closest to our buy); we want the OLDEST ones,
+    # i.e. closest to token creation, to catch the create tx / dev buy.
+    to_fetch = sigs[-MAX_PRIOR_TO_FETCH:]
     to_fetch.reverse()  # oldest first among the fetched subset
     distinct_buyers = set()
     for s in to_fetch:
