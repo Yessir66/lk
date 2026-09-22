@@ -12,6 +12,7 @@ from collections import Counter
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 META_DIR = os.path.join(DATA_DIR, "coin_meta")
+PRE_BUY_DIR = os.path.join(DATA_DIR, "pre_buy")
 
 
 def main():
@@ -80,6 +81,41 @@ def main():
         "top_repeat_creators": top_creators,
     }
 
+    # ---- pre-buy on-chain context: does the wallet wait for a dev buy /
+    # early buyer signal before entering, especially on one-off creators? ----
+    pre = {}
+    for mint in mints:
+        p = os.path.join(PRE_BUY_DIR, f"{mint}.json")
+        if os.path.exists(p):
+            pre[mint] = json.load(open(p))
+
+    def stat(mlist, key):
+        vals = [pre[m][key] for m in mlist if m in pre and pre[m].get(key) is not None]
+        if not vals:
+            return None
+        vals.sort()
+        n = len(vals)
+        return {"n": n, "median": vals[n // 2], "mean": round(sum(vals) / n, 2), "min": vals[0], "max": vals[-1]}
+
+    def pct_with(mlist, key):
+        avail = [m for m in mlist if m in pre]
+        if not avail:
+            return None
+        have = sum(1 for m in avail if pre[m].get(key) is not None)
+        return round(100 * have / len(avail), 1)
+
+    pre_buy_section = {
+        "prior_tx_count": {"repeat_creator": stat(repeat_mints, "prior_tx_count"),
+                            "oneoff_creator": stat(oneoff_mints, "prior_tx_count")},
+        "dev_buy_detected_pct": {"repeat_creator": pct_with(repeat_mints, "dev_buy_sol"),
+                                  "oneoff_creator": pct_with(oneoff_mints, "dev_buy_sol")},
+        "dev_buy_sol": {"repeat_creator": stat(repeat_mints, "dev_buy_sol"),
+                         "oneoff_creator": stat(oneoff_mints, "dev_buy_sol")},
+        "distinct_prior_buyers_first15tx": {"repeat_creator": stat(repeat_mints, "distinct_prior_buyers"),
+                                             "oneoff_creator": stat(oneoff_mints, "distinct_prior_buyers")},
+    }
+    selection_report["pre_buy_context"] = pre_buy_section
+
     with open(os.path.join(DATA_DIR, "selection_report.json"), "w") as f:
         json.dump(selection_report, f, indent=2, default=str)
 
@@ -100,6 +136,25 @@ def main():
         print(f"  {c['creator']}  x{c['tokens_bought']:<3d} "
               f"{c['total_sol_committed']} SOL  délai médian {med}")
         print(f"    symboles: {c['symbols']}")
+
+    print("\n-- Contexte on-chain juste avant l'achat (dev buy, acheteurs déjà présents) --")
+    ptc = pre_buy_section["prior_tx_count"]
+    if ptc["repeat_creator"] and ptc["oneoff_creator"]:
+        print(f"Tx sur la bonding curve avant notre achat — récurrents: médiane {ptc['repeat_creator']['median']}, "
+              f"nouveaux: médiane {ptc['oneoff_creator']['median']}  (environnement ultra-compétitif dans les 2 cas)")
+    db_pct = pre_buy_section["dev_buy_detected_pct"]
+    print(f"Dev buy détecté dans les ~15 1ères tx — récurrents: {db_pct['repeat_creator']}%, "
+          f"nouveaux: {db_pct['oneoff_creator']}%")
+    dbs = pre_buy_section["dev_buy_sol"]
+    if dbs["repeat_creator"] and dbs["oneoff_creator"]:
+        print(f"Taille médiane du dev buy — récurrents: {dbs['repeat_creator']['median']:.2f} SOL, "
+              f"nouveaux: {dbs['oneoff_creator']['median']:.2f} SOL")
+    pb = pre_buy_section["distinct_prior_buyers_first15tx"]
+    if pb["repeat_creator"] and pb["oneoff_creator"]:
+        print(f"Acheteurs distincts déjà présents (15 1ères tx) — récurrents: médiane {pb['repeat_creator']['median']}, "
+              f"nouveaux: médiane {pb['oneoff_creator']['median']}")
+    print("=> Pas de seuil net (dev buy / acheteurs précoces) qui distingue les deux groupes : "
+          "ce n'est probablement pas un filtre on-chain qui explique les créateurs 'nouveaux'.")
 
     print(f"\nRapport JSON : data/selection_report.json")
 
