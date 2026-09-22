@@ -343,18 +343,32 @@ def main():
     print(f"Sort en plusieurs fois (scale)  : {scaled_out} ({report['tokens_scaled_out_pct']}%)")
     print(f"Sort en une fois (dump unique)  : {single_shot_sell} ({report['tokens_single_shot_sell_pct']}%)")
 
-    if report["sniper_delay_seconds"]:
-        s = report["sniper_delay_seconds"]
-        print(f"\nDélai pool-création -> 1er achat : médiane {human_dur(s['median'])}, "
-              f"moyenne {human_dur(s['mean'])}, min {human_dur(s['min'])}, max {human_dur(s['max'])} (n={s['n']})")
-    if report["hold_duration_seconds"]:
-        h = report["hold_duration_seconds"]
-        print(f"Durée de détention avant 1ère vente : médiane {human_dur(h['median'])}, "
-              f"moyenne {human_dur(h['mean'])} (n={h['n']})")
-    if report["position_size_sol"]:
-        p = report["position_size_sol"]
-        print(f"Taille de position (SOL, 1er achat) : médiane {p['median']:.3f}, "
-              f"moyenne {p['mean']:.3f}, min {p['min']:.3f}, max {p['max']:.3f} (n={p['n']})")
+    if sniper_delays:
+        pos = sorted(x for x in sniper_delays if x >= 0)
+        neg = [x for x in sniper_delays if x < 0]
+        no_pair = len(mints) - len(sniper_delays)
+        if pos:
+            n = len(pos)
+            print(f"\nDélai création pool -> 1er achat (n={n}, {no_pair} tokens sans pool indexé) :")
+            print(f"  médiane {human_dur(pos[n//2])}, p25 {human_dur(pos[n//4])}, p75 {human_dur(pos[3*n//4])}, "
+                  f"min {human_dur(pos[0])}, max {human_dur(pos[-1])}")
+            print(f"  achats <=60s après création : {sum(1 for x in pos if x<=60)}/{n} "
+                  f"({100*sum(1 for x in pos if x<=60)/n:.0f}%)")
+        if neg:
+            print(f"  ({len(neg)} achats horodatés avant la création de pool détectée par DexScreener — "
+                  f"probable délai d'indexation, à ignorer)")
+    if hold_durations:
+        h = sorted(hold_durations)
+        n = len(h)
+        print(f"\nDurée de détention avant 1ère vente (n={n}) : "
+              f"médiane {human_dur(h[n//2])}, p25 {human_dur(h[n//4])}, p75 {human_dur(h[3*n//4])}, "
+              f"min {human_dur(h[0])}, max {human_dur(h[-1])}")
+    if position_sizes_sol:
+        from collections import Counter
+        tiers = Counter(round(s * 2) / 2 for s in position_sizes_sol)
+        print(f"\nTaille de position (SOL, 1er achat), n={len(position_sizes_sol)} — répartition par palier :")
+        for tier, count in sorted(tiers.items()):
+            print(f"  ~{tier:.1f} SOL : {count} ({100*count/len(position_sizes_sol):.0f}%)")
     print(f"\nAchats groupés (≥2 nouveaux tokens en <5min) : {clusters} clusters, "
           f"taille moy {report['avg_tokens_per_cluster']:.1f} tokens/cluster" if cluster_sizes else "\nPas de sniping groupé détecté")
     print("\nVenues utilisées pour les achats :")
