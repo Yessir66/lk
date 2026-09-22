@@ -165,7 +165,7 @@ def process_mint(mint, first_buy_event):
     to_fetch.reverse()  # oldest first among the fetched subset
     distinct_buyers = set()
     for s in to_fetch:
-        tx = rpc_call("getTransaction", [s["signature"], {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}])
+        tx = rpc_call("getTransaction", [s["signature"], {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 1}])
         events = analyze_prior_tx(tx, mint, creator)
         time.sleep(0.2)
         if not events:
