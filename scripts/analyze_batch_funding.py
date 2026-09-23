@@ -66,7 +66,7 @@ def main():
     print(f"Taux de batch-funding — créateurs récurrents : {r_rate*100:.0f}% (n={r_n}) | "
           f"créateurs one-off : {o_rate*100:.0f}% (n={o_n})")
     print("\nAssociation positive (récurrents plus souvent issus d'une 'usine à wallets') mais")
-    print("échantillon trop petit (n=12 récurrents tracés) pour conclure à un critère de sélection.")
+    print(f"échantillon encore limité (n={r_n} récurrents tracés) pour conclure fermement à un critère de sélection.")
     print("Aucun cas où deux wallets 'frères' d'un même batch sont TOUS DEUX des créateurs achetés :")
     print("pas de preuve que le wallet cible spécifiquement des lots de wallets connus.")
 

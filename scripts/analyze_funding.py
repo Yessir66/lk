@@ -40,6 +40,7 @@ def main():
     oneoff_with_shared_funder = [c for c in oneoff_creators if c in funding and funder_counts[funding[c]["funder"]] > 1]
 
     result = {
+        "creators_total": len(funding) + untraced,
         "creators_traced": len(funding),
         "creators_untraced": untraced,
         "distinct_funders": len(funder_counts),
@@ -59,7 +60,7 @@ def main():
     print("=" * 70)
     print("RÉSEAU DE FINANCEMENT DES CRÉATEURS (funder wallets)")
     print("=" * 70)
-    print(f"Créateurs tracés jusqu'à leur financeur : {result['creators_traced']}/160 "
+    print(f"Créateurs tracés jusqu'à leur financeur : {result['creators_traced']}/{result['creators_total']} "
           f"({result['creators_untraced']} non tracés)")
     print(f"Financeurs distincts : {result['distinct_funders']}")
     print(f"Créateurs partageant leur financeur avec un autre créateur acheté : "
