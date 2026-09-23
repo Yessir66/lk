@@ -24,6 +24,7 @@ os.makedirs(TX_DIR, exist_ok=True)
 
 def rpc_call(method, params, retries=6):
     payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+    last_err = None
     for attempt in range(retries):
         req = urllib.request.Request(
             RPC_URL, data=payload, headers={"Content-Type": "application/json"}
@@ -32,18 +33,17 @@ def rpc_call(method, params, retries=6):
             with urllib.request.urlopen(req, timeout=30) as resp:
                 body = json.loads(resp.read())
                 if "error" in body:
-                    raise RuntimeError(body["error"])
+                    last_err = body["error"]
+                    time.sleep(min(1.5 ** attempt, 15))
+                    continue
                 return body["result"]
         except urllib.error.HTTPError as e:
-            if e.code == 429:
-                wait = min(2 ** attempt, 20)
-                time.sleep(wait)
-                continue
-            raise
+            last_err = f"HTTP {e.code}"
+            time.sleep(min(2 ** attempt, 20) if e.code == 429 else min(1.5 ** attempt, 15))
         except Exception as e:
-            wait = min(1.5 ** attempt, 15)
-            time.sleep(wait)
-    raise RuntimeError(f"RPC call {method} failed after retries")
+            last_err = str(e)
+            time.sleep(min(1.5 ** attempt, 15))
+    raise RuntimeError(f"RPC call {method} failed after retries: {last_err}")
 
 
 def fetch_all_signatures():
@@ -75,22 +75,27 @@ def fetch_all_signatures():
 def fetch_transactions(sigs):
     total = len(sigs)
     done = 0
+    failed = 0
     for entry in sigs:
         sig = entry["signature"]
         out_path = os.path.join(TX_DIR, f"{sig}.json")
         done += 1
         if os.path.exists(out_path):
             continue
-        tx = rpc_call(
-            "getTransaction",
-            [sig, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}],
-        )
-        with open(out_path, "w") as f:
-            json.dump(tx, f)
+        try:
+            tx = rpc_call(
+                "getTransaction",
+                [sig, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 1}],
+            )
+            with open(out_path, "w") as f:
+                json.dump(tx, f)
+        except Exception as e:
+            failed += 1
+            print(f"  ERROR sig={sig}: {e}", flush=True)
         if done % 25 == 0:
-            print(f"  fetched tx {done}/{total}", flush=True)
+            print(f"  fetched tx {done}/{total} ({failed} erreurs)", flush=True)
         time.sleep(0.25)
-    print(f"done: {done}/{total} transactions cached", flush=True)
+    print(f"done: {done}/{total} transactions cached ({failed} erreurs)", flush=True)
 
 
 if __name__ == "__main__":
