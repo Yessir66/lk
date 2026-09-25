@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Fetch every trade in the first 30 seconds of each sampled launch from
+Fetch every trade in the first WINDOW_S seconds of each sampled launch from
 pump.fun's swap-api, seeking directly to creation time with a forged
 keyset cursor ("<slotIndexId>-<timestamp_ms>", ordered by timestamp).
 Most launches need a single call.
@@ -26,7 +26,7 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 OUT_DIR = os.path.join(DATA_DIR, "early_trades")
 os.makedirs(OUT_DIR, exist_ok=True)
 
-WINDOW_S = 30
+WINDOW_S = 8
 NEG_PER_POS = 3
 MIN_NEG = 20
 MAX_PAGES = 8
