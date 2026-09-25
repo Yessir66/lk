@@ -170,11 +170,15 @@ def main():
     report = json.load(open(os.path.join(DATA_DIR, "report.json")))
     bought_mints = set(report["per_token"].keys())
     skipped = [c for c in coins if c["mint"] not in bought_mints]
+    if "--bought" in sys.argv:
+        skipped = [c for c in coins if c["mint"] in bought_mints]
 
-    out_dir = os.path.join(DATA_DIR, "skipped_genesis", creator)
+    subdir = "bought_genesis" if "--bought" in sys.argv else "skipped_genesis"
+    out_dir = os.path.join(DATA_DIR, subdir, creator)
     os.makedirs(out_dir, exist_ok=True)
 
-    print(f"{len(skipped)} tokens IGNORÉS à traiter pour {creator}")
+    label = "ACHETÉS" if "--bought" in sys.argv else "IGNORÉS"
+    print(f"{len(skipped)} tokens {label} à traiter pour {creator}")
     print(f"(plafond de {MAX_PAGES} pages par token; au-delà -> abandon, pas d'insistance)\n")
 
     outcomes = defaultdict(int)
