@@ -98,8 +98,8 @@ def find_genesis_page(bonding_curve, created_ts, mint_label):
         if len(batch) < 1000:
             print(f"    -> page partielle: génèse atteinte à la page {page}")
             return list(reversed(batch)), page, True
-        if oldest_bt and oldest_bt <= created_ts + EARLY_WINDOW_S + 5:
-            print(f"    -> fenêtre de création atteinte à la page {page}")
+        if oldest_bt and oldest_bt <= created_ts:
+            print(f"    -> instant de création réellement atteint (oldest={oldest_bt} <= created={created_ts:.0f}) à la page {page}")
             return list(reversed(batch)), page, True
         before = batch[-1]["signature"]
         time.sleep(0.2)
