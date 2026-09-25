@@ -56,6 +56,7 @@ def window_features(trades, creator, s0, h):
         "first_nondev_buy_offset": first_nondev,
         "small_buy_frac": (sum(1 for t in buys if t["sol"] < 0.05) / len(buys)) if buys else 0.0,
         "buyers": sorted(by_buyer),
+        "buy_sizes": [round(t["sol"], 4) for t in buys],
     }
 
 

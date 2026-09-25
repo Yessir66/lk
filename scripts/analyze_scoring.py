@@ -84,7 +84,43 @@ def population_weights(rows):
     return [1.0 if r["label"] else pop_neg[r["creator"]] / max(1, samp_neg[r["creator"]]) for r in rows]
 
 
+def leader_scores_mh(train, min_support=5, prior=0.5):
+    """Per-wallet log odds ratio of being an early buyer on bought vs skipped launches, stratified by
+    creator (Mantel-Haenszel), so a wallet that merely follows a heavily-bought creator gets no credit."""
+    by_c = defaultdict(list)
+    for r in train:
+        by_c[r["creator"]].append(r)
+    support = defaultdict(int)
+    for r in train:
+        for b in r["buyers"]:
+            support[b] += 1
+    wallets = [w for w, n in support.items() if n >= min_support]
+    stats = {w: [0.0, 0.0] for w in wallets}  # MH numerator, denominator
+    for c, rs in by_c.items():
+        n = len(rs)
+        n_pos = sum(r["label"] for r in rs)
+        n_neg = n - n_pos
+        if n_pos == 0 or n_neg == 0:
+            continue
+        present = defaultdict(lambda: [0, 0])  # wallet -> [pos_with, neg_with]
+        for r in rs:
+            for b in set(r["buyers"]):
+                present[b][0 if r["label"] else 1] += 1
+        for w, (a, cc) in present.items():
+            if w not in stats:
+                continue
+            b_ = n_pos - a
+            d_ = n_neg - cc
+            stats[w][0] += (a + prior) * (d_ + prior) / n
+            stats[w][1] += (b_ + prior) * (cc + prior) / n
+    return {w: float(np.log(num / den)) for w, (num, den) in stats.items() if num > 0 and den > 0}
+
+
 def leader_scores(train, min_support=5, prior=1.0):
+    return leader_scores_mh(train, min_support)
+
+
+def leader_scores_pooled(train, min_support=5, prior=1.0):
     n_pos = sum(r["label"] for r in train)
     n_neg = len(train) - n_pos
     pos_c, neg_c = defaultdict(int), defaultdict(int)
