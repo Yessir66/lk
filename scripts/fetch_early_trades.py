@@ -88,7 +88,8 @@ def fetch(mint, created_ts):
             trades.append({
                 "slot": int(t["slotIndexId"][:12]), "idx": int(t["slotIndexId"][12:]),
                 "ts": t["timestamp"], "user": t["userAddress"], "type": t["type"],
-                "sol": float(t["amountSol"]), "tokens": float(t["baseAmount"]),
+                "sol": float(t["amountSol"]) if t.get("amountSol") is not None else 0.0,
+                "tokens": float(t["baseAmount"]) if t.get("baseAmount") is not None else 0.0,
                 "price": float(t["fillPriceSol"]) if t.get("fillPriceSol") else None,
                 "tx": t["tx"], "program": t.get("program"),
             })
@@ -112,7 +113,11 @@ def main():
         done += 1
         if os.path.exists(out):
             continue
-        res = fetch(r["mint"], r["created_ts"])
+        try:
+            res = fetch(r["mint"], r["created_ts"])
+        except Exception as e:
+            print(f"  ERROR {r['mint']}: {e}", flush=True)
+            continue
         json.dump(res, open(out, "w"))
         if not res["complete"]:
             incomplete += 1
