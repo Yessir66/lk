@@ -11,6 +11,7 @@ the wallet did, can leak into its features).
 
 Output: data/early_features.json  (one row per (mint, h))
 """
+import hashlib
 import json
 import os
 from collections import defaultdict
@@ -58,10 +59,29 @@ def window_features(trades, creator, s0, h):
     }
 
 
+def recent_features(trades, creator, s0, d, span=2):
+    """What happened in the last `span` slots before the decision slot S0+d."""
+    lo = s0 + max(0, d - span)
+    w = [t for t in trades if lo <= t["slot"] <= s0 + d and t["user"] not in (WALLET, creator)]
+    buys = [t for t in w if t["type"] == "buy"]
+    sells = [t for t in w if t["type"] == "sell"]
+    return {
+        "rec_n_buys": len(buys),
+        "rec_sol_buys": sum(t["sol"] for t in buys),
+        "rec_n_sells": len(sells),
+        "rec_sol_sells": sum(t["sol"] for t in sells),
+        "rec_max_buy": max((t["sol"] for t in buys), default=0.0),
+    }
+
+
+LATENCY = 2  # slots between the wallet's decision and its buy landing (assumed minimum)
+
+
 def main():
     sample = {r["mint"]: r for r in json.load(open(os.path.join(DATA_DIR, "early_sample.json")))}
     ledger = json.load(open(os.path.join(DATA_DIR, "wallet_ledger.json")))
     rows, skipped_leak, no_data = [], defaultdict(int), 0
+    aligned = []
     for fn in os.listdir(os.path.join(DATA_DIR, "early_trades")):
         d = json.load(open(os.path.join(DATA_DIR, "early_trades", fn)))
         r = sample.get(d["mint"])
@@ -78,18 +98,42 @@ def main():
             k = ledger[d["mint"]]["first_buy_slot"] - s0
         else:
             k = None
+        meta = {"mint": d["mint"], "creator": r["creator"], "created_ts": r["created_ts"],
+                "label": label, "k": k, "s0": s0,
+                "hour_utc": datetime.fromtimestamp(r["created_ts"], tz=timezone.utc).hour}
+        aligned.append((tr, meta))
         for h in HORIZONS:
             if label and (k is None or k <= h):
                 skipped_leak[h] += 1
                 continue
             f = window_features(tr, r["creator"], s0, h)
-            f.update({"mint": d["mint"], "creator": r["creator"], "created_ts": r["created_ts"],
-                      "label": label, "h": h, "k": k, "s0": s0,
-                      "hour_utc": datetime.fromtimestamp(r["created_ts"], tz=timezone.utc).hour})
+            f.update(meta)
+            f["h"] = h
             rows.append(f)
     json.dump(rows, open(os.path.join(DATA_DIR, "early_features.json"), "w"))
     print(f"{len(rows)} lignes (mint x horizon) | tokens sans données complètes: {no_data}")
     print("positifs exclus par horizon (bot déjà entré à ou avant S0+h):", dict(skipped_leak))
+
+    # Decision-aligned rows: everything visible up to the wallet's (assumed) decision slot
+    # d = k - LATENCY. Skipped launches get a d drawn from the positives' distribution so both
+    # classes are observed over windows of the same length.
+    pos_d = sorted(max(0, m["k"] - LATENCY) for _, m in aligned if m["label"] and m["k"] is not None)
+    out = []
+    for tr, m in aligned:
+        if m["label"]:
+            if m["k"] is None:
+                continue
+            d = max(0, m["k"] - LATENCY)
+        else:
+            d = pos_d[int(hashlib.sha256(m["mint"].encode()).hexdigest(), 16) % len(pos_d)]
+        f = window_features(tr, m["creator"], m["s0"], d)
+        f.update(recent_features(tr, m["creator"], m["s0"], d))
+        f.update(m)
+        f["d"] = d
+        out.append(f)
+    json.dump(out, open(os.path.join(DATA_DIR, "aligned_features.json"), "w"))
+    print(f"{len(out)} lignes alignées sur la décision (d = k - {LATENCY}), "
+          f"positifs={sum(1 for f in out if f['label'])}")
 
 
 if __name__ == "__main__":
