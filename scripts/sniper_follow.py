@@ -69,6 +69,10 @@ def main():
             print(f"{mint}: aucun achat de {', '.join(SNIPERS.values())} — hors du périmètre de cet outil")
             continue
         r = decision_features(tr, buys)
+        wallet = "AfPWFykWPZZxU2CyF6BcPoY2v8VEkmYS7ZggvELK7Pv1"
+        if any(t["user"] == wallet and t["type"] == "buy" and t["slot"] <= r["decision_slot"] for t in tr):
+            print(f"{mint}: le wallet est déjà entré avant la décision — rien à reproduire")
+            continue
         r.update(history_features(r, history))
         p = score(model, r)
         thr, rate, n = adaptive_threshold(model, history, r["t"], k)

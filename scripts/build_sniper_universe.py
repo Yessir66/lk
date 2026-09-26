@@ -7,9 +7,9 @@ complete set of candidates, so precision measured on it is exact.
 Features only use what is public when we would act, i.e. right after the sniper's buy lands:
   - the sniper's buy (size, ~2.93 SOL signature, slots after creation), co-snipers, 'veto' snipers
   - pump.fun trades in [S0, E], E = max(S0 + 2, sniper slot + DELAY)  (wallet's own trades excluded);
-    DELAY (slots, default 0, --delay D) is how long we wait after the sniper before deciding. The
-    wallet lands a median 8 slots after the sniper; tokens it already bought by E are flagged
-    ('wallet_before_decision') since for them the window can contain its copy-traders.
+    DELAY (slots, default 0, --delay D) is how long we wait after the sniper before deciding.
+Tokens the wallet had already bought by E are left out: acting then would be copying it, not
+reproducing its decision (CBKgS8Nj in particular often buys after the wallet).
   - creator history inside the universe (earlier tokens of the same creator and whether the wallet
     followed them) — only tokens whose outcome was already visible (>= 60 s earlier)
   - the wallet's recent behaviour: follow rate over the last 30 universe tokens (outcome visible),
@@ -127,6 +127,11 @@ def main():
         r = decision_features(tr, buys, DELAY)
         later = {t["user"] for t in tr if t["type"] == "buy"}
         bot = ledger.get(m)
+        if bot and bot["first_buy_slot"] <= r["decision_slot"]:
+            # the wallet was already in when we would decide: buying then is copying it, not
+            # reproducing its decision, so the token is not a decision we can make
+            missing["wallet déjà entré à la décision"] += 1
+            continue
         first_bt, e = r["t"], r["decision_slot"]
         r.update({
             "mint": m, "label": int(bot is not None),

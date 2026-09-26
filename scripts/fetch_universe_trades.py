@@ -5,7 +5,8 @@ from creation up to AFTER_S seconds after the sniper's buy (swap-api, forged key
 backwards). This is a complete, unsampled universe: each token is labelled by whether the studied wallet
 (or a sibling) bought it, and the early trades give the features.
 
-Usage: fetch_universe_trades.py <wallet> [<wallet> ...]
+Usage: fetch_universe_trades.py <wallet> [<wallet> ...] [--shard K/N]
+  (--shard: process every N-th token from K, to run a few copies in parallel under the API rate limit)
 Output: data/universe_trades/<mint>.json  {mint, anchor_bt, complete, trades}
 """
 import glob
@@ -48,13 +49,15 @@ def fetch(mint, anchor_bt):
 def main():
     os.makedirs(OUT, exist_ok=True)
     first = {}
-    for w in sys.argv[1:]:
+    shard = sys.argv.index("--shard") if "--shard" in sys.argv else None
+    k, n = map(int, sys.argv[shard + 1].split("/")) if shard else (0, 1)
+    for w in [a for i, a in enumerate(sys.argv[1:], 1) if not (shard and i in (shard, shard + 1))]:
         for line in (l for p in glob.glob(os.path.join(DATA, f"leader_{w[:8]}_trades*.jsonl")) for l in open(p)):
             t = json.loads(line)
             if t["side"] == "BUY" and t["mint"] and (t["mint"] not in first or t["bt"] < first[t["mint"]]):
                 first[t["mint"]] = t["bt"]
     todo = [(m, bt) for m, bt in sorted(first.items(), key=lambda kv: kv[1])
-            if not os.path.exists(os.path.join(OUT, f"{m}.json"))]
+            if not os.path.exists(os.path.join(OUT, f"{m}.json"))][k::n]
     print(f"{len(first)} tokens, {len(todo)} à récupérer", flush=True)
     for i, (m, bt) in enumerate(todo, 1):
         try:
