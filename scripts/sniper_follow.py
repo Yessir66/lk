@@ -24,7 +24,7 @@ import time
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
-from build_sniper_universe import SNIPERS, decision_features, history_features, sniper_buys_from_trades  # noqa: E402
+from build_sniper_universe import SNIPERS, decision_features, history_features, sniper_buys_from_trades, too_late  # noqa: E402
 from fetch_universe_trades import fetch  # noqa: E402
 
 DATA = os.path.join(os.path.dirname(__file__), "..", "data")
@@ -67,6 +67,9 @@ def main():
         buys = sniper_buys_from_trades(tr)
         if not buys:
             print(f"{mint}: aucun achat de {', '.join(SNIPERS.values())} — hors du périmètre de cet outil")
+            continue
+        if too_late(tr, min(b["bt"] for b in buys.values())):
+            print(f"{mint}: le sniper a acheté après les 300 premiers trades — hors du périmètre")
             continue
         r = decision_features(tr, buys)
         wallet = "AfPWFykWPZZxU2CyF6BcPoY2v8VEkmYS7ZggvELK7Pv1"

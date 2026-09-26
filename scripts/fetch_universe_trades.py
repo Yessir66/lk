@@ -5,7 +5,9 @@ from creation up to AFTER_S seconds after the sniper's buy (swap-api, forged key
 backwards). This is a complete, unsampled universe: each token is labelled by whether the studied wallet
 (or a sibling) bought it, and the early trades give the features.
 
-Usage: fetch_universe_trades.py <wallet> [<wallet> ...] [--shard K/N]
+Usage: fetch_universe_trades.py <wallet> [<wallet> ...] [--shard K/N] [--max-pages P]
+  (--max-pages 3: stop at the first 300 trades before the anchor; a sniper buy later than that is outside
+   the universe anyway, see build_sniper_universe.MAX_TRADES_BEFORE)
   (--shard: process every N-th token from K, to run a few copies in parallel under the API rate limit)
 Output: data/universe_trades/<mint>.json  {mint, anchor_bt, complete, trades}
 """
@@ -21,7 +23,7 @@ from fetch_early_trades import get  # noqa: E402
 DATA = os.path.join(os.path.dirname(__file__), "..", "data")
 OUT = os.path.join(DATA, "universe_trades")
 AFTER_S = 12
-MAX_PAGES = 6
+MAX_PAGES = int(sys.argv[sys.argv.index("--max-pages") + 1]) if "--max-pages" in sys.argv else 6
 
 
 def fetch(mint, anchor_bt):
@@ -51,7 +53,11 @@ def main():
     first = {}
     shard = sys.argv.index("--shard") if "--shard" in sys.argv else None
     k, n = map(int, sys.argv[shard + 1].split("/")) if shard else (0, 1)
-    for w in [a for i, a in enumerate(sys.argv[1:], 1) if not (shard and i in (shard, shard + 1))]:
+    skip = set()
+    for flag in ("--shard", "--max-pages"):
+        if flag in sys.argv:
+            skip |= {sys.argv.index(flag), sys.argv.index(flag) + 1}
+    for w in [a for i, a in enumerate(sys.argv[1:], 1) if i not in skip]:
         for line in (l for p in glob.glob(os.path.join(DATA, f"leader_{w[:8]}_trades*.jsonl")) for l in open(p)):
             t = json.loads(line)
             if t["side"] == "BUY" and t["mint"] and (t["mint"] not in first or t["bt"] < first[t["mint"]]):

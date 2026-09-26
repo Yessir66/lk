@@ -37,6 +37,18 @@ SIBLINGS = {"AWrTFnoSjCbJ4KhTzCQsjHwWrCt8jhXNKQubjdT1ENWw": "AWrT", "6yRBpeDDba4
 OUTCOME_DELAY_S = 60
 DELAY = int(sys.argv[sys.argv.index("--delay") + 1]) if "--delay" in sys.argv else 0
 RECENT_N = 30
+MAX_TRADES_BEFORE = 300  # the sniper's buy must come early: at most this many trades up to 12 s after it
+AFTER_S = 12
+
+
+def too_late(tr, sniper_bt):
+    """True when the token had more than MAX_TRADES_BEFORE trades up to AFTER_S seconds after the sniper's
+    buy, i.e. the sniper bought well after the launch rush — not a trigger for the wallet, which decides
+    ~9 slots after creation. 300 keeps 99.5% of 4yFAz7dp's buys: >100 trades within seconds usually means a
+    very busy launch, which the wallet likes (45% followed), not a late sniper. Same test live and in
+    training (the universe fetch stops after three 100-trade pages)."""
+    n = sum(1 for t in tr if datetime.fromisoformat(t["ts"].replace("Z", "+00:00")).timestamp() <= sniper_bt + AFTER_S)
+    return n > MAX_TRADES_BEFORE
 
 
 def sniper_buys_from_trades(tr):
@@ -118,11 +130,14 @@ def main():
         d = json.load(open(p))
         tr = d["trades"]
         if not d["complete"] or not tr:
-            missing["création non atteinte"] += 1
+            missing["création non atteinte (sniper tardif)"] += 1
             continue
         buys = sniper_buys_from_trades(tr)
         if not buys:
             missing["sniper absent des trades"] += 1
+            continue
+        if too_late(tr, min(b["bt"] for b in buys.values())):
+            missing["sniper au-delà des 300 premiers trades"] += 1
             continue
         r = decision_features(tr, buys, DELAY)
         later = {t["user"] for t in tr if t["type"] == "buy"}
