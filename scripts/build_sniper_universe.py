@@ -22,10 +22,10 @@ import json
 import math
 import os
 import sys
-from collections import defaultdict, deque
+from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(__file__))
-from build_early_features import WALLET, window_features  # noqa: E402
+from build_early_features import window_features  # noqa: E402
 
 DATA = os.path.join(os.path.dirname(__file__), "..", "data")
 SNIPERS = {"4yFAz7dp5WwuZs3vbWKedbRiUmSFxTVGCdsLAxfEQrG3": "4yFA", "CBKgS8Nj714YomoPPxhVLUWos7vSrWnuL2cVKnJqWo2s": "CBKg"}
@@ -36,6 +36,42 @@ SIBLINGS = {"AWrTFnoSjCbJ4KhTzCQsjHwWrCt8jhXNKQubjdT1ENWw": "AWrT", "6yRBpeDDba4
 OUTCOME_DELAY_S = 60
 DELAY = int(sys.argv[sys.argv.index("--delay") + 1]) if "--delay" in sys.argv else 0
 RECENT_N = 30
+
+
+def decision_features(tr, sniper_buys, delay=0):
+    """Features of one token at decision time, from its pump.fun trades (sorted, from creation) and the
+    snipers' buys {name: {slot, bt, sol}}. Shared by the universe builder and the live tool
+    (sniper_follow.py). Only snipers that bought by the decision slot count."""
+    s0, creator = tr[0]["slot"], tr[0]["user"]
+    first_name, first = min(sniper_buys.items(), key=lambda kv: kv[1]["slot"])
+    e = max(s0 + 2, first["slot"] + delay)
+    f = window_features(tr, creator, s0, e - s0)
+    in_win = {t["user"] for t in tr if t["type"] == "buy" and t["slot"] <= e}
+    snipers_by_e = {k for k, v in sniper_buys.items() if v["slot"] <= e} | {SNIPERS[u] for u in in_win & set(SNIPERS)}
+    return {
+        "creator": creator, "t": first["bt"], "s0": s0, "decision_slot": e,
+        "sniper_first": first_name, "sniper_slot": first["slot"],
+        "sniper_sol": first["sol"], "sig_293": int(2.9 <= first["sol"] < 3.0),
+        "sniper_offset": first["slot"] - s0,
+        "both_snipers": int(len(snipers_by_e) == len(SNIPERS)),
+        "veto_present": int(bool(in_win & VETO)),
+        "log_price_chg": math.log1p(max(0.0, f["price_change_pct"])),
+        "log_sol_buys": math.log1p(f["sol_buys"]), "n_buyers": f["n_buyers"],
+        "dev_buy_sol": f["dev_buy_sol"], "n_sells": f["n_sells"],
+        "hour": int((first["bt"] % 86400) // 3600),
+        "buyers": f["buyers"],
+    }
+
+
+def history_features(r, history):
+    """Sequential features from earlier universe tokens whose outcome was visible OUTCOME_DELAY_S before
+    r['t']. history: list of {t, creator, label} sorted by t."""
+    vis = [h for h in history if h["t"] <= r["t"] - OUTCOME_DELAY_S]
+    recent = [h["label"] for h in vis[-RECENT_N:]]
+    same = [h["label"] for h in vis if h["creator"] == r["creator"]]
+    return {"recent_follow_rate": (sum(recent) + 1) / (len(recent) + 4),
+            "creator_prev_n": len(same), "creator_prev_followed": sum(same),
+            "creator_follow_rate": (sum(same) + 0.25) / (len(same) + 1)}
 
 
 def main():
@@ -70,52 +106,27 @@ def main():
         if not d["complete"] or not tr:
             missing["création non atteinte"] += 1
             continue
-        s0, creator = tr[0]["slot"], tr[0]["user"]
-        first = min(c["snipers"].values(), key=lambda s: s["slot"])
-        e = max(s0 + 2, first["slot"] + DELAY)
-        f = window_features(tr, creator, s0, e - s0)
-        in_win = {t["user"] for t in tr if t["type"] == "buy" and t["slot"] <= e}
+        r = decision_features(tr, c["snipers"], DELAY)
         later = {t["user"] for t in tr if t["type"] == "buy"}
         bot = ledger.get(m)
-        rows.append({
-            "mint": m, "creator": creator, "t": first["bt"], "s0": s0, "decision_slot": e,
-            "label": int(bot is not None),
-            "bot_slot_offset": (bot["first_buy_slot"] - first["slot"]) if bot else None,
+        first_bt, e = r["t"], r["decision_slot"]
+        r.update({
+            "mint": m, "label": int(bot is not None),
+            "bot_slot_offset": (bot["first_buy_slot"] - r["sniper_slot"]) if bot else None,
             "wallet_before_decision": int(bool(bot) and bot["first_buy_slot"] <= e),
-            "sniper_first": [k for k, v in c["snipers"].items() if v["slot"] == first["slot"]][0],
-            "sniper_sol": first["sol"], "sig_293": int(2.9 <= first["sol"] < 3.0),
-            "sniper_offset": first["slot"] - s0,
-            "both_snipers": int(len(c["snipers"]) == 2 or all(w in in_win for w in SNIPERS)),
-            "veto_present": int(bool(in_win & VETO)),
-            "log_price_chg": math.log1p(max(0.0, f["price_change_pct"])),
-            "log_sol_buys": math.log1p(f["sol_buys"]), "n_buyers": f["n_buyers"],
-            "dev_buy_sol": f["dev_buy_sol"], "n_sells": f["n_sells"],
-            "hour": int((first["bt"] % 86400) // 3600),
             "siblings_later": sorted(SIBLINGS[u] for u in later & set(SIBLINGS)),
             # the wallet's own buy of this token (5% land before the sniper's) must not leak in
-            "wallet_busy": int(any(a <= first["bt"] <= b + 1 and not (bot and a == bot["first_buy_bt"]) for a, b in
-                                   intervals[max(0, bisect.bisect_right(starts, first["bt"]) - 2):
-                                             bisect.bisect_right(starts, first["bt"])])),
-            "bot_buys_1h": bisect.bisect_left(buy_times, first["bt"]) - bisect.bisect_left(buy_times, first["bt"] - 3600)
-            - int(bool(bot) and first["bt"] - 3600 <= bot["first_buy_bt"] < first["bt"]),
+            "wallet_busy": int(any(a <= first_bt <= b + 1 and not (bot and a == bot["first_buy_bt"]) for a, b in
+                                   intervals[max(0, bisect.bisect_right(starts, first_bt) - 2):
+                                             bisect.bisect_right(starts, first_bt)])),
+            "bot_buys_1h": bisect.bisect_left(buy_times, first_bt) - bisect.bisect_left(buy_times, first_bt - 3600)
+            - int(bool(bot) and first_bt - 3600 <= bot["first_buy_bt"] < first_bt),
         })
+        rows.append(r)
     rows.sort(key=lambda r: r["t"])
 
-    # sequential features: only outcomes visible OUTCOME_DELAY_S before the decision
-    pending = deque()
-    recent = deque(maxlen=RECENT_N)
-    cre_n, cre_f = defaultdict(int), defaultdict(int)
-    for r in rows:
-        while pending and pending[0]["t"] <= r["t"] - OUTCOME_DELAY_S:
-            q = pending.popleft()
-            recent.append(q["label"])
-            cre_n[q["creator"]] += 1
-            cre_f[q["creator"]] += q["label"]
-        r["recent_follow_rate"] = (sum(recent) + 1) / (len(recent) + 4)
-        r["creator_prev_n"] = cre_n[r["creator"]]
-        r["creator_prev_followed"] = cre_f[r["creator"]]
-        r["creator_follow_rate"] = (cre_f[r["creator"]] + 0.25) / (cre_n[r["creator"]] + 1)
-        pending.append(r)
+    for i, r in enumerate(rows):
+        r.update(history_features(r, rows[:i]))
 
     json.dump(rows, open(os.path.join(DATA, "sniper_universe.json" if DELAY == 0 else f"sniper_universe_d{DELAY}.json"), "w"))
     print(f"{len(rows)} tokens dans l'univers ({sum(r['label'] for r in rows)} achetés par le wallet) | "
