@@ -22,6 +22,7 @@ import json
 import math
 import os
 import sys
+from datetime import datetime
 from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -38,10 +39,22 @@ DELAY = int(sys.argv[sys.argv.index("--delay") + 1]) if "--delay" in sys.argv el
 RECENT_N = 30
 
 
+def sniper_buys_from_trades(tr):
+    """First buy of each sniper in the token's pump.fun trades: {name: {slot, bt, sol}}. The amount is
+    pump.fun's net SOL (the ~2.93 SOL signature is exactly 2.926 there; the wallet-level SOL change adds
+    a variable tip and fee, 2.965-3.215)."""
+    out = {}
+    for t in tr:
+        if t["type"] == "buy" and t["user"] in SNIPERS and SNIPERS[t["user"]] not in out:
+            bt = datetime.fromisoformat(t["ts"].replace("Z", "+00:00")).timestamp()
+            out[SNIPERS[t["user"]]] = {"slot": t["slot"], "bt": bt, "sol": t["sol"]}
+    return out
+
+
 def decision_features(tr, sniper_buys, delay=0):
     """Features of one token at decision time, from its pump.fun trades (sorted, from creation) and the
-    snipers' buys {name: {slot, bt, sol}}. Shared by the universe builder and the live tool
-    (sniper_follow.py). Only snipers that bought by the decision slot count."""
+    snipers' buys {name: {slot, bt, sol}} (sniper_buys_from_trades). Shared by the universe builder and
+    the live tool (sniper_follow.py). Only snipers that bought by the decision slot count."""
     s0, creator = tr[0]["slot"], tr[0]["user"]
     first_name, first = min(sniper_buys.items(), key=lambda kv: kv[1]["slot"])
     e = max(s0 + 2, first["slot"] + delay)
@@ -52,6 +65,7 @@ def decision_features(tr, sniper_buys, delay=0):
         "creator": creator, "t": first["bt"], "s0": s0, "decision_slot": e,
         "sniper_first": first_name, "sniper_slot": first["slot"],
         "sniper_sol": first["sol"], "sig_293": int(2.9 <= first["sol"] < 3.0),
+        "sniper_small": int(first["sol"] < 2.5),
         "sniper_offset": first["slot"] - s0,
         "both_snipers": int(len(snipers_by_e) == len(SNIPERS)),
         "veto_present": int(bool(in_win & VETO)),
@@ -106,7 +120,11 @@ def main():
         if not d["complete"] or not tr:
             missing["création non atteinte"] += 1
             continue
-        r = decision_features(tr, c["snipers"], DELAY)
+        buys = sniper_buys_from_trades(tr)
+        if not buys:
+            missing["sniper absent des trades"] += 1
+            continue
+        r = decision_features(tr, buys, DELAY)
         later = {t["user"] for t in tr if t["type"] == "buy"}
         bot = ledger.get(m)
         first_bt, e = r["t"], r["decision_slot"]

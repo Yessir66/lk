@@ -19,7 +19,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 
 DATA = os.path.join(os.path.dirname(__file__), "..", "data")
-FEATURES = ["sig_293", "sniper_offset", "both_snipers", "log_price_chg", "log_sol_buys",
+FEATURES = ["sig_293", "sniper_small", "sniper_offset", "both_snipers", "log_price_chg", "log_sol_buys",
             "n_buyers", "dev_buy_sol", "recent_follow_rate", "creator_follow_rate", "log_creator_prev_n",
             "is_cbkg"]
 TARGET_PRECISIONS = [0.4, 0.5, 0.6, 0.7]
