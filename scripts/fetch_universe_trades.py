@@ -5,7 +5,7 @@ from creation up to AFTER_S seconds after the sniper's buy (swap-api, forged key
 backwards). This is a complete, unsampled universe: each token is labelled by whether the studied wallet
 (or a sibling) bought it, and the early trades give the features.
 
-Usage: fetch_universe_trades.py <wallet> [<wallet> ...] [--shard K/N] [--max-pages P]
+Usage: fetch_universe_trades.py <wallet> [<wallet> ...] [--shard K/N] [--max-pages P] [--study-window]
   (--max-pages 3: stop at the first 300 trades before the anchor; a sniper buy later than that is outside
    the universe anyway, see build_sniper_universe.MAX_TRADES_BEFORE)
   (--shard: process every N-th token from K, to run a few copies in parallel under the API rate limit)
@@ -54,14 +54,23 @@ def main():
     shard = sys.argv.index("--shard") if "--shard" in sys.argv else None
     k, n = map(int, sys.argv[shard + 1].split("/")) if shard else (0, 1)
     skip = set()
-    for flag in ("--shard", "--max-pages"):
+    for flag in ("--shard", "--max-pages", "--study-window"):
         if flag in sys.argv:
-            skip |= {sys.argv.index(flag), sys.argv.index(flag) + 1}
+            skip |= {sys.argv.index(flag)} | ({sys.argv.index(flag) + 1} if flag != "--study-window" else set())
     for w in [a for i, a in enumerate(sys.argv[1:], 1) if i not in skip]:
         for line in (l for p in glob.glob(os.path.join(DATA, f"leader_{w[:8]}_trades*.jsonl")) for l in open(p)):
             t = json.loads(line)
             if t["side"] == "BUY" and t["mint"] and (t["mint"] not in first or t["bt"] < first[t["mint"]]):
                 first[t["mint"]] = t["bt"]
+    if "--study-window" in sys.argv:
+        # skip what build_sniper_universe would drop anyway: buys outside the studied wallet's window, and
+        # tokens the wallet had bought before the sniper (not a decision we could reproduce)
+        sigs = json.load(open(os.path.join(DATA, "signatures.json")))
+        w0 = min(s["blockTime"] for s in sigs if s.get("blockTime"))
+        w1 = max(s["blockTime"] for s in sigs if s.get("blockTime"))
+        ledger = json.load(open(os.path.join(DATA, "wallet_ledger.json")))
+        first = {m: bt for m, bt in first.items()
+                 if w0 <= bt <= w1 and not (m in ledger and ledger[m]["first_buy_bt"] < bt)}
     todo = [(m, bt) for m, bt in sorted(first.items(), key=lambda kv: kv[1])
             if not os.path.exists(os.path.join(OUT, f"{m}.json"))][k::n]
     print(f"{len(first)} tokens, {len(todo)} à récupérer", flush=True)
