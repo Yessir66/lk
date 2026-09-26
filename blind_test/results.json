@@ -1,0 +1,54 @@
+{
+ "A": {
+  "n_tokens": 188,
+  "excluded_wallet_already_in": 0,
+  "wallet_buys_in_window": 82,
+  "wallet_buys_on_4yfa_tokens": 18,
+  "rules": {
+   "mod\u00e8le + seuil adaptatif (A)": {
+    "n": 7,
+    "hits": 2,
+    "precision": 0.286,
+    "capture_all_wallet_buys": 0.024
+   },
+   "suivre tout 4yFAz7dp": {
+    "n": 188,
+    "hits": 18,
+    "precision": 0.096,
+    "capture_all_wallet_buys": 0.22
+   },
+   "sauf achats < 2,5 SOL": {
+    "n": 111,
+    "hits": 18,
+    "precision": 0.162,
+    "capture_all_wallet_buys": 0.22
+   }
+  }
+ },
+ "B": {
+  "n_tokens": 188,
+  "excluded_wallet_already_in": 0,
+  "wallet_buys_in_window": 82,
+  "wallet_buys_on_4yfa_tokens": 18,
+  "rules": {
+   "mod\u00e8le + seuil adaptatif (B)": {
+    "n": 17,
+    "hits": 3,
+    "precision": 0.176,
+    "capture_all_wallet_buys": 0.037
+   },
+   "suivre tout 4yFAz7dp": {
+    "n": 188,
+    "hits": 18,
+    "precision": 0.096,
+    "capture_all_wallet_buys": 0.22
+   },
+   "sauf achats < 2,5 SOL": {
+    "n": 111,
+    "hits": 18,
+    "precision": 0.162,
+    "capture_all_wallet_buys": 0.22
+   }
+  }
+ }
+}
