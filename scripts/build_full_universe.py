@@ -46,9 +46,26 @@ def wallet_buys():
 def main():
     census = json.load(open(os.path.join(DATA, "launch_census.json")))
     counts = {int(h): n for h, n in census["hour_counts"].items()}
+    # resolution of each sampled create: sig -> mint (None + kind for transactions that are not launches)
+    resolved = {}
+    for p in glob.glob(os.path.join(DATA, "launch_sample_mints*.jsonl")):
+        for l in open(p):
+            x = json.loads(l)
+            if x["mint"] or x.get("kind") or x["sig"] not in resolved:
+                resolved[x["sig"]] = x
+    have = {os.path.basename(f)[:-5] for f in glob.glob(os.path.join(DATA, "full_universe", "*.json"))}
+
+    def processed(sig):
+        """A sampled transaction whose outcome is known: not a launch, or a launch whose trades we have.
+        Weights divide by processed transactions only, so a partially fetched sample (fetched in an order
+        unrelated to time or label) stays unbiased."""
+        x = resolved.get(sig)
+        return bool(x) and ((not x["mint"] and x.get("kind")) or (x["mint"] in have))
+
     sampled_per_hour = defaultdict(int)
     for s in census["sample"]:
-        sampled_per_hour[int(s["bt"] // 3600 * 3600)] += 1
+        if processed(s["sig"]):
+            sampled_per_hour[int(s["bt"] // 3600 * 3600)] += 1
     # denser sample of the test window (sample_launches.py --dense): inside that window it replaces the
     # base sample (it contains it: same hash rule, higher rate), with its own weights
     dense_p = os.path.join(DATA, "launch_census_dense.json")
@@ -59,19 +76,21 @@ def main():
         dense_counts = {int(h): n for h, n in dense["hour_counts"].items()}
         dense_sigs = {s["sig"] for s in dense["sample"]}
         for s in dense["sample"]:
-            dense_per_hour[int(s["bt"] // 3600 * 3600)] += 1
+            if processed(s["sig"]):
+                dense_per_hour[int(s["bt"] // 3600 * 3600)] += 1
         dense_from = min(int(h) for h in dense["hour_counts"])
         dense_to = max(int(h) for h in dense["hour_counts"]) + 3600
     sample_mints = {}
-    for p in glob.glob(os.path.join(DATA, "launch_sample_mints*.jsonl")):
-        for l in open(p):
-            s = json.loads(l)
-            if s["mint"]:
-                in_dense_window = dense_from <= s["bt"] < dense_to
-                if in_dense_window and s["sig"] not in dense_sigs:
-                    continue
-                s["dense"] = in_dense_window
-                sample_mints[s["mint"]] = s
+    for s in resolved.values():
+        if s["mint"]:
+            in_dense_window = dense_from <= s["bt"] < dense_to
+            if in_dense_window and s["sig"] not in dense_sigs:
+                continue
+            s["dense"] = in_dense_window
+            sample_mints[s["mint"]] = s
+    if dense:
+        n_d = sum(1 for x in dense["sample"])
+        print(f"échantillon dense: {sum(dense_per_hour.values())}/{n_d} transactions traitées")
     wb = wallet_buys()
     buy_times = sorted(b["bt"] for b in wb.values())
 
