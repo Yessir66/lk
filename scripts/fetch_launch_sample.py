@@ -30,23 +30,43 @@ def shard():
     return tuple(map(int, sys.argv[sys.argv.index("--shard") + 1].split("/"))) if "--shard" in sys.argv else (0, 1)
 
 
+def created_mint(tx):
+    """(mint, kind) of a transaction touching the mint authority. The launched mint is the one
+    initialised by initializeMint(2); kind is the pump.fun instruction ('CreateV2', ...). Transactions
+    without a pump.fun Create (e.g. CreatePool at migration) are not launches: mint None."""
+    logs = tx["meta"].get("logMessages") or []
+    kinds = [l.split("Instruction: ")[1] for l in logs if "Instruction: Create" in l]
+    ixs = list(tx["transaction"]["message"]["instructions"])
+    for grp in tx["meta"].get("innerInstructions") or []:
+        ixs += grp["instructions"]
+    minted = [ix["parsed"]["info"]["mint"] for ix in ixs if isinstance(ix.get("parsed"), dict)
+              and ix["parsed"].get("type") in ("initializeMint", "initializeMint2")]
+    if not any(k.startswith("Create") and k != "CreatePool" for k in kinds) or len(set(minted)) != 1:
+        return None, ",".join(kinds) or "autre"
+    return minted[0], ",".join(kinds)
+
+
 def mints():
+    """Resolve sampled creates to mints. Re-running retries only the ones without an answer yet
+    (lines with a 'kind' are final: either a mint or 'not a launch')."""
     if "--rpc" in sys.argv:
         FL.RPC = sys.argv[sys.argv.index("--rpc") + 1]
     k, n = shard()
     census = json.load(open(os.path.join(DATA, "launch_census.json")))
     out_p = os.path.join(DATA, f"launch_sample_mints.s{k}.jsonl")
-    done = {json.loads(l)["sig"] for p in glob.glob(os.path.join(DATA, "launch_sample_mints*.jsonl")) for l in open(p)}
+    done = set()
+    for p in glob.glob(os.path.join(DATA, "launch_sample_mints*.jsonl")):
+        for l in open(p):
+            x = json.loads(l)
+            if x["mint"] or x.get("kind"):
+                done.add(x["sig"])
     todo = [s for s in census["sample"][k::n] if s["sig"] not in done]
     print(f"{len(todo)} créations à résoudre", flush=True)
     with open(out_p, "a") as f:
         for i, s in enumerate(todo, 1):
             tx = FL.rpc("getTransaction", [s["sig"], {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 1}])
-            mint = None
-            if tx:
-                ms = {b["mint"] for b in tx["meta"].get("postTokenBalances") or [] if b["mint"] != WSOL}
-                mint = sorted(ms)[0] if len(ms) == 1 else None
-            f.write(json.dumps({**s, "mint": mint}) + "\n")
+            mint, kind = created_mint(tx) if tx else (None, None)
+            f.write(json.dumps({**s, "mint": mint, "kind": kind}) + "\n")
             if i % 200 == 0:
                 f.flush()
                 print(f"  {i}/{len(todo)}", flush=True)
