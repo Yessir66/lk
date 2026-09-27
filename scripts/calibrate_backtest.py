@@ -39,7 +39,8 @@ def main():
         for fixed in (0.0, 0.001, 0.002):
             sim = []
             for m, path, b, s, v in cases:
-                r = B.simulate(path, b["slot"], c_size(b, fee), {"kind": "hold", "n": s["slot"] - b["slot"]}, 0, fee, fixed)
+                r = B.simulate(path, b["slot"], c_size(b, fee), {"kind": "hold", "n": s["slot"] - b["slot"]}, 0, fee, fixed,
+                               entry_idx=b["idx"], exit_idx=s["idx"])
                 sim.append(r["pnl"] if r else np.nan)
             sim = np.array(sim)
             ok = ~np.isnan(sim)
