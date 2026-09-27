@@ -49,11 +49,28 @@ def main():
     sampled_per_hour = defaultdict(int)
     for s in census["sample"]:
         sampled_per_hour[int(s["bt"] // 3600 * 3600)] += 1
+    # denser sample of the test window (sample_launches.py --dense): inside that window it replaces the
+    # base sample (it contains it: same hash rule, higher rate), with its own weights
+    dense_p = os.path.join(DATA, "launch_census_dense.json")
+    dense = json.load(open(dense_p)) if os.path.exists(dense_p) and "--no-dense" not in sys.argv else None
+    dense_sigs, dense_per_hour, dense_from, dense_to = set(), defaultdict(int), float("inf"), float("-inf")
+    dense_counts = {}
+    if dense:
+        dense_counts = {int(h): n for h, n in dense["hour_counts"].items()}
+        dense_sigs = {s["sig"] for s in dense["sample"]}
+        for s in dense["sample"]:
+            dense_per_hour[int(s["bt"] // 3600 * 3600)] += 1
+        dense_from = min(int(h) for h in dense["hour_counts"])
+        dense_to = max(int(h) for h in dense["hour_counts"]) + 3600
     sample_mints = {}
     for p in glob.glob(os.path.join(DATA, "launch_sample_mints*.jsonl")):
         for l in open(p):
             s = json.loads(l)
             if s["mint"]:
+                in_dense_window = dense_from <= s["bt"] < dense_to
+                if in_dense_window and s["sig"] not in dense_sigs:
+                    continue
+                s["dense"] = in_dense_window
                 sample_mints[s["mint"]] = s
     wb = wallet_buys()
     buy_times = sorted(b["bt"] for b in wb.values())
@@ -89,7 +106,12 @@ def main():
         r = {k: v for k, v in f.items() if k not in ("buy_sizes",)}
         r.update({
             "mint": m, "creator": creator, "t": t0, "s0": s0, "label": int(is_pos), "in_sample": int(in_sample),
-            "weight": 1.0 if is_pos else counts.get(int(t0 // 3600 * 3600), 0) / max(1, sampled_per_hour[int(t0 // 3600 * 3600)]),
+            # launches in the hour / sampled launches in the hour, each from its own census (the dense census
+            # counts only its window, so partial hours at its edges are weighted correctly)
+            "weight": 1.0 if is_pos else (
+                dense_counts.get(int(t0 // 3600 * 3600), 0) / max(1, dense_per_hour[int(t0 // 3600 * 3600)])
+                if sample_mints[m]["dense"] else
+                counts.get(int(t0 // 3600 * 3600), 0) / max(1, sampled_per_hour[int(t0 // 3600 * 3600)])),
             "has_2926": int(any(2.92 <= s < 2.93 for s in f["buy_sizes"])),
             "log_price_chg": math.log1p(max(0.0, f["price_change_pct"])),
             "log_sol_buys": math.log1p(f["sol_buys"]),

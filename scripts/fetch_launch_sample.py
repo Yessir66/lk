@@ -3,7 +3,7 @@
 Early trades for the unbiased launch sample (sample_launches.py) and for every token the studied
 wallet bought, so both come from the same full-universe fetch.
 
-  fetch_launch_sample.py mints  [--shard K/N] [--rpc URL]   resolve each sampled create tx to its mint
+  fetch_launch_sample.py mints  [--shard K/N] [--rpc URL] [--dense]   resolve each sampled create tx to its mint
   fetch_launch_sample.py trades [--shard K/N]               pump.fun trades from creation to +WINDOW_S
 
 Sampled launches are anchored at their create time; the wallet's tokens at its buy time (it buys a
@@ -52,8 +52,9 @@ def mints():
     if "--rpc" in sys.argv:
         FL.RPC = sys.argv[sys.argv.index("--rpc") + 1]
     k, n = shard()
-    census = json.load(open(os.path.join(DATA, "launch_census.json")))
-    out_p = os.path.join(DATA, f"launch_sample_mints.s{k}.jsonl")
+    dense = "--dense" in sys.argv  # the denser test-period sample (sample_launches.py --dense)
+    census = json.load(open(os.path.join(DATA, "launch_census_dense.json" if dense else "launch_census.json")))
+    out_p = os.path.join(DATA, f"launch_sample_mints{'_dense' if dense else ''}.s{k}.jsonl")
     done = set()
     for p in glob.glob(os.path.join(DATA, "launch_sample_mints*.jsonl")):
         for l in open(p):

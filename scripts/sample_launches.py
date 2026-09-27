@@ -5,8 +5,11 @@ authority TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM (buys and sells do not), s
 the list of launches (~30k/day). Page them back to the start of the study window, count launches
 per hour, and keep a deterministic ~0.6% sample (sha256 of the signature), reproducible and unbiased.
 
-Usage: sample_launches.py [--until-ts TS]
+Usage: sample_launches.py [--dense RATE_PER_10000 FROM_TS TO_TS]
 Output: data/launch_census.json {hour_counts: {hour_ts: n}, sample: [{sig, slot, bt}], rate}
+--dense: a denser sample (same hash rule, so it contains the base sample) of the launches between
+FROM_TS and TO_TS, written to data/launch_census_dense.json — used to measure precision where few
+launches score high.
 """
 import hashlib
 import json
@@ -27,9 +30,15 @@ def sampled(sig):
 
 
 def main():
+    global RATE
     sigs = json.load(open(os.path.join(DATA, "signatures.json")))
     since = min(s["blockTime"] for s in sigs if s.get("blockTime"))
+    until = None
     out_p = os.path.join(DATA, "launch_census.json")
+    if "--dense" in sys.argv:
+        i = sys.argv.index("--dense")
+        RATE, since, until = int(sys.argv[i + 1]), float(sys.argv[i + 2]), float(sys.argv[i + 3])
+        out_p = os.path.join(DATA, "launch_census_dense.json")
     counts, sample, before, pages = {}, [], None, 0
     while True:
         p = {"limit": 1000, **({"before": before} if before else {})}
@@ -42,6 +51,8 @@ def main():
         pages += 1
         for s in page:
             if s["err"] is not None or not s.get("blockTime") or s["blockTime"] < since:
+                continue
+            if until is not None and s["blockTime"] >= until:
                 continue
             h = str(int(s["blockTime"] // 3600 * 3600))
             counts[h] = counts.get(h, 0) + 1
