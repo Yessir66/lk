@@ -29,7 +29,10 @@ def main():
     os.makedirs(OUT, exist_ok=True)
     k, n = tuple(map(int, sys.argv[sys.argv.index("--shard") + 1].split("/"))) if "--shard" in sys.argv else (0, 1)
     rows = json.load(open(os.path.join(DATA, "full_universe_h2.json")))
-    jobs = sorted((r["mint"], r["t"]) for r in rows if r["label"] or loose_filter(r))
+    # the wallet's tokens first (they calibrate the simulator), then the other candidates
+    wallet_tokens = {r["mint"] for r in rows if r["label"]}
+    jobs = sorted(((r["mint"], r["t"]) for r in rows if r["label"] or loose_filter(r)),
+                  key=lambda mt: (mt[0] not in wallet_tokens, mt[0]))
     todo = [(m, t) for m, t in jobs if not os.path.exists(os.path.join(OUT, f"{m}.json"))][k::n]
     print(f"{len(jobs)} candidats, {len(todo)} à récupérer dans cette part", flush=True)
     for i, (m, t0) in enumerate(todo, 1):
