@@ -44,6 +44,16 @@ class Curve:
             self.keys.append((t["slot"], t["idx"]))
             self.vts.append(vt)
 
+    def random_idx(self, slot, rng):
+        """A uniformly random landing position inside `slot` (among the gaps between its recorded trades)."""
+        import bisect
+        lo = bisect.bisect_left(self.keys, (slot, -1))
+        hi = bisect.bisect_right(self.keys, (slot, float("inf")))
+        if hi == lo:
+            return -1
+        j = int(rng.integers(lo, hi + 1))  # land before trade j (j == hi: after all of them)
+        return self.keys[j][1] if j < hi else self.keys[hi - 1][1] + 0.5
+
     def vt_at(self, slot, idx=None):
         """Reserve seen by a transaction landing in `slot`: after every trade of earlier slots, and in
         the same slot after the trades with a lower index (idx=None: after all of them, the worst case;
@@ -71,16 +81,19 @@ def price(vt):
 
 
 def simulate(path, entry_slot, size, rule, latency, fee=0.0125, fixed_cost=0.002, trades_key="trades_ex",
-             in_slot=None, entry_idx=None, exit_idx=None):
+             in_slot=None, entry_idx=None, exit_idx=None, rng=None):
     """One position: decision to buy at entry_slot, lands at entry_slot + latency.
     in_slot: where our transactions land inside their slot: None = after every recorded trade of that
-    slot (worst case), -1 = before all of them (best case); entry_idx / exit_idx force an exact index.
+    slot, -1 = before all of them, "random" = a uniformly random position (needs rng); entry_idx /
+    exit_idx force an exact index. Neither first nor last is always better: it depends on whether the
+    slot's other trades push the price up or down.
     rule: dict(kind='hold', n) | (kind='tpsl', tp, sl, max_slots) | (kind='trail', trail, max_slots)
     Returns dict(pnl, ret, hold_slots, exit_reason) or None if the path is too short."""
     tr = path[trades_key]
     curve = Curve(tr)
     land = entry_slot + latency
-    vt_before = curve.vt_at(land, entry_idx if entry_idx is not None else in_slot)
+    pick = (lambda sl: curve.random_idx(sl, rng)) if in_slot == "random" else (lambda sl: in_slot)
+    vt_before = curve.vt_at(land, entry_idx if entry_idx is not None else pick(land))
     tokens, _ = buy(vt_before, size, fee)
     my_shift = tokens  # our tokens stay out of the curve while we hold
     entry_px = size / tokens
@@ -113,6 +126,6 @@ def simulate(path, entry_slot, size, rule, latency, fee=0.0125, fixed_cost=0.002
             return None
         decide, reason = last_slot, "fin des données"
     exit_land = decide + latency
-    sol_out, _ = sell(curve.vt_at(exit_land, exit_idx if exit_idx is not None else in_slot) - my_shift, tokens, fee)
+    sol_out, _ = sell(curve.vt_at(exit_land, exit_idx if exit_idx is not None else pick(exit_land)) - my_shift, tokens, fee)
     pnl = sol_out - size - 2 * fixed_cost
     return {"pnl": pnl, "ret": pnl / size, "hold_slots": exit_land - land, "exit_reason": reason}
