@@ -247,7 +247,8 @@ def main():
     for p in allp:
         scope[p.scope] += 1
     print(f"{len(allp)} callouts récupérés: " + ", ".join(f"{k} {v}" for k, v in sorted(scope.items(), key=lambda kv: -kv[1])))
-    print(f"{sum(p.truncated for p in allp)} écartés car incomplets moins de {MIN_COMPLETE_S} s après le callout; "
+    print(f"{sum(p.truncated for p in allp if p.scope == 'pump.fun')} tokens pump.fun écartés car incomplets moins de "
+          f"{MIN_COMPLETE_S} s après le callout; "
           f"{len(paths)} après une position par token (fenêtre {WINDOW // 60} min), "
           f"{len(usable)} sur un token pump.fun (courbe ou PumpSwap, paire SOL)")
     days = np.array([int(p.t_call // 86400) for p in usable])

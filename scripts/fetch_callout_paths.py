@@ -105,7 +105,7 @@ def main():
     rows = json.load(open(os.path.join(DATA, "callouts", "callouts.json")))
     now_ms = time.time() * 1000
     todo = [r for r in rows if since_ms <= r["createdAt"] < now_ms - (AFTER_S + 60) * 1000
-            and not r.get("perp") and r.get("chain") in (None, "solana")
+            and not r.get("perp") and r.get("chain") in (None, "solana") and not r["coinMint"].startswith("0x")
             and not os.path.exists(os.path.join(OUT, f"{r['calloutId']}.json"))]
     todo.sort(key=lambda r: r["calloutId"])  # unrelated to time or author: a partial fetch is a random sample
     print(f"{len(todo)} callouts à récupérer", flush=True)
