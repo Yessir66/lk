@@ -239,7 +239,7 @@ def load(since=0.0):
 
 
 def boot_ci(x, groups, n=2000, seed=0):
-    """95% CI of the mean, resampling whole days (callouts of a day share the market regime)."""
+    """95% CI of the mean, resampling whole hours (callouts of an hour share the market regime)."""
     rng = np.random.default_rng(seed)
     keys = np.unique(groups)
     idx = {g: np.nonzero(groups == g)[0] for g in keys}
@@ -263,7 +263,7 @@ def main():
           f"{MIN_COMPLETE_S} s après le callout; "
           f"{len(paths)} après une position par token (fenêtre {WINDOW // 60} min), "
           f"{len(usable)} sur un token pump.fun (courbe ou PumpSwap, paire SOL)")
-    days = np.array([int(p.t_call // 86400) for p in usable])
+    days = np.array([int(p.t_call // 3600) for p in usable])  # bootstrap clusters (hours)
     report = {"n_callouts": len(allp), "scope": dict(scope), "n_kept": len(paths), "n_usable": len(usable), "size": size}
 
     # 1. what happens around a callout (spot prices, no fees)
