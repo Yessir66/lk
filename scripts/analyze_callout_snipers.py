@@ -10,6 +10,7 @@ at the last price of the window (an upper bound: selling it would move the price
 The same is done for the callout's author (profile wallet) and for wallets that bought in the minute
 before the callout on several callouts of the same author.
 
+Usage: analyze_callout_snipers.py [--since YYYY-MM-DD[THH:MM]]
 Output: data/callout_snipers.json
 """
 import json
@@ -44,7 +45,7 @@ def flows(p, wallet, t_from):
 
 
 def main():
-    allp, paths = CB.load()
+    allp, paths = CB.load(CB.since_arg())
     clock = CB.Clock([p for p in allp if p.ok])
     usable = [p for p in paths if p.ok]
     fast = defaultdict(list)  # wallet -> [(path, first buy delay)]

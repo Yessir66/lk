@@ -19,9 +19,10 @@ Execution model (same conventions as backtest.py, extended to the PumpSwap pool 
   - one position per token: a callout on a token already called in the previous WINDOW is skipped.
 Slot clock: interpolated between the median slot of each second of block time over every recorded trade.
 
-Usage: callout_backtest.py [--size SOL]
+Usage: callout_backtest.py [--size SOL] [--since YYYY-MM-DD[THH:MM]]
 Output: data/callout_backtest.json
 """
+import datetime
 import glob
 import hashlib
 import itertools
@@ -209,10 +210,21 @@ def name(r):
     return " / ".join(parts)
 
 
-def load():
+def since_arg():
+    """--since YYYY-MM-DD[THH:MM] (UTC) -> unix seconds, or 0."""
+    if "--since" not in sys.argv:
+        return 0.0
+    v = sys.argv[sys.argv.index("--since") + 1]
+    return datetime.datetime.fromisoformat(v).replace(tzinfo=datetime.timezone.utc).timestamp()
+
+
+def load(since=0.0):
     meta = {r["calloutId"]: r for r in json.load(open(os.path.join(DATA, "callouts", "callouts.json")))}
     paths = []
     for f in glob.glob(os.path.join(DATA, "callout_paths", "*.json")):
+        cid = os.path.basename(f)[:-5]
+        if cid not in meta or meta[cid]["createdAt"] / 1000 < since:
+            continue
         p = Path(json.load(open(f)))
         p.meta = meta[p.id]
         paths.append(p)
@@ -240,7 +252,7 @@ def boot_ci(x, groups, n=2000, seed=0):
 
 def main():
     size = float(sys.argv[sys.argv.index("--size") + 1]) if "--size" in sys.argv else 0.5
-    allp, paths = load()
+    allp, paths = load(since_arg())
     clock = Clock([p for p in allp if p.ok])
     usable = [p for p in paths if p.ok]
     scope = defaultdict(int)
