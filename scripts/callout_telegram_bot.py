@@ -20,6 +20,7 @@ Setup:
 Options: --dry-run (print instead of sending), --test (send one message with the latest callout of a
 followed account, then exit), --all (alert on every pump.fun user's callouts, to check the setup).
 """
+import calendar
 import html
 import json
 import os
@@ -118,7 +119,7 @@ def from_feed(row):
     co = p.get("callout") or {}
     if not co.get("calloutId"):
         return None
-    created = time.mktime(time.strptime(co["calloutTimestamp"][:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
+    created = calendar.timegm(time.strptime(co["calloutTimestamp"][:19], "%Y-%m-%dT%H:%M:%S"))  # UTC, any local zone
     return {"id": co["calloutId"], "author_address": p.get("walletAddress"), "author": p.get("userName"),
             "mint": row["coinMint"], "name": row.get("coinName"), "symbol": row.get("symbol"),
             "thesis": co.get("thesis"), "mcap_call": co.get("calledOutAtMcap"), "mcap_now": row.get("marketCap"),
