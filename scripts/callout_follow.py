@@ -1,44 +1,43 @@
 #!/usr/bin/env python3
 """
-Follow pump.fun callers: buy a coin as soon as one of the given callers posts a callout.
+Follow pump.fun callers: as soon as one of them posts a callout, send the coin's address (CA) to Trojan from your
+Telegram account (its Auto Buy buys it), or with --keypair buy it directly.
 
-  callout_follow.py --callers slingoor,Dior,<wallet or user id> [--keypair bot.json] [--live]
-                    [--amount-sol 0.05] [--slippage-bps 1500] [--jito-tip 0.001] [--max-buys 5]
-                    [--max-age 20] [--max-run 1.5] [--min-mcap USD] [--max-mcap USD]
-                    [--take-profit 2] [--stop-loss 0.6] [--max-hold 600] [--rps 0.8] [--rpc-http URL]
-  callout_follow.py --callers slingoor --send-to @trojan_bot_username [--live] [--max-buys 5] [--max-run 1.5] ...
+  callout_follow.py [--callers <username or wallet>,...] [--live] [--max-buys 5] [--max-age 20] [--max-run 1.5]
+                    [--min-mcap USD] [--max-mcap USD] [--send-to @bot] [--rps 0.8]
+  callout_follow.py --keypair bot.json [--live] [--amount-sol 0.05] [--slippage-bps 1500] [--jito-tip 0.001]
+                    [--take-profit 2] [--stop-loss 0.6] [--max-hold 600] [--rpc-http URL]   (+ the options above)
   callout_follow.py --new-wallet bot.json
 
-Detection: polls each caller's public callout list (GET /callout/list/{user} on pump.fun's frontend API, no
-account needed) in turn. The API allows about 1 request/s per IP (--rps defaults to 0.8), so with N callers a
-callout is seen at worst N/rps seconds after it is posted. At startup, prints each caller's last 20 callouts: on how
-many the wallets that followed the call (pump.fun's "tailers") were in profit 1 h later.
+Callers: the CALLERS list below unless --callers is given.
+Detection, on pump.fun's public frontend API (no account needed): GET /home-feed/new, the newest callouts of all
+users, polled at --rps (the API allows about 1 request/s per endpoint and IP), so a callout is seen ~1 s after it
+is posted; as a backstop for callouts the feed leaves out, each caller's own list (GET /callout/list/{wallet}) is
+read in turn every 2.5 s. At startup, prints each caller's last 20 callouts: on how many the wallets that followed
+the call (pump.fun's "tailers") were in profit 1 h later.
 Filters: Solana coins only, callout seen within --max-age s, market cap at the callout within [--min-mcap,
---max-mcap], price not already up more than --max-run x since the callout (from the buy quote, so it includes our
-own price impact), each coin bought once, at most --max-buys buys per run.
-Execution: Jupiter swap API (routes the pump.fun bonding curve and PumpSwap), signed locally, sent at once to
-Jito's block engine (with a --jito-tip) and to the RPC.
-Without --live nothing is sent: the transaction is built, signed and simulated (simulation needs a funded
---keypair). Exits are optional and live only: --take-profit / --stop-loss as a multiple of the SOL spent (from a
-Jupiter sell quote every 3 s) and --max-hold seconds; without them the bot only buys. After a sale the empty
-token account is closed to recover its rent (~0.002 SOL).
-Use a DEDICATED wallet holding only what the bot may spend; --new-wallet creates one.
---send-to mode: instead of buying, the coin's address (CA) is sent as a Telegram message from YOUR account to the
-given bot, e.g. Trojan with Auto Buy on, which buys with its own wallet, amount, slippage and sell settings (no
---keypair, --amount-sol or exits here). The filters and --max-buys still apply; --max-run compares Jupiter's last
-trade price with the callout's and, when that price is unavailable, lets the CA through.
-Trojan only takes messages from users, so the script logs in as you (`pip install telethon`) with the api_id /
-api_hash of the "CALLOUT" app below (TG_API_ID / TG_API_HASH override them); the first run asks for your phone
-number and login code, then keeps the session in data/telegram.session, which gives full access to your Telegram
-account: never share it.
-Without --live nothing is sent to the bot.
+--max-mcap], price not already up more than --max-run x since the callout, each coin once, at most --max-buys per
+run. Without --live nothing is sent.
+Default mode: the CA is sent as a Telegram message from YOUR account to @solana_trojanbot (Trojan on Solana;
+--send-to another bot), whose Auto Buy buys with Trojan's own wallet, amount, slippage and sell settings.
+--max-run compares Jupiter's last trade price with the callout's and, when that price is unavailable, lets the CA
+through. Trojan only takes messages from users, so the script logs in as you (`pip install telethon`) with the
+api_id / api_hash of the "CALLOUT" app below (TG_API_ID / TG_API_HASH override them); the first run asks for your
+phone number and login code, then keeps the session in data/telegram.session, which gives full access to your
+Telegram account: never share it.
+--keypair mode: Jupiter swap API (routes the pump.fun bonding curve and PumpSwap), signed locally, sent at once to
+Jito's block engine (with a --jito-tip) and to the RPC; --max-run uses the buy quote, so it includes our own
+price impact. Without --live the transaction is built, signed and simulated. Exits are optional and live only:
+--take-profit / --stop-loss as a multiple of the SOL spent (from a Jupiter sell quote every 3 s) and --max-hold
+seconds; without them the bot only buys. After a sale the empty token account is closed to recover its rent
+(~0.002 SOL). Use a DEDICATED wallet holding only what the bot may spend; --new-wallet creates one.
 Output: data/callout_follow_<timestamp>.jsonl, one line per callout seen, buy and sale.
 """
 import asyncio
 import base64
+import datetime
 import json
 import os
-import re
 import ssl
 import statistics
 import sys
@@ -72,17 +71,23 @@ MAX_BUYS = int(arg("--max-buys", "5"))
 MAX_AGE = float(arg("--max-age", "20"))
 MAX_RUN, MIN_MCAP, MAX_MCAP = num("--max-run"), num("--min-mcap"), num("--max-mcap")
 TP, SL, HOLD = num("--take-profit"), num("--stop-loss"), num("--max-hold")
-GAP = 1 / float(arg("--rps", "0.8"))
-SEND_TO = arg("--send-to", None)
+GAP = {"feed": 1 / float(arg("--rps", "0.8")), "list": 2.5, "other": 1.25}   # seconds between requests
+SEND_TO = arg("--send-to", None if "--keypair" in sys.argv else "@solana_trojanbot")
 TG_API_ID, TG_API_HASH = 30461091, "1ba7f769c94596baaf675447c02bb478"   # my.telegram.org app "CALLOUT"
-UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+CALLERS = ["6yVb4pxNwDfr6rovwNnBg3SyKSvDcHGD4WdFPN1JJBqm",   # 0xEthan
+           "Be24Gbf5KisDk1LcWWZsBn8dvB816By7YzYF5zWZnRR6",   # chairman
+           "5hAgYC8TJCcEZV7LTXAzkTrm7YL29YXyQQJPCNrG84zM",   # schoen
+           "87rRdssFiTJKY4MGARa4G5vQ31hmR7MxSmhzeaJ5AAxJ",   # Dior
+           "ardinRsN1mNYVeoJWTBsWeYeXvuR9UUDGMsCDKpb6AT",    # trunoest
+           "CwUHN4zTn5wiEYoZjsP4FrDvAT9heDWewCTQjhgwhJqS",   # cwuhn4
+           "CE44oKS3wpUerx8afyeii56u5oQjBLZknzm4Q2CYHUz9"]   # ely
 LOG = os.path.normpath(os.path.join(DATA, f"callout_follow_{int(time.time())}.jsonl"))
 CA = "/root/.ccr/ca-bundle.crt"
 SSL = ssl.create_default_context(cafile=CA) if os.path.exists(CA) else ssl.create_default_context()
 
 lock = threading.Lock()
 positions = []      # open positions, watched by the exit thread
-next_call = [0.0]   # earliest time of the next pump.fun API request
+next_call = {}      # pump.fun endpoint family -> earliest time of its next request
 tg = {}             # --send-to mode: Telegram client and target bot
 
 
@@ -132,19 +137,19 @@ def load_keypair(path):
 
 # ---------- pump.fun: callers and their callouts
 
-def api(path):
-    """GET on pump.fun's frontend API, paced to --rps; None when rate limited or failing."""
-    wait = next_call[0] - time.time()
+def api(path, fam="other"):
+    """GET on pump.fun's frontend API, each endpoint family paced on its own; None when rate limited or failing."""
+    wait = next_call.get(fam, 0) - time.time()
     if wait > 0:
         time.sleep(wait)
-    next_call[0] = time.time() + GAP
+    next_call[fam] = time.time() + GAP[fam]
     try:
         return http(API + path)
     except urllib.error.HTTPError as e:
         if e.code == 429:
             ra = e.headers.get("Retry-After") or ""
-            next_call[0] = time.time() + (float(ra) if ra.isdigit() else 5)
-            print("  limite de requêtes pump.fun atteinte, pause", flush=True)
+            next_call[fam] = time.time() + (float(ra) if ra.isdigit() else 5)
+            print(f"  limite de requêtes pump.fun atteinte ({fam}), pause", flush=True)
         else:
             print(f"  pump.fun {path} : HTTP {e.code}", flush=True)
     except Exception as e:
@@ -153,9 +158,11 @@ def api(path):
 
 
 def resolve(name):
-    """A caller given as a username, a wallet or a pump.fun user id -> (id for the callout list, label)."""
-    if is_solana(name) or UUID.match(name):
-        return name, name[:8]
+    """A caller given as a username or a wallet -> (wallet, username)."""
+    if is_solana(name):
+        prof = (api(f"/users/{name}/overview") or {}).get("profile") or {}
+        print(f"  {prof.get('username', '?')} : wallet {name} ({prof.get('followers', '?')} followers)")
+        return name, prof.get("username") or name[:8]
     hits = api(f"/users/search-v2?searchTerm={urllib.parse.quote(name)}&limit=10")
     if hits is None:
         sys.exit(f"pump.fun ne répond pas pour la recherche de {name}")
@@ -163,13 +170,28 @@ def resolve(name):
     if not exact:
         sys.exit(f"utilisateur pump.fun introuvable : {name} (donne son wallet à la place)")
     h = exact[0]
-    print(f"  {h['username']} -> wallet {h['address']} ({h.get('followers', '?')} followers)")
-    return h["userId"], h["username"]
+    print(f"  {h['username']} : wallet {h['address']} ({h.get('followers', '?')} followers)")
+    return h["address"], h["username"]
 
 
-def callouts(uid, n):
-    r = api(f"/callout/list/{uid}?limit={n}&sortBy=TIMESTAMP&sortOrder=DESC")
-    return None if r is None else r.get("callouts") or []
+def callouts(wallet, n):
+    r = api(f"/callout/list/{wallet}?limit={n}&sortBy=TIMESTAMP&sortOrder=DESC", "list")
+    return None if r is None else [dict(c, author=wallet) for c in r.get("callouts") or []]
+
+
+def feed_callouts():
+    """The newest callouts of all pump.fun users, in the callout-list shape (the feed's calloutPrice is in USD)."""
+    out = []
+    for row in (api("/home-feed/new", "feed") or {}).get("coins") or []:
+        p = row.get("position") or {}
+        co = p.get("callout") or {}
+        if not co.get("calloutId") or not co.get("calloutTimestamp"):
+            continue
+        created = datetime.datetime.fromisoformat(co["calloutTimestamp"].replace("Z", "+00:00")).timestamp()
+        out.append({"calloutId": co["calloutId"], "author": p.get("walletAddress"), "coinMint": row.get("coinMint"),
+                    "createdAt": created * 1000, "marketCap": co.get("calledOutAtMcap"), "thesis": co.get("thesis"),
+                    "calloutPriceUsd": co.get("calloutPrice"), "chain": co.get("chain"), "perp": co.get("perp")})
+    return out
 
 
 def summary(cs):
@@ -329,7 +351,8 @@ def on_callout(c, label, kp, funded, state):
             fq, fs = ex.submit(quote, SOL, mint, AMOUNT), ex.submit(rpc, "getTokenSupply", [mint])
             q, dec = fq.result(), fs.result()["value"]["decimals"]
         tokens = int(q["outAmount"]) / 10 ** dec
-        run = AMOUNT / 1e9 / tokens / c["calloutPrice"] if c.get("calloutPrice") else None
+        run = (float(q["swapUsdValue"]) / tokens / c["calloutPriceUsd"]
+               if q.get("swapUsdValue") and c.get("calloutPriceUsd") else None)
         rec.update({"run_since_callout": run, "quote_ms": round(1000 * (time.time() - t0))})
         if MAX_RUN and run and run > MAX_RUN:
             print(f"  ignoré : prix déjà x{run:.2f} depuis le call (> x{MAX_RUN})", flush=True)
@@ -424,9 +447,7 @@ def main():
             sys.exit(f"{path} existe déjà")
         json.dump(list(bytes(kp)), open(path, "w"))
         return print(f"nouveau wallet {kp.pubkey()} écrit dans {path} : envoie-lui seulement ce que le bot peut dépenser")
-    names = [n.strip() for n in arg("--callers", "").split(",") if n.strip()]
-    if not names:
-        sys.exit("donne au moins un caller : --callers pseudo1,pseudo2")
+    names = [n.strip() for n in arg("--callers", "").split(",") if n.strip()] or CALLERS
     kp_path = arg("--keypair", None)
     if LIVE and not kp_path and not SEND_TO:
         sys.exit("--live demande un --keypair (un wallet dédié au bot)")
@@ -448,23 +469,35 @@ def main():
                                       HOLD and f"durée max {HOLD:g} s") if s)
         print(f"{AMOUNT / 1e9} SOL par call, slippage {SLIPPAGE / 100:g} %, tip Jito {TIP / 1e9} SOL, {MAX_BUYS} achats "
               f"max, sorties : {exits or 'aucune (achat seulement)'}")
-    callers = [resolve(n) for n in names]
+    labels = dict(resolve(n) for n in names)   # wallet -> username
     seen = set()
-    for uid, label in callers:
-        cs = callouts(uid, 20) or []
+    for wallet, label in labels.items():
+        for _ in range(3):   # retried after a 429, so that existing callouts are not taken for new ones
+            cs = callouts(wallet, 20)
+            if cs is not None:
+                break
+        cs = cs or []
         seen |= {c["calloutId"] for c in cs}
         print(f"  {label} : {summary(cs)}")
-    print(f"surveillance de {len(callers)} caller(s) : un call est vu au plus ~{len(callers) * GAP:.0f} s après sa "
-          f"publication | journal {LOG}", flush=True)
+    seen |= {c["calloutId"] for c in feed_callouts()}
+    print(f"surveillance de {len(labels)} caller(s) : flux de tous les callouts toutes les {GAP['feed']:.2f} s (un call "
+          f"est vu ~1 s après sa publication), chaque profil relu toutes les ~{len(labels) * GAP['list']:.0f} s en "
+          f"secours | journal {LOG}", flush=True)
     if LIVE and not SEND_TO and (TP or SL or HOLD):
         threading.Thread(target=exit_loop, args=(kp,), daemon=True).start()
-    state = {"tried": set(), "sent": 0}
+    state, wallets, k = {"tried": set(), "sent": 0}, list(labels), 0
     while True:
-        for uid, label in callers:
-            for c in reversed(callouts(uid, 5) or []):
-                if c["calloutId"] not in seen:
-                    seen.add(c["calloutId"])
-                    on_callout(c, label, kp, bool(kp_path), state)
+        # whichever source is due first: the all-users feed, or the next caller's own list
+        if next_call.get("feed", 0) <= next_call.get("list", 0):
+            new = [c for c in feed_callouts() if c["author"] in labels]
+        else:
+            new = callouts(wallets[k % len(wallets)], 5) or []
+            k += 1
+        for c in sorted(new, key=lambda c: c["createdAt"]):
+            if c["calloutId"] not in seen:
+                seen.add(c["calloutId"])
+                if time.time() - c["createdAt"] / 1000 < 600:   # older ones: a list that failed at startup
+                    on_callout(c, labels[c["author"]], kp, bool(kp_path), state)
 
 
 if __name__ == "__main__":
