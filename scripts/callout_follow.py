@@ -27,9 +27,10 @@ Use a DEDICATED wallet holding only what the bot may spend; --new-wallet creates
 given bot, e.g. Trojan with Auto Buy on, which buys with its own wallet, amount, slippage and sell settings (no
 --keypair, --amount-sol or exits here). The filters and --max-buys still apply; --max-run compares Jupiter's last
 trade price with the callout's and, when that price is unavailable, lets the CA through.
-Trojan only takes messages from users, so the script logs in as you: `pip install telethon`, set TG_API_ID and
-TG_API_HASH (my.telegram.org > API development tools); the first run asks for your phone number and login code,
-then keeps the session in data/telegram.session, which gives full access to your Telegram account: never share it.
+Trojan only takes messages from users, so the script logs in as you (`pip install telethon`) with the api_id /
+api_hash of the "CALLOUT" app below (TG_API_ID / TG_API_HASH override them); the first run asks for your phone
+number and login code, then keeps the session in data/telegram.session, which gives full access to your Telegram
+account: never share it.
 Without --live nothing is sent to the bot.
 Output: data/callout_follow_<timestamp>.jsonl, one line per callout seen, buy and sale.
 """
@@ -73,6 +74,7 @@ MAX_RUN, MIN_MCAP, MAX_MCAP = num("--max-run"), num("--min-mcap"), num("--max-mc
 TP, SL, HOLD = num("--take-profit"), num("--stop-loss"), num("--max-hold")
 GAP = 1 / float(arg("--rps", "0.8"))
 SEND_TO = arg("--send-to", None)
+TG_API_ID, TG_API_HASH = 30461091, "1ba7f769c94596baaf675447c02bb478"   # my.telegram.org app "CALLOUT"
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 LOG = os.path.normpath(os.path.join(DATA, f"callout_follow_{int(time.time())}.jsonl"))
 CA = "/root/.ccr/ca-bundle.crt"
@@ -255,9 +257,7 @@ def telegram(target):
         from telethon.sync import TelegramClient
     except ImportError:
         sys.exit("le mode --send-to demande telethon : pip install telethon")
-    api_id, api_hash = os.environ.get("TG_API_ID"), os.environ.get("TG_API_HASH")
-    if not api_id or not api_hash:
-        sys.exit("définis TG_API_ID et TG_API_HASH (my.telegram.org > API development tools)")
+    api_id, api_hash = os.environ.get("TG_API_ID") or TG_API_ID, os.environ.get("TG_API_HASH") or TG_API_HASH
     client = TelegramClient(os.path.join(DATA, "telegram"), int(api_id), api_hash)
     client.start()
     bot = client.get_entity(target)
