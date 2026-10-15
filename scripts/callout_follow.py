@@ -1,0 +1,400 @@
+#!/usr/bin/env python3
+"""
+Follow pump.fun callers: buy a coin as soon as one of the given callers posts a callout.
+
+  callout_follow.py --callers slingoor,Dior,<wallet or user id> [--keypair bot.json] [--live]
+                    [--amount-sol 0.05] [--slippage-bps 1500] [--jito-tip 0.001] [--max-buys 5]
+                    [--max-age 20] [--max-run 1.5] [--min-mcap USD] [--max-mcap USD]
+                    [--take-profit 2] [--stop-loss 0.6] [--max-hold 600] [--rps 0.8] [--rpc-http URL]
+  callout_follow.py --new-wallet bot.json
+
+Detection: polls each caller's public callout list (GET /callout/list/{user} on pump.fun's frontend API, no
+account needed) in turn. The API allows about 1 request/s per IP (--rps defaults to 0.8), so with N callers a
+callout is seen at worst N/rps seconds after it is posted. At startup, prints each caller's last 20 callouts: on how
+many the wallets that followed the call (pump.fun's "tailers") were in profit 1 h later.
+Filters: Solana coins only, callout seen within --max-age s, market cap at the callout within [--min-mcap,
+--max-mcap], price not already up more than --max-run x since the callout (from the buy quote, so it includes our
+own price impact), each coin bought once, at most --max-buys buys per run.
+Execution: Jupiter swap API (routes the pump.fun bonding curve and PumpSwap), signed locally, sent at once to
+Jito's block engine (with a --jito-tip) and to the RPC.
+Without --live nothing is sent: the transaction is built, signed and simulated (simulation needs a funded
+--keypair). Exits are optional and live only: --take-profit / --stop-loss as a multiple of the SOL spent (from a
+Jupiter sell quote every 3 s) and --max-hold seconds; without them the bot only buys. After a sale the empty
+token account is closed to recover its rent (~0.002 SOL).
+Use a DEDICATED wallet holding only what the bot may spend; --new-wallet creates one.
+Output: data/callout_follow_<timestamp>.jsonl, one line per callout seen, buy and sale.
+"""
+import base64
+import json
+import os
+import re
+import ssl
+import statistics
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+
+from solders.hash import Hash
+from solders.instruction import AccountMeta, Instruction
+from solders.keypair import Keypair
+from solders.message import MessageV0
+from solders.pubkey import Pubkey
+from solders.transaction import VersionedTransaction
+
+DATA = os.path.join(os.path.dirname(__file__), "..", "data")
+arg = lambda k, d: sys.argv[sys.argv.index(k) + 1] if k in sys.argv else d
+num = lambda k: float(arg(k, None)) if k in sys.argv else None
+API = "https://frontend-api-v3.pump.fun"
+JUP = "https://lite-api.jup.ag/swap/v1"
+JITO = "https://mainnet.block-engine.jito.wtf/api/v1/transactions"
+RPC = arg("--rpc-http", "https://api.mainnet-beta.solana.com")
+SOL = "So11111111111111111111111111111111111111112"
+LIVE = "--live" in sys.argv
+AMOUNT = int(float(arg("--amount-sol", "0.05")) * 1e9)
+SLIPPAGE = int(arg("--slippage-bps", "1500"))
+TIP = int(float(arg("--jito-tip", "0.001")) * 1e9)
+MAX_BUYS = int(arg("--max-buys", "5"))
+MAX_AGE = float(arg("--max-age", "20"))
+MAX_RUN, MIN_MCAP, MAX_MCAP = num("--max-run"), num("--min-mcap"), num("--max-mcap")
+TP, SL, HOLD = num("--take-profit"), num("--stop-loss"), num("--max-hold")
+GAP = 1 / float(arg("--rps", "0.8"))
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+LOG = os.path.normpath(os.path.join(DATA, f"callout_follow_{int(time.time())}.jsonl"))
+CA = "/root/.ccr/ca-bundle.crt"
+SSL = ssl.create_default_context(cafile=CA) if os.path.exists(CA) else ssl.create_default_context()
+
+lock = threading.Lock()
+positions = []      # open positions, watched by the exit thread
+next_call = [0.0]   # earliest time of the next pump.fun API request
+
+
+def http(url, body=None, timeout=10):
+    req = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json", "Accept": "application/json",
+                                          "User-Agent": "Mozilla/5.0"})
+    return json.load(urllib.request.urlopen(req, timeout=timeout, context=SSL))
+
+
+def post_quiet(url, body):
+    try:
+        return http(url, body)
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+def rpc(method, params):
+    r = http(RPC, {"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+    if "error" in r:
+        raise RuntimeError(f"{method}: {r['error'].get('message')}")
+    return r["result"]
+
+
+def log(rec):
+    with lock, open(LOG, "a") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
+def now_str():
+    return time.strftime("%H:%M:%S")
+
+
+def is_solana(addr):
+    try:
+        Pubkey.from_string(addr)
+        return True
+    except Exception:
+        return False
+
+
+def load_keypair(path):
+    """A keypair file: the JSON array written by solana-keygen, or a base58 private key as exported by Phantom."""
+    s = open(path).read().strip()
+    return Keypair.from_bytes(bytes(json.loads(s))) if s.startswith("[") else Keypair.from_base58_string(s)
+
+
+# ---------- pump.fun: callers and their callouts
+
+def api(path):
+    """GET on pump.fun's frontend API, paced to --rps; None when rate limited or failing."""
+    wait = next_call[0] - time.time()
+    if wait > 0:
+        time.sleep(wait)
+    next_call[0] = time.time() + GAP
+    try:
+        return http(API + path)
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            ra = e.headers.get("Retry-After") or ""
+            next_call[0] = time.time() + (float(ra) if ra.isdigit() else 5)
+            print("  limite de requêtes pump.fun atteinte, pause", flush=True)
+        else:
+            print(f"  pump.fun {path} : HTTP {e.code}", flush=True)
+    except Exception as e:
+        print(f"  pump.fun {path} : {type(e).__name__}", flush=True)
+    return None
+
+
+def resolve(name):
+    """A caller given as a username, a wallet or a pump.fun user id -> (id for the callout list, label)."""
+    if is_solana(name) or UUID.match(name):
+        return name, name[:8]
+    hits = api(f"/users/search-v2?searchTerm={urllib.parse.quote(name)}&limit=10")
+    if hits is None:
+        sys.exit(f"pump.fun ne répond pas pour la recherche de {name}")
+    exact = [h for h in hits if (h.get("username") or "").lower() == name.lower()]
+    if not exact:
+        sys.exit(f"utilisateur pump.fun introuvable : {name} (donne son wallet à la place)")
+    h = exact[0]
+    print(f"  {h['username']} -> wallet {h['address']} ({h.get('followers', '?')} followers)")
+    return h["userId"], h["username"]
+
+
+def callouts(uid, n):
+    r = api(f"/callout/list/{uid}?limit={n}&sortBy=TIMESTAMP&sortOrder=DESC")
+    return None if r is None else r.get("callouts") or []
+
+
+def summary(cs):
+    """How the wallets that followed this caller's recent calls did after 1 h (pump.fun's tail stats)."""
+    t = [c for c in cs if c.get("tailBuyers") and c.get("tailPnl1hUsd") is not None]
+    mcs = [c["marketCap"] for c in cs if c.get("marketCap")]
+    if not t:
+        return f"{len(cs)} calls récents, pas de statistiques de followers"
+    win = sum(c["tailPnl1hUsd"] > 0 for c in t)
+    return (f"{len(cs)} derniers calls : followers en profit à 1 h sur {win}/{len(t)} "
+            f"(total {sum(c['tailPnl1hUsd'] for c in t):+,.0f} $), market cap médiane au call "
+            f"{statistics.median(mcs) if mcs else 0:,.0f} $")
+
+
+# ---------- execution: Jupiter quote and swap, sending, confirmation
+
+def quote(src, dst, amount):
+    return http(f"{JUP}/quote?inputMint={src}&outputMint={dst}&amount={amount}&slippageBps={SLIPPAGE}")
+
+
+def swap(q, kp):
+    s = http(f"{JUP}/swap", {"quoteResponse": q, "userPublicKey": str(kp.pubkey()), "wrapAndUnwrapSol": True,
+                             "dynamicComputeUnitLimit": True, "prioritizationFeeLamports": {"jitoTipLamports": TIP}})
+    unsigned = VersionedTransaction.from_bytes(base64.b64decode(s["swapTransaction"]))
+    return VersionedTransaction(unsigned.message, [kp])
+
+
+def send(tx, funded):
+    """Live: to Jito and the RPC at once. Otherwise: simulate (needs a funded wallet). Returns an error or None."""
+    raw = base64.b64encode(bytes(tx)).decode()
+    if not LIVE:
+        if not funded:
+            return "non simulée (pas de --keypair)"
+        return rpc("simulateTransaction", [raw, {"encoding": "base64", "sigVerify": True,
+                                                 "commitment": "processed"}])["value"]["err"]
+    body = {"jsonrpc": "2.0", "id": 1, "method": "sendTransaction",
+            "params": [raw, {"encoding": "base64", "skipPreflight": True}]}
+    with ThreadPoolExecutor(2) as ex:
+        rs = list(ex.map(lambda u: post_quiet(u, body), (JITO, RPC)))
+    return None if any("result" in r for r in rs) else [r.get("error") for r in rs]
+
+
+def confirm(sig, timeout=40):
+    """(slot, error) once the transaction is confirmed, None if it never landed."""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            v = rpc("getSignatureStatuses", [[sig]])["value"][0]
+        except Exception:
+            v = None
+        if v and v.get("confirmationStatus") in ("confirmed", "finalized"):
+            return v["slot"], v.get("err")
+        time.sleep(0.5)
+    return None
+
+
+def token_accounts(owner, mint):
+    """[(account, token program, raw amount)] of the owner for that coin (SPL Token and Token-2022)."""
+    r = rpc("getTokenAccountsByOwner", [owner, {"mint": mint}, {"encoding": "jsonParsed", "commitment": "confirmed"}])
+    return [(a["pubkey"], a["account"]["owner"], int(a["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"]))
+            for a in r["value"]]
+
+
+def close_empty_accounts(kp, mint):
+    """Close the coin's empty token accounts (CloseAccount, same opcode in both token programs): rent back to us."""
+    try:
+        empty = [(a, prog) for a, prog, amt in token_accounts(str(kp.pubkey()), mint) if amt == 0]
+        if not empty:
+            return
+        ixs = [Instruction(Pubkey.from_string(prog), bytes([9]),
+                           [AccountMeta(Pubkey.from_string(a), False, True), AccountMeta(kp.pubkey(), False, True),
+                            AccountMeta(kp.pubkey(), True, False)]) for a, prog in empty]
+        bh = Hash.from_string(rpc("getLatestBlockhash", [{"commitment": "confirmed"}])["value"]["blockhash"])
+        tx = VersionedTransaction(MessageV0.try_compile(kp.pubkey(), ixs, [], bh), [kp])
+        rpc("sendTransaction", [base64.b64encode(bytes(tx)).decode(), {"encoding": "base64", "skipPreflight": True}])
+    except Exception as e:
+        print(f"  fermeture du compte {mint[:8]} impossible : {e}", flush=True)
+
+
+# ---------- strategy: buy on callout, optional exits
+
+def on_callout(c, label, kp, funded, state):
+    mint, seen_at = c["coinMint"], time.time()
+    delay, mc = seen_at - c["createdAt"] / 1000, c.get("marketCap") or 0
+    rec = {"type": "callout", "caller": label, "callout_id": c["calloutId"], "mint": mint,
+           "created_at": c["createdAt"] / 1000, "seen_at": seen_at, "delay_s": round(delay, 2), "mcap_at_callout": mc,
+           "thesis": c.get("thesis")}
+    print(f"\n{now_str()} CALLOUT {label} -> {mint} | mcap {mc:,.0f} $ | vu {delay:.1f} s après", flush=True)
+    skip = ("pas un coin Solana" if c.get("chain") or c.get("perp") or not is_solana(mint) else
+            f"vu trop tard ({delay:.0f} s > {MAX_AGE:.0f} s)" if delay > MAX_AGE else
+            "déjà tenté sur ce coin" if mint in state["tried"] else
+            "market cap hors limites" if (MIN_MCAP and mc < MIN_MCAP) or (MAX_MCAP and mc > MAX_MCAP) else
+            f"budget atteint ({MAX_BUYS} achats)" if state["sent"] >= MAX_BUYS else None)
+    if skip:
+        print(f"  ignoré : {skip}", flush=True)
+        return log({**rec, "skipped": skip})
+    state["tried"].add(mint)
+    t0 = time.time()
+    try:
+        with ThreadPoolExecutor(2) as ex:
+            fq, fs = ex.submit(quote, SOL, mint, AMOUNT), ex.submit(rpc, "getTokenSupply", [mint])
+            q, dec = fq.result(), fs.result()["value"]["decimals"]
+        tokens = int(q["outAmount"]) / 10 ** dec
+        run = AMOUNT / 1e9 / tokens / c["calloutPrice"] if c.get("calloutPrice") else None
+        rec.update({"run_since_callout": run, "quote_ms": round(1000 * (time.time() - t0))})
+        if MAX_RUN and run and run > MAX_RUN:
+            print(f"  ignoré : prix déjà x{run:.2f} depuis le call (> x{MAX_RUN})", flush=True)
+            return log({**rec, "skipped": "max-run"})
+        tx = swap(q, kp)
+        t1 = time.time()
+        err = send(tx, funded)
+    except Exception as e:
+        print(f"  échec avant envoi : {e}", flush=True)
+        return log({**rec, "error": str(e)})
+    sig, sent_at = str(tx.signatures[0]), time.time()
+    rec.update({"type": "buy", "sig": sig, "build_ms": round(1000 * (t1 - t0)),
+                "sent_at": sent_at, "callout_to_send_s": round(sent_at - c["createdAt"] / 1000, 2)})
+    run_s = f"x{run:.2f}" if run else "?"
+    if not LIVE:
+        print(f"  SIMULATION : {AMOUNT / 1e9} SOL -> {tokens:,.0f} tokens, prix {run_s} vs le call, prêt "
+              f"{sent_at - seen_at:.1f} s après détection ({sent_at - c['createdAt'] / 1000:.1f} s après le call), "
+              f"simulation : {err or 'OK'}", flush=True)
+        return log({**rec, "simulated": True, "sim_error": err})
+    state["sent"] += 1
+    if err:
+        print(f"  envoi refusé : {err}", flush=True)
+        return log({**rec, "error": err})
+    print(f"  envoyé {sent_at - seen_at:.1f} s après détection ({sent_at - c['createdAt'] / 1000:.1f} s après le "
+          f"call), prix {run_s} vs le call : https://solscan.io/tx/{sig}", flush=True)
+    threading.Thread(target=settle, args=(rec, kp, mint, dec, label), daemon=True).start()
+
+
+def settle(rec, kp, mint, dec, label):
+    """Wait for the buy to land, then hand the position to the exit thread."""
+    landed = confirm(rec["sig"])
+    if not landed or landed[1]:
+        why = "pas inclus dans un bloc" if not landed else landed[1]
+        print(f"\n{now_str()} achat {mint[:8]} non passé : {why}", flush=True)
+        return log({**rec, "error": str(why)})
+    held = 0
+    for _ in range(5):  # the RPC can lag the confirmation by a moment
+        try:
+            held = sum(a for _, _, a in token_accounts(str(kp.pubkey()), mint))
+        except Exception:
+            pass
+        if held:
+            break
+        time.sleep(1)
+    print(f"\n{now_str()} ACHETÉ {mint[:8]} : {held / 10 ** dec:,.0f} tokens pour {AMOUNT / 1e9} SOL (slot {landed[0]})",
+          flush=True)
+    log({**rec, "slot": landed[0], "tokens_raw": held})
+    if held and (TP or SL or HOLD):
+        with lock:
+            positions.append({"mint": mint, "amount": held, "cost": AMOUNT / 1e9, "t": time.time(), "caller": label})
+
+
+def exit_loop(kp):
+    while True:
+        time.sleep(3)
+        with lock:
+            todo = list(positions)
+        for p in todo:
+            try:
+                q = quote(p["mint"], SOL, p["amount"])
+                mult, held_s = int(q["outAmount"]) / 1e9 / p["cost"], time.time() - p["t"]
+                why = ("take-profit" if TP and mult >= TP else "stop-loss" if SL and mult <= SL else
+                       "durée max" if HOLD and held_s >= HOLD else None)
+                if not why:
+                    continue
+                tx = swap(q, kp)
+                err = send(tx, True)
+                landed = None if err else confirm(str(tx.signatures[0]))
+                if landed and not landed[1]:
+                    with lock:
+                        positions.remove(p)
+                    print(f"\n{now_str()} VENDU {p['mint'][:8]} ({why}) : x{mult:.2f} après {held_s:.0f} s, "
+                          f"{int(q['outAmount']) / 1e9:.4f} SOL pour {p['cost']} SOL", flush=True)
+                    log({"type": "sell", "mint": p["mint"], "caller": p["caller"], "reason": why, "multiple": mult,
+                         "held_s": held_s, "sig": str(tx.signatures[0]), "slot": landed[0]})
+                    close_empty_accounts(kp, p["mint"])
+                else:
+                    p["amount"] = sum(a for _, _, a in token_accounts(str(kp.pubkey()), p["mint"]))
+                    if p["amount"] == 0:
+                        with lock:
+                            positions.remove(p)
+                    print(f"  vente {p['mint'][:8]} non passée ({err or (landed and landed[1]) or 'pas incluse'}), "
+                          f"nouvel essai", flush=True)
+            except Exception as e:
+                print(f"  suivi {p['mint'][:8]} : {e}", flush=True)
+
+
+def main():
+    if "--new-wallet" in sys.argv:
+        path, kp = arg("--new-wallet", "bot.json"), Keypair()
+        if os.path.exists(path):
+            sys.exit(f"{path} existe déjà")
+        json.dump(list(bytes(kp)), open(path, "w"))
+        return print(f"nouveau wallet {kp.pubkey()} écrit dans {path} : envoie-lui seulement ce que le bot peut dépenser")
+    names = [n.strip() for n in arg("--callers", "").split(",") if n.strip()]
+    if not names:
+        sys.exit("donne au moins un caller : --callers pseudo1,pseudo2")
+    kp_path = arg("--keypair", None)
+    if LIVE and not kp_path:
+        sys.exit("--live demande un --keypair (un wallet dédié au bot)")
+    kp = load_keypair(kp_path) if kp_path else Keypair()
+    os.makedirs(DATA, exist_ok=True)
+    print("mode RÉEL : les achats sont envoyés" if LIVE else "mode SIMULATION : rien n'est envoyé (--live pour acheter)")
+    if kp_path:
+        bal = rpc("getBalance", [str(kp.pubkey())])["value"] / 1e9
+        print(f"wallet {kp.pubkey()} : {bal:.4f} SOL")
+        if LIVE and bal < (AMOUNT + TIP) / 1e9 + 0.01:
+            sys.exit("solde insuffisant pour un achat (montant + tip + ~0.01 SOL de frais et de rent)")
+    exits = ", ".join(s for s in (TP and f"take-profit x{TP:g}", SL and f"stop-loss x{SL:g}",
+                                  HOLD and f"durée max {HOLD:g} s") if s)
+    print(f"{AMOUNT / 1e9} SOL par call, slippage {SLIPPAGE / 100:g} %, tip Jito {TIP / 1e9} SOL, {MAX_BUYS} achats max, "
+          f"sorties : {exits or 'aucune (achat seulement)'}")
+    callers = [resolve(n) for n in names]
+    seen = set()
+    for uid, label in callers:
+        cs = callouts(uid, 20) or []
+        seen |= {c["calloutId"] for c in cs}
+        print(f"  {label} : {summary(cs)}")
+    print(f"surveillance de {len(callers)} caller(s) : un call est vu au plus ~{len(callers) * GAP:.0f} s après sa "
+          f"publication | journal {LOG}", flush=True)
+    if LIVE and (TP or SL or HOLD):
+        threading.Thread(target=exit_loop, args=(kp,), daemon=True).start()
+    state = {"tried": set(), "sent": 0}
+    while True:
+        for uid, label in callers:
+            for c in reversed(callouts(uid, 5) or []):
+                if c["calloutId"] not in seen:
+                    seen.add(c["calloutId"])
+                    on_callout(c, label, kp, bool(kp_path), state)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        with lock:
+            left = [p["mint"] for p in positions]
+        print(f"\narrêt{' — positions encore ouvertes : ' + ', '.join(left) if left else ''}")
