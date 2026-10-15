@@ -6,6 +6,7 @@ Follow pump.fun callers: buy a coin as soon as one of the given callers posts a 
                     [--amount-sol 0.05] [--slippage-bps 1500] [--jito-tip 0.001] [--max-buys 5]
                     [--max-age 20] [--max-run 1.5] [--min-mcap USD] [--max-mcap USD]
                     [--take-profit 2] [--stop-loss 0.6] [--max-hold 600] [--rps 0.8] [--rpc-http URL]
+  callout_follow.py --callers slingoor --send-to @trojan_bot_username [--live] [--max-buys 5] [--max-run 1.5] ...
   callout_follow.py --new-wallet bot.json
 
 Detection: polls each caller's public callout list (GET /callout/list/{user} on pump.fun's frontend API, no
@@ -22,8 +23,17 @@ Without --live nothing is sent: the transaction is built, signed and simulated (
 Jupiter sell quote every 3 s) and --max-hold seconds; without them the bot only buys. After a sale the empty
 token account is closed to recover its rent (~0.002 SOL).
 Use a DEDICATED wallet holding only what the bot may spend; --new-wallet creates one.
+--send-to mode: instead of buying, the coin's address (CA) is sent as a Telegram message from YOUR account to the
+given bot, e.g. Trojan with Auto Buy on, which buys with its own wallet, amount, slippage and sell settings (no
+--keypair, --amount-sol or exits here). The filters and --max-buys still apply; --max-run compares Jupiter's last
+trade price with the callout's and, when that price is unavailable, lets the CA through.
+Trojan only takes messages from users, so the script logs in as you: `pip install telethon`, set TG_API_ID and
+TG_API_HASH (my.telegram.org > API development tools); the first run asks for your phone number and login code,
+then keeps the session in data/telegram.session, which gives full access to your Telegram account: never share it.
+Without --live nothing is sent to the bot.
 Output: data/callout_follow_<timestamp>.jsonl, one line per callout seen, buy and sale.
 """
+import asyncio
 import base64
 import json
 import os
@@ -62,6 +72,7 @@ MAX_AGE = float(arg("--max-age", "20"))
 MAX_RUN, MIN_MCAP, MAX_MCAP = num("--max-run"), num("--min-mcap"), num("--max-mcap")
 TP, SL, HOLD = num("--take-profit"), num("--stop-loss"), num("--max-hold")
 GAP = 1 / float(arg("--rps", "0.8"))
+SEND_TO = arg("--send-to", None)
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 LOG = os.path.normpath(os.path.join(DATA, f"callout_follow_{int(time.time())}.jsonl"))
 CA = "/root/.ccr/ca-bundle.crt"
@@ -70,6 +81,7 @@ SSL = ssl.create_default_context(cafile=CA) if os.path.exists(CA) else ssl.creat
 lock = threading.Lock()
 positions = []      # open positions, watched by the exit thread
 next_call = [0.0]   # earliest time of the next pump.fun API request
+tg = {}             # --send-to mode: Telegram client and target bot
 
 
 def http(url, body=None, timeout=10):
@@ -235,6 +247,57 @@ def close_empty_accounts(kp, mint):
         print(f"  fermeture du compte {mint[:8]} impossible : {e}", flush=True)
 
 
+# ---------- --send-to mode: hand the CA to a Telegram trading bot
+
+def telegram(target):
+    """Log in as the user (first run: phone number and code), resolve the bot, keep the connection alive."""
+    try:
+        from telethon.sync import TelegramClient
+    except ImportError:
+        sys.exit("le mode --send-to demande telethon : pip install telethon")
+    api_id, api_hash = os.environ.get("TG_API_ID"), os.environ.get("TG_API_HASH")
+    if not api_id or not api_hash:
+        sys.exit("définis TG_API_ID et TG_API_HASH (my.telegram.org > API development tools)")
+    client = TelegramClient(os.path.join(DATA, "telegram"), int(api_id), api_hash)
+    client.start()
+    bot = client.get_entity(target)
+    if not getattr(bot, "bot", False):
+        sys.exit(f"{target} n'est pas un bot Telegram : rien ne sera envoyé")
+    print(f"Telegram connecté : les CA iront à @{bot.username} ({bot.first_name}"
+          f"{', compte vérifié' if bot.verified else ''}). Vérifie que c'est bien ton bot Trojan.")
+    # run the client's loop in the background so pings keep the connection open between callouts
+    threading.Thread(target=client.loop.run_forever, daemon=True).start()
+    tg.update(client=client, bot=bot)
+
+
+def price_run(c):
+    """Price now / price at the callout, from Jupiter's price API (last trade, no RPC); None if unavailable."""
+    mint = c["coinMint"]
+    try:
+        p = http(f"https://lite-api.jup.ag/price/v3?ids={mint}").get(mint) or {}
+    except Exception as e:
+        p = {"error": e}
+    if p.get("usdPrice") and c.get("calloutPriceUsd"):
+        return p["usdPrice"] / c["calloutPriceUsd"]
+    print(f"  prix indisponible ({p.get('error', 'coin inconnu de Jupiter')}) : envoi sans contrôle --max-run", flush=True)
+    return None
+
+
+def forward(c, rec, run, seen_at, state):
+    """Send the CA to the bot; its Auto Buy does the rest."""
+    mint, run_s = c["coinMint"], f", prix x{run:.2f} vs le call" if run else ""
+    if not LIVE:
+        print(f"  SIMULATION : enverrait {mint} à @{tg['bot'].username}{run_s}", flush=True)
+        return log({**rec, "type": "forward", "simulated": True})
+    cl = tg["client"]
+    asyncio.run_coroutine_threadsafe(cl.send_message(tg["bot"], mint), cl.loop).result(15)
+    sent_at = time.time()
+    state["sent"] += 1
+    print(f"  CA envoyé à @{tg['bot'].username} {sent_at - seen_at:.1f} s après détection "
+          f"({sent_at - c['createdAt'] / 1000:.1f} s après le call){run_s}", flush=True)
+    log({**rec, "type": "forward", "sent_at": sent_at, "callout_to_send_s": round(sent_at - c["createdAt"] / 1000, 2)})
+
+
 # ---------- strategy: buy on callout, optional exits
 
 def on_callout(c, label, kp, funded, state):
@@ -255,6 +318,13 @@ def on_callout(c, label, kp, funded, state):
     state["tried"].add(mint)
     t0 = time.time()
     try:
+        if SEND_TO:
+            run = price_run(c) if MAX_RUN else None
+            rec["run_since_callout"] = run
+            if MAX_RUN and run and run > MAX_RUN:
+                print(f"  ignoré : prix déjà x{run:.2f} depuis le call (> x{MAX_RUN})", flush=True)
+                return log({**rec, "skipped": "max-run"})
+            return forward(c, rec, run, seen_at, state)
         with ThreadPoolExecutor(2) as ex:
             fq, fs = ex.submit(quote, SOL, mint, AMOUNT), ex.submit(rpc, "getTokenSupply", [mint])
             q, dec = fq.result(), fs.result()["value"]["decimals"]
@@ -268,7 +338,7 @@ def on_callout(c, label, kp, funded, state):
         t1 = time.time()
         err = send(tx, funded)
     except Exception as e:
-        print(f"  échec avant envoi : {e}", flush=True)
+        print(f"  échec : {e}", flush=True)
         return log({**rec, "error": str(e)})
     sig, sent_at = str(tx.signatures[0]), time.time()
     rec.update({"type": "buy", "sig": sig, "build_ms": round(1000 * (t1 - t0)),
@@ -358,20 +428,26 @@ def main():
     if not names:
         sys.exit("donne au moins un caller : --callers pseudo1,pseudo2")
     kp_path = arg("--keypair", None)
-    if LIVE and not kp_path:
+    if LIVE and not kp_path and not SEND_TO:
         sys.exit("--live demande un --keypair (un wallet dédié au bot)")
     kp = load_keypair(kp_path) if kp_path else Keypair()
     os.makedirs(DATA, exist_ok=True)
-    print("mode RÉEL : les achats sont envoyés" if LIVE else "mode SIMULATION : rien n'est envoyé (--live pour acheter)")
-    if kp_path:
-        bal = rpc("getBalance", [str(kp.pubkey())])["value"] / 1e9
-        print(f"wallet {kp.pubkey()} : {bal:.4f} SOL")
-        if LIVE and bal < (AMOUNT + TIP) / 1e9 + 0.01:
-            sys.exit("solde insuffisant pour un achat (montant + tip + ~0.01 SOL de frais et de rent)")
-    exits = ", ".join(s for s in (TP and f"take-profit x{TP:g}", SL and f"stop-loss x{SL:g}",
-                                  HOLD and f"durée max {HOLD:g} s") if s)
-    print(f"{AMOUNT / 1e9} SOL par call, slippage {SLIPPAGE / 100:g} %, tip Jito {TIP / 1e9} SOL, {MAX_BUYS} achats max, "
-          f"sorties : {exits or 'aucune (achat seulement)'}")
+    if SEND_TO:
+        print("mode TELEGRAM RÉEL : chaque CA retenu est envoyé au bot" if LIVE else
+              "mode TELEGRAM SIMULATION : rien n'est envoyé au bot (--live pour envoyer)")
+        telegram(SEND_TO)
+        print(f"montant, slippage et ventes : ceux réglés dans le bot | {MAX_BUYS} envois max")
+    else:
+        print("mode RÉEL : les achats sont envoyés" if LIVE else "mode SIMULATION : rien n'est envoyé (--live pour acheter)")
+        if kp_path:
+            bal = rpc("getBalance", [str(kp.pubkey())])["value"] / 1e9
+            print(f"wallet {kp.pubkey()} : {bal:.4f} SOL")
+            if LIVE and bal < (AMOUNT + TIP) / 1e9 + 0.01:
+                sys.exit("solde insuffisant pour un achat (montant + tip + ~0.01 SOL de frais et de rent)")
+        exits = ", ".join(s for s in (TP and f"take-profit x{TP:g}", SL and f"stop-loss x{SL:g}",
+                                      HOLD and f"durée max {HOLD:g} s") if s)
+        print(f"{AMOUNT / 1e9} SOL par call, slippage {SLIPPAGE / 100:g} %, tip Jito {TIP / 1e9} SOL, {MAX_BUYS} achats "
+              f"max, sorties : {exits or 'aucune (achat seulement)'}")
     callers = [resolve(n) for n in names]
     seen = set()
     for uid, label in callers:
@@ -380,7 +456,7 @@ def main():
         print(f"  {label} : {summary(cs)}")
     print(f"surveillance de {len(callers)} caller(s) : un call est vu au plus ~{len(callers) * GAP:.0f} s après sa "
           f"publication | journal {LOG}", flush=True)
-    if LIVE and (TP or SL or HOLD):
+    if LIVE and not SEND_TO and (TP or SL or HOLD):
         threading.Thread(target=exit_loop, args=(kp,), daemon=True).start()
     state = {"tried": set(), "sent": 0}
     while True:
