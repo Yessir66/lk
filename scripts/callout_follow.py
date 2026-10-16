@@ -3,7 +3,7 @@
 Follow pump.fun callers: as soon as one of them posts a callout, send the coin's address (CA) to Trojan from your
 Telegram account (its Auto Buy buys it), or with --keypair buy it directly.
 
-  callout_follow.py [--callers <username or wallet>,...] [--live] [--max-buys 5] [--max-age 20] [--max-run 1.5]
+  callout_follow.py [--callers <username or wallet>,...] [--live] [--max-buys N] [--max-age 20] [--max-run 1.5]
                     [--min-mcap USD] [--max-mcap USD] [--send-to @bot] [--rps 0.8]
   callout_follow.py --keypair bot.json [--live] [--amount-sol 0.05] [--slippage-bps 1500] [--jito-tip 0.001]
                     [--take-profit 2] [--stop-loss 0.6] [--max-hold 600] [--rpc-http URL]   (+ the options above)
@@ -13,11 +13,11 @@ Callers: the CALLERS list below unless --callers is given.
 Detection, on pump.fun's public frontend API (no account needed): GET /home-feed/new, the newest callouts of all
 users, polled at --rps (the API allows about 1 request/s per endpoint and IP), so a callout is seen ~1 s after it
 is posted; as a backstop for callouts the feed leaves out, each caller's own list (GET /callout/list/{wallet}) is
-read in turn every 2.5 s. At startup, prints each caller's last 20 callouts: on how many the wallets that followed
+read in turn every 5 s (its 429s only pause it, silently). At startup, prints each caller's last 20 callouts: on how many the wallets that followed
 the call (pump.fun's "tailers") were in profit 1 h later.
 Filters: Solana coins only, callout seen within --max-age s, market cap at the callout within [--min-mcap,
 --max-mcap], price not already up more than --max-run x since the callout, each coin once, at most --max-buys per
-run. Without --live nothing is sent.
+run (default 0: no limit). Without --live nothing is sent.
 Default mode: the CA is sent as a Telegram message from YOUR account to @solana_trojanbot (Trojan on Solana;
 --send-to another bot), whose Auto Buy buys with Trojan's own wallet, amount, slippage and sell settings.
 --max-run compares Jupiter's last trade price with the callout's and, when that price is unavailable, lets the CA
@@ -67,11 +67,12 @@ LIVE = "--live" in sys.argv
 AMOUNT = int(float(arg("--amount-sol", "0.05")) * 1e9)
 SLIPPAGE = int(arg("--slippage-bps", "1500"))
 TIP = int(float(arg("--jito-tip", "0.001")) * 1e9)
-MAX_BUYS = int(arg("--max-buys", "5"))
+MAX_BUYS = int(arg("--max-buys", "0"))   # 0: no limit
 MAX_AGE = float(arg("--max-age", "20"))
 MAX_RUN, MIN_MCAP, MAX_MCAP = num("--max-run"), num("--min-mcap"), num("--max-mcap")
 TP, SL, HOLD = num("--take-profit"), num("--stop-loss"), num("--max-hold")
-GAP = {"feed": 1 / float(arg("--rps", "0.8")), "list": 2.5, "other": 1.25}   # seconds between requests
+GAP = {"feed": 1 / float(arg("--rps", "0.8")), "list": 5.0, "other": 1.25}   # seconds between requests
+BUDGET = f"{MAX_BUYS} max" if MAX_BUYS else "illimités"
 SEND_TO = arg("--send-to", None if "--keypair" in sys.argv else "@solana_trojanbot")
 TG_API_ID, TG_API_HASH = 30461091, "1ba7f769c94596baaf675447c02bb478"   # my.telegram.org app "CALLOUT"
 CALLERS = ["6yVb4pxNwDfr6rovwNnBg3SyKSvDcHGD4WdFPN1JJBqm",   # 0xEthan
@@ -149,7 +150,8 @@ def api(path, fam="other"):
         if e.code == 429:
             ra = e.headers.get("Retry-After") or ""
             next_call[fam] = time.time() + (float(ra) if ra.isdigit() else 5)
-            print(f"  limite de requêtes pump.fun atteinte ({fam}), pause", flush=True)
+            if fam != "list":   # the backstop list is throttled often and harmlessly
+                print(f"  limite de requêtes pump.fun atteinte ({fam}), pause", flush=True)
         else:
             print(f"  pump.fun {path} : HTTP {e.code}", flush=True)
     except Exception as e:
@@ -333,7 +335,7 @@ def on_callout(c, label, kp, funded, state):
             f"vu trop tard ({delay:.0f} s > {MAX_AGE:.0f} s)" if delay > MAX_AGE else
             "déjà tenté sur ce coin" if mint in state["tried"] else
             "market cap hors limites" if (MIN_MCAP and mc < MIN_MCAP) or (MAX_MCAP and mc > MAX_MCAP) else
-            f"budget atteint ({MAX_BUYS} achats)" if state["sent"] >= MAX_BUYS else None)
+            f"budget atteint ({MAX_BUYS} achats)" if MAX_BUYS and state["sent"] >= MAX_BUYS else None)
     if skip:
         print(f"  ignoré : {skip}", flush=True)
         return log({**rec, "skipped": skip})
@@ -457,7 +459,7 @@ def main():
         print("mode TELEGRAM RÉEL : chaque CA retenu est envoyé au bot" if LIVE else
               "mode TELEGRAM SIMULATION : rien n'est envoyé au bot (--live pour envoyer)")
         telegram(SEND_TO)
-        print(f"montant, slippage et ventes : ceux réglés dans le bot | {MAX_BUYS} envois max")
+        print(f"montant, slippage et ventes : ceux réglés dans le bot | envois {BUDGET}")
     else:
         print("mode RÉEL : les achats sont envoyés" if LIVE else "mode SIMULATION : rien n'est envoyé (--live pour acheter)")
         if kp_path:
@@ -467,8 +469,8 @@ def main():
                 sys.exit("solde insuffisant pour un achat (montant + tip + ~0.01 SOL de frais et de rent)")
         exits = ", ".join(s for s in (TP and f"take-profit x{TP:g}", SL and f"stop-loss x{SL:g}",
                                       HOLD and f"durée max {HOLD:g} s") if s)
-        print(f"{AMOUNT / 1e9} SOL par call, slippage {SLIPPAGE / 100:g} %, tip Jito {TIP / 1e9} SOL, {MAX_BUYS} achats "
-              f"max, sorties : {exits or 'aucune (achat seulement)'}")
+        print(f"{AMOUNT / 1e9} SOL par call, slippage {SLIPPAGE / 100:g} %, tip Jito {TIP / 1e9} SOL, achats {BUDGET}, "
+              f"sorties : {exits or 'aucune (achat seulement)'}")
     labels = dict(resolve(n) for n in names)   # wallet -> username
     seen = set()
     for wallet, label in labels.items():
