@@ -4,7 +4,7 @@ Follow pump.fun callers: as soon as one of them posts a callout, send the coin's
 Telegram account (its Auto Buy buys it), or with --keypair buy it directly.
 
   callout_follow.py [--callers <username or wallet>,...] [--live] [--max-buys N] [--max-age 20] [--max-run 1.5]
-                    [--min-mcap USD] [--max-mcap USD] [--send-to @bot] [--rps 0.8]
+                    [--max-coin-age 2] [--min-mcap USD] [--max-mcap USD] [--send-to @bot] [--rps 0.8]
   callout_follow.py --keypair bot.json [--live] [--amount-sol 0.05] [--slippage-bps 1500] [--jito-tip 0.001]
                     [--take-profit 2] [--stop-loss 0.6] [--max-hold 600] [--rpc-http URL]   (+ the options above)
   callout_follow.py --new-wallet bot.json
@@ -16,8 +16,10 @@ is posted; as a backstop for callouts the feed leaves out, each caller's own lis
 read in turn every 5 s (its 429s only pause it, silently). At startup, prints each caller's last 20 callouts: on how many the wallets that followed
 the call (pump.fun's "tailers") were in profit 1 h later.
 Filters: Solana coins only, callout seen within --max-age s, market cap at the callout within [--min-mcap,
---max-mcap], price not already up more than --max-run x since the callout, each coin once, at most --max-buys per
-run (default 0: no limit). Without --live nothing is sent.
+--max-mcap], coin created less than --max-coin-age days before (default 2, 0: off; pump.fun's creation date, else
+Jupiter's first-seen date, looked up in parallel with the price; a coin of unknown age is skipped), price not
+already up more than --max-run x since the callout, each coin once, at most --max-buys per run (default 0: no
+limit). Without --live nothing is sent.
 Default mode: the CA is sent as a Telegram message from YOUR account to @solana_trojanbot (Trojan on Solana;
 --send-to another bot), whose Auto Buy buys with Trojan's own wallet, amount, slippage and sell settings.
 --max-run compares Jupiter's last trade price with the callout's and, when that price is unavailable, lets the CA
@@ -70,9 +72,12 @@ TIP = int(float(arg("--jito-tip", "0.001")) * 1e9)
 MAX_BUYS = int(arg("--max-buys", "0"))   # 0: no limit
 MAX_AGE = float(arg("--max-age", "20"))
 MAX_RUN, MIN_MCAP, MAX_MCAP = num("--max-run"), num("--min-mcap"), num("--max-mcap")
+MAX_COIN_AGE = float(arg("--max-coin-age", "2"))   # days; 0: off
 TP, SL, HOLD = num("--take-profit"), num("--stop-loss"), num("--max-hold")
 GAP = {"feed": 1 / float(arg("--rps", "0.8")), "list": 5.0, "other": 1.25}   # seconds between requests
 BUDGET = f"{MAX_BUYS} max" if MAX_BUYS else "illimités"
+if MAX_COIN_AGE:
+    BUDGET += f", coins de moins de {MAX_COIN_AGE:g} jours seulement"
 SEND_TO = arg("--send-to", None if "--keypair" in sys.argv else "@solana_trojanbot")
 TG_API_ID, TG_API_HASH = 30461091, "1ba7f769c94596baaf675447c02bb478"   # my.telegram.org app "CALLOUT"
 CALLERS = ["6yVb4pxNwDfr6rovwNnBg3SyKSvDcHGD4WdFPN1JJBqm",   # 0xEthan
@@ -196,6 +201,35 @@ def feed_callouts():
     return out
 
 
+def coin_age_days(mint):
+    """Days since the coin was created: pump.fun's record (any coin it lists), else Jupiter's first-seen date,
+    which is later than the real one for old coins; None if neither knows the coin."""
+    try:
+        ts = http(f"{API}/coins-v2/{mint}").get("created_timestamp")
+        if ts:
+            return (time.time() - ts / 1000) / 86400
+    except Exception:
+        pass
+    try:
+        s = (http(f"https://lite-api.jup.ag/price/v3?ids={mint}").get(mint) or {}).get("createdAt")
+        if s:
+            return (time.time() - datetime.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()) / 86400
+    except Exception:
+        pass
+    return None
+
+
+def late_skip(age, run):
+    """Skip reason from the coin's age (days) and the price run since the callout, else None."""
+    if MAX_COIN_AGE and age is None:
+        return "âge du coin inconnu"
+    if MAX_COIN_AGE and age > MAX_COIN_AGE:
+        return f"coin créé il y a {age:.1f} jours (> {MAX_COIN_AGE:g})"
+    if MAX_RUN and run and run > MAX_RUN:
+        return f"prix déjà x{run:.2f} depuis le call (> x{MAX_RUN})"
+    return None
+
+
 def summary(cs):
     """How the wallets that followed this caller's recent calls did after 1 h (pump.fun's tail stats)."""
     t = [c for c in cs if c.get("tailBuyers") and c.get("tailPnl1hUsd") is not None]
@@ -309,7 +343,9 @@ def price_run(c):
 
 def forward(c, rec, run, seen_at, state):
     """Send the CA to the bot; its Auto Buy does the rest."""
-    mint, run_s = c["coinMint"], f", prix x{run:.2f} vs le call" if run else ""
+    mint, age = c["coinMint"], rec.get("coin_age_days")
+    age_s = f", coin créé il y a {age * 24:.0f} h" if age is not None else ""
+    run_s = age_s + (f", prix x{run:.2f} vs le call" if run else "")
     if not LIVE:
         print(f"  SIMULATION : enverrait {mint} à @{tg['bot'].username}{run_s}", flush=True)
         return log({**rec, "type": "forward", "simulated": True})
@@ -343,22 +379,28 @@ def on_callout(c, label, kp, funded, state):
     t0 = time.time()
     try:
         if SEND_TO:
-            run = price_run(c) if MAX_RUN else None
-            rec["run_since_callout"] = run
-            if MAX_RUN and run and run > MAX_RUN:
-                print(f"  ignoré : prix déjà x{run:.2f} depuis le call (> x{MAX_RUN})", flush=True)
-                return log({**rec, "skipped": "max-run"})
+            with ThreadPoolExecutor(2) as ex:   # coin age and price at once
+                fa = ex.submit(coin_age_days, mint) if MAX_COIN_AGE else None
+                fr = ex.submit(price_run, c) if MAX_RUN else None
+                age, run = fa and fa.result(), fr and fr.result()
+            rec.update({"coin_age_days": age, "run_since_callout": run})
+            skip = late_skip(age, run)
+            if skip:
+                print(f"  ignoré : {skip}", flush=True)
+                return log({**rec, "skipped": skip})
             return forward(c, rec, run, seen_at, state)
-        with ThreadPoolExecutor(2) as ex:
+        with ThreadPoolExecutor(3) as ex:
             fq, fs = ex.submit(quote, SOL, mint, AMOUNT), ex.submit(rpc, "getTokenSupply", [mint])
-            q, dec = fq.result(), fs.result()["value"]["decimals"]
+            fa = ex.submit(coin_age_days, mint) if MAX_COIN_AGE else None
+            q, dec, age = fq.result(), fs.result()["value"]["decimals"], fa and fa.result()
         tokens = int(q["outAmount"]) / 10 ** dec
         run = (float(q["swapUsdValue"]) / tokens / c["calloutPriceUsd"]
                if q.get("swapUsdValue") and c.get("calloutPriceUsd") else None)
-        rec.update({"run_since_callout": run, "quote_ms": round(1000 * (time.time() - t0))})
-        if MAX_RUN and run and run > MAX_RUN:
-            print(f"  ignoré : prix déjà x{run:.2f} depuis le call (> x{MAX_RUN})", flush=True)
-            return log({**rec, "skipped": "max-run"})
+        rec.update({"coin_age_days": age, "run_since_callout": run, "quote_ms": round(1000 * (time.time() - t0))})
+        skip = late_skip(age, run)
+        if skip:
+            print(f"  ignoré : {skip}", flush=True)
+            return log({**rec, "skipped": skip})
         tx = swap(q, kp)
         t1 = time.time()
         err = send(tx, funded)
