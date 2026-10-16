@@ -5,7 +5,7 @@ Telegram account (its Auto Buy buys it), or with --keypair buy it directly.
 
   callout_follow.py [--callers <username or wallet>,...] [--live] [--max-buys N] [--max-age 20] [--max-run 1.5]
                     [--max-coin-age 2] [--min-mcap USD] [--max-mcap USD] [--send-to @bot] [--rps 0.8]
-                    [--copy <username or wallet>,... | --no-copy] [--copy-usd 2] [--post-delay 15]
+                    [--copy <username or wallet>,... | --no-copy] [--copy-usd 2] [--post-delay 15] [--copy-trojan]
                     [--pump-wallet F] [--pump-token F]
   callout_follow.py --keypair bot.json [--live] [--amount-sol 0.05] [--slippage-bps 1500] [--jito-tip 0.001]
                     [--take-profit 2] [--stop-loss 0.6] [--max-hold 600] [--rpc-http URL]   (+ the options above)
@@ -36,7 +36,8 @@ position), waits --post-delay (15) s after the buy is confirmed, then posts your
 of the CALLOUT_TEXTS below, picked at random (POST /callout/create). It needs two local files, never to be shared or committed: data/pump_wallet.txt, the private key of the wallet of your pump.fun
 account (base58, as exported), and data/pump_token.txt, your pump.fun session token (the auth_token cookie of
 pump.fun in your browser), which expires: the file is re-read before each post, so it can be refreshed while the
-script runs. Without --live nothing is bought or posted. --repost-only runs the repost alone, next to an instance
+script runs. Without --live nothing is bought or posted. --copy-trojan also sends the COPY callers' CAs to Trojan,
+as for the other callers. --repost-only runs the repost alone, next to an instance
 already sending CAs to Trojan: no Telegram (its session file stays with that instance), only the COPY callers,
 detected from their own lists every 1.5 s in turn, so the all-users feed is left to the other instance.
 --keypair mode: Jupiter swap API (routes the pump.fun bonding curve and PumpSwap), signed locally, sent at once to
@@ -88,6 +89,7 @@ MAX_RUN, MIN_MCAP, MAX_MCAP = num("--max-run"), num("--min-mcap"), num("--max-mc
 MAX_COIN_AGE = float(arg("--max-coin-age", "2"))   # days; 0: off
 TP, SL, HOLD = num("--take-profit"), num("--stop-loss"), num("--max-hold")
 REPOST_ONLY = "--repost-only" in sys.argv   # next to a running Trojan instance: no Telegram, no feed, COPY only
+COPY_TROJAN = "--copy-trojan" in sys.argv and not REPOST_ONLY   # COPY callers' CAs also go to Trojan
 GAP = {"feed": 1 / float(arg("--rps", "0.8")), "list": 1.5 if REPOST_ONLY else 5.0, "other": 1.25}   # seconds
 BUDGET = f"{MAX_BUYS} max" if MAX_BUYS else "illimités"
 if MAX_COIN_AGE:
@@ -498,10 +500,12 @@ def on_callout(c, label, kp, funded, state):
             if skip:
                 print(f"  ignoré : {skip}", flush=True)
                 return log({**rec, "skipped": skip})
-            if c.get("author") in pump.get("copy", ()):   # bought with the pump.fun wallet, not Trojan
+            if c.get("author") in pump.get("copy", ()):   # bought with the pump.fun wallet (and Trojan if asked)
                 if LIVE:
                     state["sent"] += 1
-                return threading.Thread(target=copy_callout, args=(c, label), daemon=True).start()
+                threading.Thread(target=copy_callout, args=(c, label), daemon=True).start()
+                if not COPY_TROJAN:
+                    return
             return forward(c, rec, run, seen_at, state)
         with ThreadPoolExecutor(3) as ex:
             fq, fs = ex.submit(quote, SOL, mint, AMOUNT), ex.submit(rpc, "getTokenSupply", [mint])
