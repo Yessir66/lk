@@ -5,7 +5,8 @@ Telegram account (its Auto Buy buys it), or with --keypair buy it directly.
 
   callout_follow.py [--callers <username or wallet>,...] [--live] [--max-buys N] [--max-age 20] [--max-run 1.5]
                     [--max-coin-age 2] [--min-mcap USD] [--max-mcap USD] [--send-to @bot] [--rps 0.8]
-                    [--copy <username or wallet>,... | --no-copy] [--copy-usd 2] [--pump-wallet F] [--pump-token F]
+                    [--copy <username or wallet>,... | --no-copy] [--copy-usd 2] [--post-delay 15]
+                    [--pump-wallet F] [--pump-token F]
   callout_follow.py --keypair bot.json [--live] [--amount-sol 0.05] [--slippage-bps 1500] [--jito-tip 0.001]
                     [--take-profit 2] [--stop-loss 0.6] [--max-hold 600] [--rpc-http URL]   (+ the options above)
   callout_follow.py --new-wallet bot.json
@@ -29,10 +30,10 @@ api_id / api_hash of the "CALLOUT" app below (TG_API_ID / TG_API_HASH override t
 phone number and login code, then keeps the session in data/telegram.session, which gives full access to your
 Telegram account: never share it.
 Repost (default mode only): when one of the COPY callers below (--copy to change them, --no-copy to turn it off)
-calls a coin that passes the filters, after the CA goes to Trojan the script buys --copy-usd (2 $) of it with YOUR
-pump.fun wallet (pump.fun only takes callouts on coins you hold) and, once that buy is confirmed, posts on your
-pump.fun profile a callout quoting the original one (POST /callout/create with quotedCalloutId). It needs two
-local files, never to be shared or committed: data/pump_wallet.txt, the private key of the wallet of your pump.fun
+calls a coin that passes the filters, the script buys --copy-usd (2 $) of it with YOUR pump.fun wallet instead of
+sending it to Trojan (pump.fun only takes callouts on coins you hold, and the callout then shows your real
+position), waits --post-delay (15) s after the buy is confirmed, then posts your own callout on the coin with one
+of the CALLOUT_TEXTS below, picked at random (POST /callout/create). It needs two local files, never to be shared or committed: data/pump_wallet.txt, the private key of the wallet of your pump.fun
 account (base58, as exported), and data/pump_token.txt, your pump.fun session token (the auth_token cookie of
 pump.fun in your browser), which expires: the file is re-read before each post, so it can be refreshed while the
 script runs. Without --live nothing is bought or posted.
@@ -49,6 +50,7 @@ import base64
 import datetime
 import json
 import os
+import random
 import ssl
 import statistics
 import sys
@@ -100,7 +102,12 @@ COPY = ["87rRdssFiTJKY4MGARa4G5vQ31hmR7MxSmhzeaJ5AAxJ",      # Dior
         "CE44oKS3wpUerx8afyeii56u5oQjBLZknzm4Q2CYHUz9",      # ely
         "Be24Gbf5KisDk1LcWWZsBn8dvB816By7YzYF5zWZnRR6"]      # chairman
 COPY_USD = float(arg("--copy-usd", "2"))
-COPY_TIP = 100_000   # lamports: the eligibility buy is small, a 0.001 SOL tip would be ~5 % of it
+POST_DELAY = float(arg("--post-delay", "15"))
+CALLOUT_TEXTS = ["let's run it, seems like a good narra",
+                 "narra looks clean on this one, sending it",
+                 "like this narrative a lot, let's see where it goes",
+                 "good narra, early enough, let's run it",
+                 "this one has a real narrative, i'm in"]
 PUMP_WALLET = arg("--pump-wallet", os.path.join(DATA, "pump_wallet.txt"))
 PUMP_TOKEN = arg("--pump-token", os.path.join(DATA, "pump_token.txt"))
 LOG =os.path.normpath(os.path.join(DATA, f"callout_follow_{int(time.time())}.jsonl"))
@@ -420,35 +427,39 @@ def setup_copy(copies):
 
 
 def copy_callout(c, label):
-    """Buy COPY_USD of the coin with the pump.fun wallet, then post a callout quoting the original one."""
-    mint, kp = c["coinMint"], pump["kp"]
+    """Buy COPY_USD of the coin with the pump.fun wallet, wait POST_DELAY s, post our own callout on it."""
+    mint, kp, text = c["coinMint"], pump["kp"], random.choice(CALLOUT_TEXTS)
     try:
         sol_usd = http(f"https://lite-api.jup.ag/price/v3?ids={SOL}")[SOL]["usdPrice"]
-        tx = swap(quote(SOL, mint, int(COPY_USD / sol_usd * 1e9)), kp, COPY_TIP)
+        lamports = int(COPY_USD / sol_usd * 1e9)
+        # Jito tip: the usual one, but at most 2 % of a small buy (at least 0.0001 SOL)
+        tx = swap(quote(SOL, mint, lamports), kp, max(100_000, min(TIP, lamports // 50)))
         if not LIVE:
-            print(f"  SIMULATION repost : achèterait {COPY_USD:g} $ du coin avec ton wallet pump.fun, puis publierait un "
-                  f"callout citant celui de {label}", flush=True)
-            return log({"type": "repost", "mint": mint, "quoted": c["calloutId"], "simulated": True})
+            print(f"  SIMULATION repost : achèterait {COPY_USD:g} $ du coin avec ton wallet pump.fun, puis {POST_DELAY:g} s "
+                  f"après publierait sur ton profil : « {text} »", flush=True)
+            return log({"type": "repost", "mint": mint, "text": text, "simulated": True})
         err = send(tx, True)
         landed = None if err else confirm(str(tx.signatures[0]))
         if not landed or landed[1]:
             why = err or (landed and landed[1]) or "pas inclus dans un bloc"
             print(f"\n{now_str()} repost {mint[:8]} : achat de {COPY_USD:g} $ non passé ({why}), pas de callout", flush=True)
             return log({"type": "repost", "mint": mint, "error": str(why)})
+        print(f"\n{now_str()} ACHETÉ {COPY_USD:g} $ de {mint[:8]} avec ton wallet pump.fun (call de {label}), callout "
+              f"dans {POST_DELAY:g} s", flush=True)
+        time.sleep(POST_DELAY)
         for _ in range(6):   # pump.fun's holding check can lag the chain by a few seconds
-            status, body = pump_call("POST", "/callout/create", {"coinMint": mint, "quotedCalloutId": c["calloutId"]})
+            status, body = pump_call("POST", "/callout/create", {"coinMint": mint, "thesis": text})
             if status < 300 or "INSUFFICIENT_BALANCE" not in body:
                 break
             time.sleep(2)
         if status < 300:
-            print(f"\n{now_str()} CALLOUT PUBLIÉ sur ton profil : {mint} (cite {label}), "
-                  f"{time.time() - c['createdAt'] / 1000:.1f} s après son call", flush=True)
+            print(f"\n{now_str()} CALLOUT PUBLIÉ sur ton profil : {mint} « {text} »", flush=True)
         elif status == 401:
             print(f"\n{now_str()} repost {mint[:8]} : jeton pump.fun expiré, recopie le cookie auth_token dans "
                   f"{os.path.normpath(PUMP_TOKEN)} (pas besoin de relancer)", flush=True)
         else:
             print(f"\n{now_str()} repost {mint[:8]} refusé par pump.fun (HTTP {status}) : {body[:200]}", flush=True)
-        log({"type": "repost", "mint": mint, "quoted": c["calloutId"], "status": status, "response": body[:500]})
+        log({"type": "repost", "mint": mint, "text": text, "status": status, "response": body[:500]})
     except Exception as e:
         print(f"\n{now_str()} repost {mint[:8]} : échec ({e})", flush=True)
         log({"type": "repost", "mint": mint, "error": str(e)})
@@ -484,10 +495,11 @@ def on_callout(c, label, kp, funded, state):
             if skip:
                 print(f"  ignoré : {skip}", flush=True)
                 return log({**rec, "skipped": skip})
-            forward(c, rec, run, seen_at, state)
-            if c.get("author") in pump.get("copy", ()):
-                threading.Thread(target=copy_callout, args=(c, label), daemon=True).start()
-            return
+            if c.get("author") in pump.get("copy", ()):   # bought with the pump.fun wallet, not Trojan
+                if LIVE:
+                    state["sent"] += 1
+                return threading.Thread(target=copy_callout, args=(c, label), daemon=True).start()
+            return forward(c, rec, run, seen_at, state)
         with ThreadPoolExecutor(3) as ex:
             fq, fs = ex.submit(quote, SOL, mint, AMOUNT), ex.submit(rpc, "getTokenSupply", [mint])
             fa = ex.submit(coin_age_days, mint) if MAX_COIN_AGE else None
