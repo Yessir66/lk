@@ -36,7 +36,8 @@ position), waits --post-delay (15) s after the buy is confirmed, then posts your
 of the CALLOUT_TEXTS below, picked at random (POST /callout/create). It needs two local files, never to be shared or committed: data/pump_wallet.txt, the private key of the wallet of your pump.fun
 account (base58, as exported), and data/pump_token.txt, your pump.fun session token (the auth_token cookie of
 pump.fun in your browser), which expires: the file is re-read before each post, so it can be refreshed while the
-script runs. Without --live nothing is bought or posted. --copy-trojan also sends the COPY callers' CAs to Trojan,
+script runs. Without --live nothing is bought or posted. --max-run only stops the Trojan buy, never the repost
+(the coin age filter stops both). --copy-trojan also sends the COPY callers' CAs to Trojan,
 as for the other callers. --repost-only runs the repost alone, next to an instance
 already sending CAs to Trojan: no Telegram (its session file stays with that instance), only the COPY callers,
 detected from their own lists every 1.5 s in turn, so the all-users feed is left to the other instance.
@@ -248,15 +249,18 @@ def coin_age_days(mint):
     return None
 
 
-def late_skip(age, run):
-    """Skip reason from the coin's age (days) and the price run since the callout, else None."""
+def age_skip(age):
+    """Skip reason from the coin's age (days), else None."""
     if MAX_COIN_AGE and age is None:
         return "âge du coin inconnu"
     if MAX_COIN_AGE and age > MAX_COIN_AGE:
         return f"coin créé il y a {age:.1f} jours (> {MAX_COIN_AGE:g})"
-    if MAX_RUN and run and run > MAX_RUN:
-        return f"prix déjà x{run:.2f} depuis le call (> x{MAX_RUN})"
     return None
+
+
+def run_skip(run):
+    """Skip reason from the price run since the callout, else None."""
+    return f"prix déjà x{run:.2f} depuis le call (> x{MAX_RUN})" if MAX_RUN and run and run > MAX_RUN else None
 
 
 def summary(cs):
@@ -504,16 +508,21 @@ def on_callout(c, label, kp, funded, state):
                 fr = ex.submit(price_run, c) if MAX_RUN else None
                 age, run = fa and fa.result(), fr and fr.result()
             rec.update({"coin_age_days": age, "run_since_callout": run})
-            skip = late_skip(age, run)
+            skip = age_skip(age)
             if skip:
                 print(f"  ignoré : {skip}", flush=True)
                 return log({**rec, "skipped": skip})
-            if c.get("author") in pump.get("copy", ()):   # bought with the pump.fun wallet (and Trojan if asked)
+            copied = c.get("author") in pump.get("copy", ())
+            if copied:   # bought with the pump.fun wallet (and Trojan if asked); --max-run does not stop it
                 if LIVE:
                     state["sent"] += 1
                 threading.Thread(target=copy_callout, args=(c, label), daemon=True).start()
                 if not COPY_TROJAN:
                     return
+            skip = run_skip(run)
+            if skip:
+                print(f"  pas d'envoi à Trojan : {skip}" + (" (le repost se fait quand même)" if copied else ""), flush=True)
+                return log({**rec, "skipped": skip})
             return forward(c, rec, run, seen_at, state)
         with ThreadPoolExecutor(3) as ex:
             fq, fs = ex.submit(quote, SOL, mint, AMOUNT), ex.submit(rpc, "getTokenSupply", [mint])
@@ -523,7 +532,7 @@ def on_callout(c, label, kp, funded, state):
         run = (float(q["swapUsdValue"]) / tokens / c["calloutPriceUsd"]
                if q.get("swapUsdValue") and c.get("calloutPriceUsd") else None)
         rec.update({"coin_age_days": age, "run_since_callout": run, "quote_ms": round(1000 * (time.time() - t0))})
-        skip = late_skip(age, run)
+        skip = age_skip(age) or run_skip(run)
         if skip:
             print(f"  ignoré : {skip}", flush=True)
             return log({**rec, "skipped": skip})
