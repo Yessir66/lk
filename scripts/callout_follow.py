@@ -36,7 +36,9 @@ position), waits --post-delay (15) s after the buy is confirmed, then posts your
 of the CALLOUT_TEXTS below, picked at random (POST /callout/create). It needs two local files, never to be shared or committed: data/pump_wallet.txt, the private key of the wallet of your pump.fun
 account (base58, as exported), and data/pump_token.txt, your pump.fun session token (the auth_token cookie of
 pump.fun in your browser), which expires: the file is re-read before each post, so it can be refreshed while the
-script runs. Without --live nothing is bought or posted.
+script runs. Without --live nothing is bought or posted. --repost-only runs the repost alone, next to an instance
+already sending CAs to Trojan: no Telegram (its session file stays with that instance), only the COPY callers,
+detected from their own lists every 1.5 s in turn, so the all-users feed is left to the other instance.
 --keypair mode: Jupiter swap API (routes the pump.fun bonding curve and PumpSwap), signed locally, sent at once to
 Jito's block engine (with a --jito-tip) and to the RPC; --max-run uses the buy quote, so it includes our own
 price impact. Without --live the transaction is built, signed and simulated. Exits are optional and live only:
@@ -85,7 +87,8 @@ MAX_AGE = float(arg("--max-age", "20"))
 MAX_RUN, MIN_MCAP, MAX_MCAP = num("--max-run"), num("--min-mcap"), num("--max-mcap")
 MAX_COIN_AGE = float(arg("--max-coin-age", "2"))   # days; 0: off
 TP, SL, HOLD = num("--take-profit"), num("--stop-loss"), num("--max-hold")
-GAP = {"feed": 1 / float(arg("--rps", "0.8")), "list": 5.0, "other": 1.25}   # seconds between requests
+REPOST_ONLY = "--repost-only" in sys.argv   # next to a running Trojan instance: no Telegram, no feed, COPY only
+GAP = {"feed": 1 / float(arg("--rps", "0.8")), "list": 1.5 if REPOST_ONLY else 5.0, "other": 1.25}   # seconds
 BUDGET = f"{MAX_BUYS} max" if MAX_BUYS else "illimités"
 if MAX_COIN_AGE:
     BUDGET += f", coins de moins de {MAX_COIN_AGE:g} jours seulement"
@@ -602,13 +605,16 @@ def main():
             sys.exit(f"{path} existe déjà")
         json.dump(list(bytes(kp)), open(path, "w"))
         return print(f"nouveau wallet {kp.pubkey()} écrit dans {path} : envoie-lui seulement ce que le bot peut dépenser")
-    names = [n.strip() for n in arg("--callers", "").split(",") if n.strip()] or CALLERS
+    names = [] if REPOST_ONLY else [n.strip() for n in arg("--callers", "").split(",") if n.strip()] or CALLERS
     kp_path = arg("--keypair", None)
     if LIVE and not kp_path and not SEND_TO:
         sys.exit("--live demande un --keypair (un wallet dédié au bot)")
     kp = load_keypair(kp_path) if kp_path else Keypair()
     os.makedirs(DATA, exist_ok=True)
-    if SEND_TO:
+    if REPOST_ONLY:
+        print("mode REPOST SEUL : achats avec ton wallet pump.fun et callouts sur ton profil, sans Telegram ni Trojan (le "
+              "script Trojan déjà lancé n'est pas touché)" + ("" if LIVE else " | SIMULATION : rien n'est acheté ni publié"))
+    elif SEND_TO:
         print("mode TELEGRAM RÉEL : chaque CA retenu est envoyé au bot" if LIVE else
               "mode TELEGRAM SIMULATION : rien n'est envoyé au bot (--live pour envoyer)")
         telegram(SEND_TO)
@@ -631,6 +637,8 @@ def main():
     labels.update(copies)   # a copied caller is followed too
     if copies:
         setup_copy(copies)
+    if REPOST_ONLY and not pump.get("copy"):
+        sys.exit("repost impossible (voir ci-dessus) : rien à faire en mode --repost-only")
     seen = set()
     print("lecture des 20 derniers calls de chaque caller...", flush=True)
     for wallet, label in labels.items():
@@ -640,16 +648,20 @@ def main():
         seen |= {c["calloutId"] for c in cs or []}
         print(f"  {label} : {summary(cs) if cs is not None else 'statistiques indisponibles (pump.fun ralentit)'}",
               flush=True)
-    seen |= {c["calloutId"] for c in feed_callouts()}
-    print(f"surveillance de {len(labels)} caller(s) : flux de tous les callouts toutes les {GAP['feed']:.2f} s (un call "
-          f"est vu ~1 s après sa publication), chaque profil relu toutes les ~{len(labels) * GAP['list']:.0f} s en "
-          f"secours | journal {LOG}", flush=True)
+    if REPOST_ONLY:
+        print(f"surveillance de {len(labels)} caller(s) par leurs profils, chacun relu toutes les "
+              f"~{len(labels) * GAP['list']:.1f} s | journal {LOG}", flush=True)
+    else:
+        seen |= {c["calloutId"] for c in feed_callouts()}
+        print(f"surveillance de {len(labels)} caller(s) : flux de tous les callouts toutes les {GAP['feed']:.2f} s (un "
+              f"call est vu ~1 s après sa publication), chaque profil relu toutes les "
+              f"~{len(labels) * GAP['list']:.0f} s en secours | journal {LOG}", flush=True)
     if LIVE and not SEND_TO and (TP or SL or HOLD):
         threading.Thread(target=exit_loop, args=(kp,), daemon=True).start()
     state, wallets, k = {"tried": set(), "sent": 0}, list(labels), 0
     while True:
         # whichever source is due first: the all-users feed, or the next caller's own list
-        if next_call.get("feed", 0) <= next_call.get("list", 0):
+        if not REPOST_ONLY and next_call.get("feed", 0) <= next_call.get("list", 0):
             new = [c for c in feed_callouts() if c["author"] in labels]
         else:
             new = callouts(wallets[k % len(wallets)], 5) or []
