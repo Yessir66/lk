@@ -5,6 +5,7 @@ Telegram account (its Auto Buy buys it), or with --keypair buy it directly.
 
   callout_follow.py [--callers <username or wallet>,...] [--live] [--max-buys N] [--max-age 20] [--max-run 1.5]
                     [--max-coin-age 2] [--min-mcap USD] [--max-mcap USD] [--send-to @bot] [--rps 0.8]
+                    [--copy <username or wallet>,... | --no-copy] [--copy-usd 2] [--pump-wallet F] [--pump-token F]
   callout_follow.py --keypair bot.json [--live] [--amount-sol 0.05] [--slippage-bps 1500] [--jito-tip 0.001]
                     [--take-profit 2] [--stop-loss 0.6] [--max-hold 600] [--rpc-http URL]   (+ the options above)
   callout_follow.py --new-wallet bot.json
@@ -27,6 +28,14 @@ through. Trojan only takes messages from users, so the script logs in as you (`p
 api_id / api_hash of the "CALLOUT" app below (TG_API_ID / TG_API_HASH override them); the first run asks for your
 phone number and login code, then keeps the session in data/telegram.session, which gives full access to your
 Telegram account: never share it.
+Repost (default mode only): when one of the COPY callers below (--copy to change them, --no-copy to turn it off)
+calls a coin that passes the filters, after the CA goes to Trojan the script buys --copy-usd (2 $) of it with YOUR
+pump.fun wallet (pump.fun only takes callouts on coins you hold) and, once that buy is confirmed, posts on your
+pump.fun profile a callout quoting the original one (POST /callout/create with quotedCalloutId). It needs two
+local files, never to be shared or committed: data/pump_wallet.txt, the private key of the wallet of your pump.fun
+account (base58, as exported), and data/pump_token.txt, your pump.fun session token (the auth_token cookie of
+pump.fun in your browser), which expires: the file is re-read before each post, so it can be refreshed while the
+script runs. Without --live nothing is bought or posted.
 --keypair mode: Jupiter swap API (routes the pump.fun bonding curve and PumpSwap), signed locally, sent at once to
 Jito's block engine (with a --jito-tip) and to the RPC; --max-run uses the buy quote, so it includes our own
 price impact. Without --live the transaction is built, signed and simulated. Exits are optional and live only:
@@ -87,7 +96,14 @@ CALLERS = ["6yVb4pxNwDfr6rovwNnBg3SyKSvDcHGD4WdFPN1JJBqm",   # 0xEthan
            "ardinRsN1mNYVeoJWTBsWeYeXvuR9UUDGMsCDKpb6AT",    # trunoest
            "CwUHN4zTn5wiEYoZjsP4FrDvAT9heDWewCTQjhgwhJqS",   # cwuhn4
            "CE44oKS3wpUerx8afyeii56u5oQjBLZknzm4Q2CYHUz9"]   # ely
-LOG = os.path.normpath(os.path.join(DATA, f"callout_follow_{int(time.time())}.jsonl"))
+COPY = ["87rRdssFiTJKY4MGARa4G5vQ31hmR7MxSmhzeaJ5AAxJ",      # Dior
+        "CE44oKS3wpUerx8afyeii56u5oQjBLZknzm4Q2CYHUz9",      # ely
+        "Be24Gbf5KisDk1LcWWZsBn8dvB816By7YzYF5zWZnRR6"]      # chairman
+COPY_USD = float(arg("--copy-usd", "2"))
+COPY_TIP = 100_000   # lamports: the eligibility buy is small, a 0.001 SOL tip would be ~5 % of it
+PUMP_WALLET = arg("--pump-wallet", os.path.join(DATA, "pump_wallet.txt"))
+PUMP_TOKEN = arg("--pump-token", os.path.join(DATA, "pump_token.txt"))
+LOG =os.path.normpath(os.path.join(DATA, f"callout_follow_{int(time.time())}.jsonl"))
 CA = "/root/.ccr/ca-bundle.crt"
 SSL = ssl.create_default_context(cafile=CA) if os.path.exists(CA) else ssl.create_default_context()
 
@@ -95,6 +111,7 @@ lock = threading.Lock()
 positions = []      # open positions, watched by the exit thread
 next_call = {}      # pump.fun endpoint family -> earliest time of its next request
 tg = {}             # --send-to mode: Telegram client and target bot
+pump = {}           # repost: the pump.fun wallet's keypair and the COPY callers' wallets
 
 
 def http(url, body=None, timeout=10):
@@ -248,9 +265,9 @@ def quote(src, dst, amount):
     return http(f"{JUP}/quote?inputMint={src}&outputMint={dst}&amount={amount}&slippageBps={SLIPPAGE}")
 
 
-def swap(q, kp):
+def swap(q, kp, tip=TIP):
     s = http(f"{JUP}/swap", {"quoteResponse": q, "userPublicKey": str(kp.pubkey()), "wrapAndUnwrapSol": True,
-                             "dynamicComputeUnitLimit": True, "prioritizationFeeLamports": {"jitoTipLamports": TIP}})
+                             "dynamicComputeUnitLimit": True, "prioritizationFeeLamports": {"jitoTipLamports": tip}})
     unsigned = VersionedTransaction.from_bytes(base64.b64decode(s["swapTransaction"]))
     return VersionedTransaction(unsigned.message, [kp])
 
@@ -358,6 +375,85 @@ def forward(c, rec, run, seen_at, state):
     log({**rec, "type": "forward", "sent_at": sent_at, "callout_to_send_s": round(sent_at - c["createdAt"] / 1000, 2)})
 
 
+# ---------- repost: quote the COPY callers' callouts on the user's pump.fun profile
+
+def pump_call(method, path, fields=None):
+    """Request on pump.fun's API as the user (token file re-read each time); (HTTP status, body text)."""
+    token = open(PUMP_TOKEN).read().strip()
+    headers = {"Authorization": f"Bearer {token}", "Cookie": f"auth_token={token}", "Origin": "https://pump.fun",
+               "User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+    data = None
+    if fields is not None:   # the callout routes take multipart form fields
+        b = f"----callout{int(time.time() * 1000)}"
+        data = "".join(f'--{b}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n' for k, v in fields.items())
+        data = (data + f"--{b}--\r\n").encode()
+        headers["Content-Type"] = f"multipart/form-data; boundary={b}"
+    req = urllib.request.Request(API + path, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=15, context=SSL) as r:
+            return r.status, r.read().decode(errors="replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode(errors="replace")
+
+
+def setup_copy(copies):
+    """Check the wallet file, the session token and that they match; on any problem the repost stays off."""
+    for path, what in ((PUMP_WALLET, "la clé privée de ton wallet pump.fun"), (PUMP_TOKEN, "ton jeton de session pump.fun")):
+        if not os.path.exists(path):
+            return print(f"repost désactivé : crée {os.path.normpath(path)} avec {what}")
+    kp = load_keypair(PUMP_WALLET)
+    status, body = pump_call("GET", "/auth/my-profile")
+    if status != 200:
+        return print(f"repost désactivé : pump.fun refuse ton jeton (HTTP {status}), recopie le cookie auth_token dans "
+                     f"{os.path.normpath(PUMP_TOKEN)}")
+    me = json.loads(body)
+    if me.get("address") != str(kp.pubkey()):
+        return print(f"repost désactivé : la clé du fichier ouvre le wallet {kp.pubkey()}, mais ta session pump.fun est "
+                     f"celle du wallet {me.get('address')}")
+    bal = rpc("getBalance", [str(kp.pubkey())])["value"] / 1e9
+    exp = time.strftime("%d/%m %H:%M", time.localtime(me["exp"])) if me.get("exp") else "?"
+    print(f"repost des calls de {', '.join(copies.values())} : {COPY_USD:g} $ par coin avec ton wallet pump.fun "
+          f"{kp.pubkey()} ({bal:.4f} SOL), jeton valable jusqu'au {exp}")
+    if bal < 0.03:
+        print("  attention : moins de 0.03 SOL sur ce wallet, les achats du repost risquent d'échouer")
+    pump.update(kp=kp, copy=set(copies))
+
+
+def copy_callout(c, label):
+    """Buy COPY_USD of the coin with the pump.fun wallet, then post a callout quoting the original one."""
+    mint, kp = c["coinMint"], pump["kp"]
+    try:
+        sol_usd = http(f"https://lite-api.jup.ag/price/v3?ids={SOL}")[SOL]["usdPrice"]
+        tx = swap(quote(SOL, mint, int(COPY_USD / sol_usd * 1e9)), kp, COPY_TIP)
+        if not LIVE:
+            print(f"  SIMULATION repost : achèterait {COPY_USD:g} $ du coin avec ton wallet pump.fun, puis publierait un "
+                  f"callout citant celui de {label}", flush=True)
+            return log({"type": "repost", "mint": mint, "quoted": c["calloutId"], "simulated": True})
+        err = send(tx, True)
+        landed = None if err else confirm(str(tx.signatures[0]))
+        if not landed or landed[1]:
+            why = err or (landed and landed[1]) or "pas inclus dans un bloc"
+            print(f"\n{now_str()} repost {mint[:8]} : achat de {COPY_USD:g} $ non passé ({why}), pas de callout", flush=True)
+            return log({"type": "repost", "mint": mint, "error": str(why)})
+        for _ in range(6):   # pump.fun's holding check can lag the chain by a few seconds
+            status, body = pump_call("POST", "/callout/create", {"coinMint": mint, "quotedCalloutId": c["calloutId"]})
+            if status < 300 or "INSUFFICIENT_BALANCE" not in body:
+                break
+            time.sleep(2)
+        if status < 300:
+            print(f"\n{now_str()} CALLOUT PUBLIÉ sur ton profil : {mint} (cite {label}), "
+                  f"{time.time() - c['createdAt'] / 1000:.1f} s après son call", flush=True)
+        elif status == 401:
+            print(f"\n{now_str()} repost {mint[:8]} : jeton pump.fun expiré, recopie le cookie auth_token dans "
+                  f"{os.path.normpath(PUMP_TOKEN)} (pas besoin de relancer)", flush=True)
+        else:
+            print(f"\n{now_str()} repost {mint[:8]} refusé par pump.fun (HTTP {status}) : {body[:200]}", flush=True)
+        log({"type": "repost", "mint": mint, "quoted": c["calloutId"], "status": status, "response": body[:500]})
+    except Exception as e:
+        print(f"\n{now_str()} repost {mint[:8]} : échec ({e})", flush=True)
+        log({"type": "repost", "mint": mint, "error": str(e)})
+
+
 # ---------- strategy: buy on callout, optional exits
 
 def on_callout(c, label, kp, funded, state):
@@ -388,7 +484,10 @@ def on_callout(c, label, kp, funded, state):
             if skip:
                 print(f"  ignoré : {skip}", flush=True)
                 return log({**rec, "skipped": skip})
-            return forward(c, rec, run, seen_at, state)
+            forward(c, rec, run, seen_at, state)
+            if c.get("author") in pump.get("copy", ()):
+                threading.Thread(target=copy_callout, args=(c, label), daemon=True).start()
+            return
         with ThreadPoolExecutor(3) as ex:
             fq, fs = ex.submit(quote, SOL, mint, AMOUNT), ex.submit(rpc, "getTokenSupply", [mint])
             fa = ex.submit(coin_age_days, mint) if MAX_COIN_AGE else None
@@ -514,6 +613,12 @@ def main():
         print(f"{AMOUNT / 1e9} SOL par call, slippage {SLIPPAGE / 100:g} %, tip Jito {TIP / 1e9} SOL, achats {BUDGET}, "
               f"sorties : {exits or 'aucune (achat seulement)'}")
     labels = dict(resolve(n) for n in names)   # wallet -> username
+    copy_names = [] if "--no-copy" in sys.argv or not SEND_TO else (
+        [n.strip() for n in arg("--copy", "").split(",") if n.strip()] or COPY)
+    copies = dict((n, labels[n]) if n in labels else resolve(n) for n in copy_names)
+    labels.update(copies)   # a copied caller is followed too
+    if copies:
+        setup_copy(copies)
     seen = set()
     print("lecture des 20 derniers calls de chaque caller...", flush=True)
     for wallet, label in labels.items():
