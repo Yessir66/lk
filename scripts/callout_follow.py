@@ -345,7 +345,8 @@ def telegram(target):
     except ImportError:
         sys.exit("le mode --send-to demande telethon : pip install telethon")
     api_id, api_hash = os.environ.get("TG_API_ID") or TG_API_ID, os.environ.get("TG_API_HASH") or TG_API_HASH
-    client = TelegramClient(os.path.join(DATA, "telegram"), int(api_id), api_hash)
+    # never stop reconnecting: after a network drop the default 5 attempts left the bot unable to send CAs
+    client = TelegramClient(os.path.join(DATA, "telegram"), int(api_id), api_hash, connection_retries=-1, retry_delay=3)
     client.start()
     bot = client.get_entity(target)
     if not getattr(bot, "bot", False):
@@ -379,7 +380,14 @@ def forward(c, rec, run, seen_at, state):
         print(f"  SIMULATION : enverrait {mint} à @{tg['bot'].username}{run_s}", flush=True)
         return log({**rec, "type": "forward", "simulated": True})
     cl = tg["client"]
-    asyncio.run_coroutine_threadsafe(cl.send_message(tg["bot"], mint), cl.loop).result(15)
+    fut = asyncio.run_coroutine_threadsafe(cl.send_message(tg["bot"], mint), cl.loop)
+    try:
+        fut.result(8)
+    except Exception as e:
+        fut.cancel()   # else the message would go out whenever Telegram is back, buying a stale call
+        print(f"  CA NON ENVOYÉ à Trojan : Telegram injoignable ({type(e).__name__}). La reconnexion continue toute "
+              f"seule ; vérifie ta connexion internet", flush=True)
+        return log({**rec, "type": "forward", "error": f"telegram {type(e).__name__}: {e}"})
     sent_at = time.time()
     state["sent"] += 1
     print(f"  CA envoyé à @{tg['bot'].username} {sent_at - seen_at:.1f} s après détection "
@@ -523,7 +531,7 @@ def on_callout(c, label, kp, funded, state):
         t1 = time.time()
         err = send(tx, funded)
     except Exception as e:
-        print(f"  échec : {e}", flush=True)
+        print(f"  échec : {type(e).__name__} {e}", flush=True)
         return log({**rec, "error": str(e)})
     sig, sent_at = str(tx.signatures[0]), time.time()
     rec.update({"type": "buy", "sig": sig, "build_ms": round(1000 * (t1 - t0)),
