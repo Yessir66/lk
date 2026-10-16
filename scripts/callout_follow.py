@@ -176,8 +176,8 @@ def resolve(name):
     return h["address"], h["username"]
 
 
-def callouts(wallet, n):
-    r = api(f"/callout/list/{wallet}?limit={n}&sortBy=TIMESTAMP&sortOrder=DESC", "list")
+def callouts(wallet, n, fam="list"):
+    r = api(f"/callout/list/{wallet}?limit={n}&sortBy=TIMESTAMP&sortOrder=DESC", fam)
     return None if r is None else [dict(c, author=wallet) for c in r.get("callouts") or []]
 
 
@@ -473,14 +473,14 @@ def main():
               f"sorties : {exits or 'aucune (achat seulement)'}")
     labels = dict(resolve(n) for n in names)   # wallet -> username
     seen = set()
+    print("lecture des 20 derniers calls de chaque caller...", flush=True)
     for wallet, label in labels.items():
-        for _ in range(3):   # retried after a 429, so that existing callouts are not taken for new ones
-            cs = callouts(wallet, 20)
-            if cs is not None:
-                break
-        cs = cs or []
-        seen |= {c["calloutId"] for c in cs}
-        print(f"  {label} : {summary(cs)}")
+        # paced like the startup lookups, not like the slow backstop; a caller whose list fails here is fine:
+        # its old callouts are skipped by age in the loop
+        cs = callouts(wallet, 20, "other")
+        seen |= {c["calloutId"] for c in cs or []}
+        print(f"  {label} : {summary(cs) if cs is not None else 'statistiques indisponibles (pump.fun ralentit)'}",
+              flush=True)
     seen |= {c["calloutId"] for c in feed_callouts()}
     print(f"surveillance de {len(labels)} caller(s) : flux de tous les callouts toutes les {GAP['feed']:.2f} s (un call "
           f"est vu ~1 s après sa publication), chaque profil relu toutes les ~{len(labels) * GAP['list']:.0f} s en "
