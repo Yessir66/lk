@@ -2,13 +2,14 @@
 """
 Which take-profit / stop-loss to use after a callout entry? Backtest on data/callout_candles.json.
 
-  callout_exit_search.py [--delay 2] [--cost 0.02] [--max-run 1.3] [--max-coin-age 2] [--train 0.6]
+  callout_exit_search.py [--delay 2] [--cost 0.02] [--max-run 1.3] [--max-coin-age 2] [--train 0.6] [--fill close]
 
 Entry: the close of the first price bar at or after the call + --delay s (1 s bars), i.e. the price a buy sent
 through Trojan gets ~2 s after the call. Callouts on coins older than --max-coin-age days or whose price is already
 up more than --max-run x since the callout at entry are left out, as the bot does (0 turns a filter off).
 Exits, checked bar by bar after the entry bar (1 s bars up to 5 min, 15 s up to 1 h, 1 min up to 4 h); within a
-bar the stop is checked before the target, and a bar opening beyond a level fills at its open:
+bar the stop is checked before the target, and a bar opening beyond a level fills at its open (--fill close: a
+level only triggers on a bar closing beyond it, filled at that close, as a bot reacting a moment late would):
   - fixed: take profit at x TP and/or stop loss at x SL, or else sold at the max hold time;
   - trailing: once the peak reaches x ACT, sold when the price falls TRAIL below the peak (and the SL below it);
   - partial: half sold at x TP1, the rest under a trailing stop.
@@ -26,6 +27,7 @@ DATA = os.path.join(os.path.dirname(__file__), "..", "data")
 arg = lambda k, d: sys.argv[sys.argv.index(k) + 1] if k in sys.argv else d
 DELAY, COST = float(arg("--delay", "2")), float(arg("--cost", "0.02"))
 MAX_RUN, MAX_COIN_AGE, TRAIN = float(arg("--max-run", "1.3")), float(arg("--max-coin-age", "2")), float(arg("--train", "0.6"))
+CLOSE = arg("--fill", "level") == "close"
 HOLDS = {"5 min": 300, "15 min": 900, "1 h": 3600, "4 h": 14400}
 
 
@@ -57,12 +59,12 @@ def simulate(bars, i0, px, rule):
         if trail and peak >= px * act:
             stops.append(peak * (1 - trail))
         stop = max(stops) if stops else None
-        if stop and lo <= stop:
-            return value + (1 - sold) * min(o, stop) / px
-        if kind == "partial" and not sold and h >= px * tp1:
-            sold, value = 0.5, 0.5 * max(o, px * tp1) / px
-        if tp and h >= px * tp:
-            return value + (1 - sold) * max(o, px * tp) / px
+        if stop and (c if CLOSE else lo) <= stop:
+            return value + (1 - sold) * (c if CLOSE else min(o, stop)) / px
+        if kind == "partial" and not sold and (c if CLOSE else h) >= px * tp1:
+            sold, value = 0.5, 0.5 * (c if CLOSE else max(o, px * tp1)) / px
+        if tp and (c if CLOSE else h) >= px * tp:
+            return value + (1 - sold) * (c if CLOSE else max(o, px * tp)) / px
         peak = max(peak, h)
     return value + (1 - sold) * bars[-1][4] / px
 
@@ -70,14 +72,14 @@ def simulate(bars, i0, px, rule):
 def rules():
     out = []
     for hold in HOLDS.values():
-        for tp in (None, 1.2, 1.3, 1.5, 1.75, 2, 2.5, 3, 5):
+        for tp in (None, 1.2, 1.25, 1.3, 1.4, 1.5, 1.75, 2, 2.5, 3, 5):
             for sl in (None, 0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9):
                 out.append(("fixed", tp, sl, None, None, hold, None))
         for act in (1.0, 1.3, 1.5):
             for trail in (0.15, 0.25, 0.35):
                 for sl in (None, 0.7, 0.8):
                     out.append(("trailing", None, sl, act, trail, hold, None))
-        for tp1 in (1.5, 2):
+        for tp1 in (1.3, 1.5, 2):
             for trail in (0.25, 0.35):
                 for sl in (None, 0.7):
                     out.append(("partial", None, sl, 1.0, trail, hold, tp1))
@@ -137,7 +139,8 @@ def main():
     filters = ", ".join(s for s in (MAX_COIN_AGE and f"âge du coin ≤ {MAX_COIN_AGE:g} j",
                                     MAX_RUN and f"prix ≤ x{MAX_RUN:g} au moment de l'achat") if s) or "sans filtre"
     print(f"{len(calls)} callouts ; achetés par le bot ({filters}, entrée {DELAY:g} s après le call) : {len(train)} pour "
-          f"choisir, {len(test)} pour vérifier ; coûts {COST * 100:g} % par sens")
+          f"choisir, {len(test)} pour vérifier ; coûts {COST * 100:g} % par sens ; sorties "
+          f"{'à la clôture de la bougie qui franchit le niveau' if CLOSE else 'au niveau'}")
     all_t = train + test
     for horizon in (300, 3600):
         peaks = [max([b[2] for b in bars[i0 + 1:] if b[0] - bars[i0][0] <= horizon] or [px]) / px for _, bars, i0, px in all_t]

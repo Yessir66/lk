@@ -57,7 +57,7 @@ def callouts(wallet):
         for c in d["callouts"]:
             age_s = now - c["createdAt"] / 1000
             if age_s > DAYS * 86400:
-                return out
+                return out[:PER_CALLER]
             if age_s > 4 * 3600 and is_solana(c["coinMint"]) and not c.get("chain") and not c.get("perp"):
                 out.append(c)
         token = d.get("nextPageToken")
