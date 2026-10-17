@@ -102,8 +102,12 @@ CALLERS = ["6yVb4pxNwDfr6rovwNnBg3SyKSvDcHGD4WdFPN1JJBqm",   # 0xEthan
            "5hAgYC8TJCcEZV7LTXAzkTrm7YL29YXyQQJPCNrG84zM",   # schoen
            "87rRdssFiTJKY4MGARa4G5vQ31hmR7MxSmhzeaJ5AAxJ",   # Dior
            "ardinRsN1mNYVeoJWTBsWeYeXvuR9UUDGMsCDKpb6AT",    # trunoest
-           "CE44oKS3wpUerx8afyeii56u5oQjBLZknzm4Q2CYHUz9"]   # ely
-COPY = ["87rRdssFiTJKY4MGARa4G5vQ31hmR7MxSmhzeaJ5AAxJ",      # Dior
+           "CE44oKS3wpUerx8afyeii56u5oQjBLZknzm4Q2CYHUz9",   # ely
+           "DuARUpsEzdVbVpSnbGipLJvWxaXUCPLDJDjNov6Rc6s6",   # HarryPaulDavies
+           "EqBQhoU88ty3a3aDphDRCBuiRirjUsFSFi4UHGY64qvv",   # sadcrissy
+           "2M2vLX34LXMg24dMEnjWHvRXS1tshpEDRWzmXgV8ENNZ",   # SossaDotKek
+           "AH39BneW9UeWxQysUcwogQrYFdPvJuRVZ5w4ccq9SKfL"]   # _logjam
+COPY =["87rRdssFiTJKY4MGARa4G5vQ31hmR7MxSmhzeaJ5AAxJ",      # Dior
         "CE44oKS3wpUerx8afyeii56u5oQjBLZknzm4Q2CYHUz9",      # ely
         "Be24Gbf5KisDk1LcWWZsBn8dvB816By7YzYF5zWZnRR6"]      # chairman
 COPY_USD = float(arg("--copy-usd", "2"))
