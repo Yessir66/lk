@@ -102,7 +102,6 @@ CALLERS = ["6yVb4pxNwDfr6rovwNnBg3SyKSvDcHGD4WdFPN1JJBqm",   # 0xEthan
            "5hAgYC8TJCcEZV7LTXAzkTrm7YL29YXyQQJPCNrG84zM",   # schoen
            "87rRdssFiTJKY4MGARa4G5vQ31hmR7MxSmhzeaJ5AAxJ",   # Dior
            "ardinRsN1mNYVeoJWTBsWeYeXvuR9UUDGMsCDKpb6AT",    # trunoest
-           "CwUHN4zTn5wiEYoZjsP4FrDvAT9heDWewCTQjhgwhJqS",   # cwuhn4
            "CE44oKS3wpUerx8afyeii56u5oQjBLZknzm4Q2CYHUz9"]   # ely
 COPY = ["87rRdssFiTJKY4MGARa4G5vQ31hmR7MxSmhzeaJ5AAxJ",      # Dior
         "CE44oKS3wpUerx8afyeii56u5oQjBLZknzm4Q2CYHUz9",      # ely
