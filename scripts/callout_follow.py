@@ -6,7 +6,7 @@ Telegram account (its Auto Buy buys it), or with --keypair buy it directly.
   callout_follow.py [--callers <username or wallet>,...] [--live] [--max-buys N] [--max-age 20] [--max-run 1.5]
                     [--max-coin-age 2] [--min-mcap USD] [--max-mcap USD] [--send-to @bot] [--rps 0.8]
                     [--copy <username or wallet>,... | --no-copy] [--copy-usd 2] [--post-delay 15] [--copy-trojan]
-                    [--pump-wallet F] [--pump-token F]
+                    [--pump-wallet F] [--pump-token F] [--alerts <pump.fun username>]
   callout_follow.py --keypair bot.json [--live] [--amount-sol 0.05] [--slippage-bps 1500] [--jito-tip 0.001]
                     [--take-profit 2] [--stop-loss 0.6] [--max-hold 600] [--rpc-http URL]   (+ the options above)
   callout_follow.py --new-wallet bot.json
@@ -47,11 +47,16 @@ price impact. Without --live the transaction is built, signed and simulated. Exi
 --take-profit / --stop-loss as a multiple of the SOL spent (from a Jupiter sell quote every 3 s) and --max-hold
 seconds; without them the bot only buys. After a sale the empty token account is closed to recover its rent
 (~0.002 SOL). Use a DEDICATED wallet holding only what the bot may spend; --new-wallet creates one.
+--alerts <username>: a Telegram alert through a bot of yours (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID) for each new
+callout of an account that pump.fun user follows: who called, the text, the market cap at the call and now, the
+CA, links. It reuses the feed read for detection (no extra pump.fun request but the follows, re-read every 10
+min), and alerts are sent in the background so they never delay a buy.
 Output: data/callout_follow_<timestamp>.jsonl, one line per callout seen, buy and sale.
 """
 import asyncio
 import base64
 import datetime
+import html
 import json
 import os
 import random
@@ -119,6 +124,7 @@ CALLOUT_TEXTS = ["let's run it, seems like a good narra",
                  "this one has a real narrative, i'm in"]
 PUMP_WALLET = arg("--pump-wallet", os.path.join(DATA, "pump_wallet.txt"))
 PUMP_TOKEN = arg("--pump-token", os.path.join(DATA, "pump_token.txt"))
+ALERTS_USER = arg("--alerts", None)
 LOG =os.path.normpath(os.path.join(DATA, f"callout_follow_{int(time.time())}.jsonl"))
 CA = "/root/.ccr/ca-bundle.crt"
 SSL = ssl.create_default_context(cafile=CA) if os.path.exists(CA) else ssl.create_default_context()
@@ -128,6 +134,7 @@ positions = []      # open positions, watched by the exit thread
 next_call = {}      # pump.fun endpoint family -> earliest time of its next request
 tg = {}             # --send-to mode: Telegram client and target bot
 pump = {}           # repost: the pump.fun wallet's keypair and the COPY callers' wallets
+alerts = {}         # --alerts: bot token, chat id, the user's wallet, the accounts it follows, callouts alerted
 
 
 def http(url, body=None, timeout=10):
@@ -230,7 +237,9 @@ def feed_callouts():
         created = datetime.datetime.fromisoformat(co["calloutTimestamp"].replace("Z", "+00:00")).timestamp()
         out.append({"calloutId": co["calloutId"], "author": p.get("walletAddress"), "coinMint": row.get("coinMint"),
                     "createdAt": created * 1000, "marketCap": co.get("calledOutAtMcap"), "thesis": co.get("thesis"),
-                    "calloutPriceUsd": co.get("calloutPrice"), "chain": co.get("chain"), "perp": co.get("perp")})
+                    "calloutPriceUsd": co.get("calloutPrice"), "chain": co.get("chain"), "perp": co.get("perp"),
+                    "author_name": p.get("userName"), "name": row.get("coinName"), "symbol": row.get("symbol"),
+                    "mcap_now": row.get("marketCap")})
     return out
 
 
@@ -485,6 +494,59 @@ def copy_callout(c, label):
         log({"type": "repost", "mint": mint, "error": str(e)})
 
 
+# ---------- --alerts: a Telegram message per callout of the accounts a pump.fun user follows
+
+def setup_alerts(username):
+    token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat:
+        return print("alertes désactivées : définis TELEGRAM_BOT_TOKEN et TELEGRAM_CHAT_ID (ceux de ton bot d'alertes)")
+    wallet, _ = resolve(username)
+    alerts.update(token=token, chat=chat, owner=wallet, follows={}, seen=set())
+    refresh_follows()
+    print(f"alertes Telegram pour les {len(alerts['follows'])} comptes suivis par {username}")
+
+
+def refresh_follows():
+    rows = api(f"/following/v3/following/{alerts['owner']}?limit=500")
+    if rows is not None:
+        alerts["follows"] = {u["address"]: u["username"] for u in rows}
+    alerts["t"] = time.time()
+
+
+def fmt_usd(v):
+    return "?" if v is None else f"${v / 1e6:.2f}M" if v >= 1e6 else f"${v / 1e3:.1f}k" if v >= 1e3 else f"${v:.0f}"
+
+
+def send_alert(c):
+    mint = c["coinMint"]
+    name = f"{c.get('name') or ''} (${c['symbol']})" if c.get("symbol") else mint[:6] + "…"
+    mc = f"💰 MC au call : <b>{fmt_usd(c.get('marketCap'))}</b>"
+    if c.get("mcap_now"):
+        mc += f" · maintenant {fmt_usd(c['mcap_now'])}"
+    lines = [f"📣 <b>{html.escape(c.get('author_name') or '?')}</b> a callé <b>{html.escape(name)}</b>"]
+    if c.get("thesis"):
+        lines.append(f"💬 « {html.escape(c['thesis'])} »")
+    lines += [mc, f"📄 CA : <code>{html.escape(mint)}</code>",
+              f'<a href="https://pump.fun/coin/{mint}">pump.fun</a> · <a href="https://dexscreener.com/solana/{mint}">'
+              f'DexScreener</a> · {time.strftime("%H:%M:%S", time.gmtime(c["createdAt"] / 1000))} UTC']
+    r = post_quiet(f"https://api.telegram.org/bot{alerts['token']}/sendMessage",
+                   {"chat_id": alerts["chat"], "text": "\n".join(lines), "parse_mode": "HTML",
+                    "disable_web_page_preview": True})
+    if not r.get("ok"):
+        print(f"  alerte Telegram non envoyée : {r.get('description') or r.get('error')}", flush=True)
+
+
+def notify(feed):
+    """Alert each new callout, in the feed just read, of an account the --alerts user follows."""
+    if time.time() - alerts["t"] > 600:   # follows and unfollows are picked up every 10 min
+        refresh_follows()
+    for c in feed:
+        if c["author"] in alerts["follows"] and c["calloutId"] not in alerts["seen"]:
+            alerts["seen"].add(c["calloutId"])
+            if time.time() - c["createdAt"] / 1000 < 600:
+                threading.Thread(target=send_alert, args=(c,), daemon=True).start()
+
+
 # ---------- strategy: buy on callout, optional exits
 
 def on_callout(c, label, kp, funded, state):
@@ -661,6 +723,8 @@ def main():
     labels.update(copies)   # a copied caller is followed too
     if copies:
         setup_copy(copies)
+    if ALERTS_USER and not REPOST_ONLY:
+        setup_alerts(ALERTS_USER)
     if REPOST_ONLY and not pump.get("copy"):
         sys.exit("repost impossible (voir ci-dessus) : rien à faire en mode --repost-only")
     seen = set()
@@ -676,7 +740,10 @@ def main():
         print(f"surveillance de {len(labels)} caller(s) par leurs profils, chacun relu toutes les "
               f"~{len(labels) * GAP['list']:.1f} s | journal {LOG}", flush=True)
     else:
-        seen |= {c["calloutId"] for c in feed_callouts()}
+        ids = {c["calloutId"] for c in feed_callouts()}
+        seen |= ids
+        if alerts:
+            alerts["seen"] |= ids   # no alert for callouts posted before the start
         print(f"surveillance de {len(labels)} caller(s) : flux de tous les callouts toutes les {GAP['feed']:.2f} s (un "
               f"call est vu ~1 s après sa publication), chaque profil relu toutes les "
               f"~{len(labels) * GAP['list']:.0f} s en secours | journal {LOG}", flush=True)
@@ -686,15 +753,18 @@ def main():
     while True:
         # whichever source is due first: the all-users feed, or the next caller's own list
         if not REPOST_ONLY and next_call.get("feed", 0) <= next_call.get("list", 0):
-            new = [c for c in feed_callouts() if c["author"] in labels]
+            feed = feed_callouts()
+            new = [c for c in feed if c["author"] in labels]
         else:
-            new = callouts(wallets[k % len(wallets)], 5) or []
+            feed, new = None, callouts(wallets[k % len(wallets)], 5) or []
             k += 1
         for c in sorted(new, key=lambda c: c["createdAt"]):
             if c["calloutId"] not in seen:
                 seen.add(c["calloutId"])
                 if time.time() - c["createdAt"] / 1000 < 600:   # older ones: a list that failed at startup
                     on_callout(c, labels[c["author"]], kp, bool(kp_path), state)
+        if alerts and feed:   # after the buys, so the follows refresh never delays one
+            notify(feed)
 
 
 if __name__ == "__main__":
