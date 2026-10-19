@@ -6,7 +6,7 @@ Telegram account (its Auto Buy buys it), or with --keypair buy it directly.
   callout_follow.py [--callers <username or wallet>,...] [--live] [--max-buys N] [--max-age 20] [--max-run 1.5]
                     [--max-coin-age 2] [--min-mcap USD] [--max-mcap USD] [--send-to @bot] [--rps 0.8]
                     [--copy <username or wallet>,... | --no-copy] [--copy-usd 2] [--post-delay 15] [--copy-trojan]
-                    [--pump-wallet F] [--pump-token F] [--alerts <pump.fun username>]
+                    [--copy-tp 2] [--copy-sl 0.25] [--pump-wallet F] [--pump-token F] [--alerts <pump.fun username>]
   callout_follow.py --keypair bot.json [--live] [--amount-sol 0.05] [--slippage-bps 1500] [--jito-tip 0.001]
                     [--take-profit 2] [--stop-loss 0.6] [--max-hold 600] [--rpc-http URL]   (+ the options above)
   callout_follow.py --new-wallet bot.json
@@ -15,8 +15,8 @@ Callers: the CALLERS list below unless --callers is given.
 Detection, on pump.fun's public frontend API (no account needed): GET /home-feed/new, the newest callouts of all
 users, polled at --rps (the API allows about 1 request/s per endpoint and IP), so a callout is seen ~1 s after it
 is posted; as a backstop for callouts the feed leaves out, each caller's own list (GET /callout/list/{wallet}) is
-read in turn every 5 s (its 429s only pause it, silently). At startup, prints each caller's last 20 callouts: on how many the wallets that followed
-the call (pump.fun's "tailers") were in profit 1 h later.
+read in turn every 5 s (its 429s only pause it, silently). At startup, prints each caller's last 20 callouts: on
+how many the wallets that followed the call (pump.fun's "tailers") were in profit 1 h later.
 Filters: Solana coins only, callout seen within --max-age s, market cap at the callout within [--min-mcap,
 --max-mcap], coin created less than --max-coin-age days before (default 2, 0: off; pump.fun's creation date, else
 Jupiter's first-seen date, looked up in parallel with the price; a coin of unknown age is skipped), price not
@@ -32,15 +32,18 @@ Telegram account: never share it.
 Repost (default mode only): when one of the COPY callers below (--copy to change them, --no-copy to turn it off)
 calls a coin that passes the filters, the script buys --copy-usd (2 $) of it with YOUR pump.fun wallet instead of
 sending it to Trojan (pump.fun only takes callouts on coins you hold, and the callout then shows your real
-position), waits --post-delay (15) s after the buy is confirmed, then posts your own callout on the coin with one
-of the CALLOUT_TEXTS below, picked at random (POST /callout/create). It needs two local files, never to be shared or committed: data/pump_wallet.txt, the private key of the wallet of your pump.fun
-account (base58, as exported), and data/pump_token.txt, your pump.fun session token (the auth_token cookie of
-pump.fun in your browser), which expires: the file is re-read before each post, so it can be refreshed while the
-script runs. Without --live nothing is bought or posted. --max-run only stops the Trojan buy, never the repost
-(the coin age filter stops both). --copy-trojan also sends the COPY callers' CAs to Trojan,
-as for the other callers. --repost-only runs the repost alone, next to an instance
-already sending CAs to Trojan: no Telegram (its session file stays with that instance), only the COPY callers,
-detected from their own lists every 1.5 s in turn, so the all-users feed is left to the other instance.
+position), waits --post-delay (15) s after the buy is confirmed, then posts your own callout on the coin with one of
+the CALLOUT_TEXTS below, picked at random (POST /callout/create). It needs two local files, never to be shared or
+committed: data/pump_wallet.txt, the private key of the wallet of your pump.fun account (base58, as exported), and
+data/pump_token.txt, your pump.fun session token (the auth_token cookie of pump.fun in your browser), which expires:
+the file is re-read before each post, so it can be refreshed while the script runs. Without --live nothing is bought
+or posted. Once its callout is out, each such position is sold at --copy-tp (x2) or --copy-sl (x0.25, i.e. -75 %)
+times the SOL spent, from a Jupiter sell quote every 3 s (0 turns one off); the open positions are kept in
+data/copy_positions.json and watched again after a restart. --max-run only stops the Trojan buy, never the repost
+(the coin age filter stops both). --copy-trojan also sends the COPY callers' CAs to Trojan, as for the other
+callers. --repost-only runs the repost alone, next to an instance already sending CAs to Trojan: no Telegram (its
+session file stays with that instance), only the COPY callers, detected from their own lists every 1.5 s in turn, so
+the all-users feed is left to the other instance.
 --keypair mode: Jupiter swap API (routes the pump.fun bonding curve and PumpSwap), signed locally, sent at once to
 Jito's block engine (with a --jito-tip) and to the RPC; --max-run uses the buy quote, so it includes our own
 price impact. Without --live the transaction is built, signed and simulated. Exits are optional and live only:
@@ -116,6 +119,8 @@ COPY =["87rRdssFiTJKY4MGARa4G5vQ31hmR7MxSmhzeaJ5AAxJ",      # Dior
         "CE44oKS3wpUerx8afyeii56u5oQjBLZknzm4Q2CYHUz9",      # ely
         "Be24Gbf5KisDk1LcWWZsBn8dvB816By7YzYF5zWZnRR6"]      # chairman
 COPY_USD = float(arg("--copy-usd", "2"))
+COPY_TP, COPY_SL = float(arg("--copy-tp", "2")), float(arg("--copy-sl", "0.25"))   # x the SOL spent; 0: off
+COPY_BOOK = os.path.join(DATA, "copy_positions.json")
 POST_DELAY = float(arg("--post-delay", "15"))
 CALLOUT_TEXTS = ["let's run it, seems like a good narra",
                  "narra looks clean on this one, sending it",
@@ -131,6 +136,7 @@ SSL = ssl.create_default_context(cafile=CA) if os.path.exists(CA) else ssl.creat
 
 lock = threading.Lock()
 positions = []      # open positions, watched by the exit thread
+copy_positions = [] # the pump.fun wallet's repost buys, under --copy-tp / --copy-sl, kept in COPY_BOOK
 next_call = {}      # pump.fun endpoint family -> earliest time of its next request
 tg = {}             # --send-to mode: Telegram client and target bot
 pump = {}           # repost: the pump.fun wallet's keypair and the COPY callers' wallets
@@ -453,6 +459,32 @@ def setup_copy(copies):
     if bal < 0.03:
         print("  attention : moins de 0.03 SOL sur ce wallet, les achats du repost risquent d'échouer")
     pump.update(kp=kp, copy=set(copies))
+    if LIVE and (COPY_TP or COPY_SL):
+        load_copy_book(kp)
+        threading.Thread(target=exit_loop, args=(kp, copy_positions, COPY_TP, COPY_SL, None, save_copy_book),
+                         daemon=True).start()
+        rules = ", ".join(s for s in (COPY_TP and f"TP x{COPY_TP:g}", COPY_SL and f"SL -{(1 - COPY_SL) * 100:.0f} %") if s)
+        print(f"  ventes automatiques du wallet pump.fun : {rules}"
+              + (f" ; {len(copy_positions)} position(s) reprise(s)" if copy_positions else ""))
+
+
+def save_copy_book():
+    with lock:
+        json.dump(copy_positions, open(COPY_BOOK, "w"))
+
+
+def load_copy_book(kp):
+    """Positions left by an earlier run and still held are watched again."""
+    if not os.path.exists(COPY_BOOK):
+        return
+    for p in json.load(open(COPY_BOOK)):
+        try:
+            p["amount"] = sum(a for _, _, a in token_accounts(str(kp.pubkey()), p["mint"]))
+        except Exception:
+            pass   # keep the saved amount; the exit loop refreshes it if a sale fails
+        if p.get("amount"):
+            copy_positions.append(p)
+    save_copy_book()
 
 
 def copy_callout(c, label):
@@ -461,8 +493,8 @@ def copy_callout(c, label):
     try:
         sol_usd = http(f"https://lite-api.jup.ag/price/v3?ids={SOL}")[SOL]["usdPrice"]
         lamports = int(COPY_USD / sol_usd * 1e9)
-        # Jito tip: the usual one, but at most 2 % of a small buy (at least 0.0001 SOL)
-        tx = swap(quote(SOL, mint, lamports), kp, max(100_000, min(TIP, lamports // 50)))
+        tip = max(100_000, min(TIP, lamports // 50))   # the usual Jito tip, at most 2 % of a small buy
+        tx = swap(quote(SOL, mint, lamports), kp, tip)
         if not LIVE:
             print(f"  SIMULATION repost : achèterait {COPY_USD:g} $ du coin avec ton wallet pump.fun, puis {POST_DELAY:g} s "
                   f"après publierait sur ton profil : « {text} »", flush=True)
@@ -489,6 +521,23 @@ def copy_callout(c, label):
         else:
             print(f"\n{now_str()} repost {mint[:8]} refusé par pump.fun (HTTP {status}) : {body[:200]}", flush=True)
         log({"type": "repost", "mint": mint, "text": text, "status": status, "response": body[:500]})
+        if COPY_TP or COPY_SL:   # watched only once the callout is out: pump.fun wants the coin held to post it
+            held = 0
+            for _ in range(3):
+                try:
+                    held = sum(a for _, _, a in token_accounts(str(kp.pubkey()), mint))
+                except Exception:
+                    pass
+                if held:
+                    break
+                time.sleep(2)
+            if not held:
+                print(f"  attention : solde de {mint[:8]} illisible, pas de TP / SL automatique sur cette position", flush=True)
+            else:
+                with lock:
+                    copy_positions.append({"mint": mint, "amount": held, "cost": lamports / 1e9, "t": time.time(),
+                                           "caller": label, "tip": tip})
+                save_copy_book()
     except Exception as e:
         print(f"\n{now_str()} repost {mint[:8]} : échec ({e})", flush=True)
         log({"type": "repost", "mint": mint, "error": str(e)})
@@ -649,35 +698,40 @@ def settle(rec, kp, mint, dec, label):
             positions.append({"mint": mint, "amount": held, "cost": AMOUNT / 1e9, "t": time.time(), "caller": label})
 
 
-def exit_loop(kp):
+def exit_loop(kp, book, tp, sl, hold, save=None):
+    """Sell each position of book (held by kp) at x tp, at x sl or after hold s, from Jupiter sell quotes."""
     while True:
-        time.sleep(3)
+        time.sleep(max(3, len(book)))   # at most about one quote a second
         with lock:
-            todo = list(positions)
+            todo = list(book)
         for p in todo:
             try:
                 q = quote(p["mint"], SOL, p["amount"])
                 mult, held_s = int(q["outAmount"]) / 1e9 / p["cost"], time.time() - p["t"]
-                why = ("take-profit" if TP and mult >= TP else "stop-loss" if SL and mult <= SL else
-                       "durée max" if HOLD and held_s >= HOLD else None)
+                why = ("take-profit" if tp and mult >= tp else "stop-loss" if sl and mult <= sl else
+                       "durée max" if hold and held_s >= hold else None)
                 if not why:
                     continue
-                tx = swap(q, kp)
+                tx = swap(q, kp, p.get("tip", TIP))
                 err = send(tx, True)
                 landed = None if err else confirm(str(tx.signatures[0]))
                 if landed and not landed[1]:
                     with lock:
-                        positions.remove(p)
+                        book.remove(p)
+                    if save:
+                        save()
                     print(f"\n{now_str()} VENDU {p['mint'][:8]} ({why}) : x{mult:.2f} après {held_s:.0f} s, "
-                          f"{int(q['outAmount']) / 1e9:.4f} SOL pour {p['cost']} SOL", flush=True)
+                          f"{int(q['outAmount']) / 1e9:.4f} SOL pour {p['cost']:.4f} SOL (call de {p['caller']})", flush=True)
                     log({"type": "sell", "mint": p["mint"], "caller": p["caller"], "reason": why, "multiple": mult,
                          "held_s": held_s, "sig": str(tx.signatures[0]), "slot": landed[0]})
                     close_empty_accounts(kp, p["mint"])
                 else:
                     p["amount"] = sum(a for _, _, a in token_accounts(str(kp.pubkey()), p["mint"]))
-                    if p["amount"] == 0:
+                    if p["amount"] == 0:   # sold elsewhere
                         with lock:
-                            positions.remove(p)
+                            book.remove(p)
+                        if save:
+                            save()
                     print(f"  vente {p['mint'][:8]} non passée ({err or (landed and landed[1]) or 'pas incluse'}), "
                           f"nouvel essai", flush=True)
             except Exception as e:
@@ -748,7 +802,7 @@ def main():
               f"call est vu ~1 s après sa publication), chaque profil relu toutes les "
               f"~{len(labels) * GAP['list']:.0f} s en secours | journal {LOG}", flush=True)
     if LIVE and not SEND_TO and (TP or SL or HOLD):
-        threading.Thread(target=exit_loop, args=(kp,), daemon=True).start()
+        threading.Thread(target=exit_loop, args=(kp, positions, TP, SL, HOLD), daemon=True).start()
     state, wallets, k = {"tried": set(), "sent": 0}, list(labels), 0
     while True:
         # whichever source is due first: the all-users feed, or the next caller's own list
@@ -772,5 +826,6 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         with lock:
-            left = [p["mint"] for p in positions]
-        print(f"\narrêt{' — positions encore ouvertes : ' + ', '.join(left) if left else ''}")
+            left = [p["mint"] for p in positions + copy_positions]
+        print(f"\narrêt{' — positions encore ouvertes : ' + ', '.join(left) if left else ''}"
+              f"{' (celles du wallet pump.fun seront reprises au prochain lancement)' if copy_positions else ''}")
