@@ -44,6 +44,8 @@ data/copy_positions.json and watched again after a restart. --max-run only stops
 callers. --repost-only runs the repost alone, next to an instance already sending CAs to Trojan: no Telegram (its
 session file stays with that instance), only the COPY callers, detected from their own lists every 1.5 s in turn, so
 the all-users feed is left to the other instance.
+While it runs, typing pause / reprise + Enter in the window suspends / resumes the repost (paused, those callers go
+to Trojan like the others; the TP / SL of open positions go on); etat shows its state.
 --keypair mode: Jupiter swap API (routes the pump.fun bonding curve and PumpSwap), signed locally, sent at once to
 Jito's block engine (with a --jito-tip) and to the RPC; --max-run uses the buy quote, so it includes our own
 price impact. Without --live the transaction is built, signed and simulated. Exits are optional and live only:
@@ -543,6 +545,26 @@ def copy_callout(c, label):
         log({"type": "repost", "mint": mint, "error": str(e)})
 
 
+def console():
+    """Commands typed in the window while the script runs: pause / reprise of the repost, etat."""
+    for line in sys.stdin:
+        cmd = line.strip().lower()
+        if cmd in ("pause", "stop"):
+            pump["paused"] = True
+            print("repost EN PAUSE : plus d'achat avec le wallet pump.fun ni de callout sur ton profil (ces calls vont "
+                  "à Trojan comme les autres, les ventes TP / SL continuent) ; tape « reprise » pour le relancer", flush=True)
+        elif cmd in ("reprise", "start"):
+            pump["paused"] = False
+            print("repost RELANCÉ", flush=True)
+        elif cmd in ("etat", "état", "status"):
+            with lock:
+                n = len(copy_positions)
+            print(f"repost {'EN PAUSE' if pump.get('paused') else 'actif'} ; {n} position(s) du wallet pump.fun suivie(s)",
+                  flush=True)
+        elif cmd:
+            print("commandes : pause, reprise, etat", flush=True)
+
+
 # ---------- --alerts: a Telegram message per callout of the accounts a pump.fun user follows
 
 def setup_alerts(username):
@@ -626,7 +648,7 @@ def on_callout(c, label, kp, funded, state):
             if skip:
                 print(f"  ignoré : {skip}", flush=True)
                 return log({**rec, "skipped": skip})
-            copied = c.get("author") in pump.get("copy", ())
+            copied = c.get("author") in pump.get("copy", ()) and not pump.get("paused")
             if copied:   # bought with the pump.fun wallet (and Trojan if asked); --max-run does not stop it
                 if LIVE:
                     state["sent"] += 1
@@ -803,6 +825,10 @@ def main():
               f"~{len(labels) * GAP['list']:.0f} s en secours | journal {LOG}", flush=True)
     if LIVE and not SEND_TO and (TP or SL or HOLD):
         threading.Thread(target=exit_loop, args=(kp, positions, TP, SL, HOLD), daemon=True).start()
+    if pump.get("copy"):
+        threading.Thread(target=console, daemon=True).start()
+        print("pendant que le script tourne, tape « pause » ou « reprise » puis Entrée pour arrêter / relancer le repost "
+              "sur ton profil, « etat » pour voir où il en est", flush=True)
     state, wallets, k = {"tried": set(), "sent": 0}, list(labels), 0
     while True:
         # whichever source is due first: the all-users feed, or the next caller's own list
