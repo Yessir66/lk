@@ -8,6 +8,8 @@ Algorithms (parameters fixed on the development days, never re-tuned on the hold
       its peak (after 5 min); at +5 min sell all if the price is under x0.85; 45 min horizon
   F2  F1, only when the wallet buys >= 2.5 SOL
   F3  F1, only when our fill is < 10% above the wallet's own post-trade price
+  F1+forme  F1, but a buy is only taken if the last 15 closed F1 paper trades sum > 0 (all signals are
+      paper-traded; added AFTER the hold-out test failed, so it needs a forward test)
 Baselines on the same buys: copy its sells (sell when it has sold >= 50%), take profit x1.5 / stop -30%,
 climax + retest (token_flow.py).
 
@@ -46,9 +48,30 @@ def evaluate(w, rule, **kw):
     return B.evaluate(B.Path(w, **kw), **rule)
 
 
-def block(ws, title, stake, robust=True):
+def form_filter(ws_all, n=15, stake=50.0):
+    """F1 results of the curve buys, and whether each is taken under the form filter (causal)"""
+    cur = sorted([w for w in ws_all if w.venue == "pump"], key=lambda w: w.bt)
+    pnl = [B.evaluate(B.Path(w, stake=stake), **B.flow_rule()) for w in cur]
+    take = {}
+    for i, w in enumerate(cur):
+        past = [pnl[j] for j in range(i) if cur[j].bt + 45 * 60 <= w.bt][-n:]
+        take[(w.mint, w.bt)] = (len(past) < n or sum(past) > 0, pnl[i])
+    return take
+
+
+def block(ws, title, stake, robust=True, form=None):
     day = lambda w: time.strftime("%d/%m", time.gmtime(w.bt + TZ))
     print(f"\n=== {title}: {len(ws)} achats du wallet exploitables, {len(set(map(day, ws)))} jours")
+    if form:
+        byd = collections.OrderedDict()
+        for w in ws:
+            if w.venue == "pump":
+                tk, x = form[(w.mint, w.bt)]
+                byd[day(w)] = byd.get(day(w), 0.0) + (x if tk else 0.0)
+        n = sum(1 for w in ws if w.venue == "pump" and form[(w.mint, w.bt)][0])
+        print(f"  {'F1 + filtre forme (15 derniers > 0)':44s} {n:3d} trades  total {sum(byd.values()):+7.0f}$  "
+              f"jours positifs {sum(x > 0 for x in byd.values())}/{len(byd)}  jours perdants {sum(x < 0 for x in byd.values())}")
+        print("      par jour : " + "  ".join(f"{d} {x:+.0f}$" for d, x in byd.items()))
     for name, (flt, rule) in list(ALGOS.items()) + list(BASE.items()):
         sub = [w for w in ws if flt(w)]
         if not sub:
@@ -84,11 +107,12 @@ def main():
     ap.add_argument("--cache", default=None)
     a = ap.parse_args()
     ws = B.load_all(a.windows, a.wallet, a.cache or os.path.join(a.windows, "..", "fb_cache"))
+    form = form_filter(ws, stake=a.stake)
     if a.split:
         cut = calendar.timegm(time.strptime(a.split, "%Y-%m-%d")) - TZ
-        block([w for w in ws if w.bt >= cut], "Jours de développement", a.stake)
-        block([w for w in ws if w.bt < cut], "Jours mis de côté (jamais vus pendant la mise au point)", a.stake)
-    block(ws, "Toutes les journées", a.stake, robust=False)
+        block([w for w in ws if w.bt >= cut], "Jours de développement", a.stake, form=form)
+        block([w for w in ws if w.bt < cut], "Jours mis de côté (jamais vus pendant la mise au point)", a.stake, form=form)
+    block(ws, "Toutes les journées", a.stake, robust=False, form=form)
 
 
 if __name__ == "__main__":

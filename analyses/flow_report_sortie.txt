@@ -1,0 +1,53 @@
+
+=== Jours de développement: 146 achats du wallet exploitables, 10 jours
+  F1 + filtre forme (15 derniers > 0)           75 trades  total    +474$  jours positifs 8/10  jours perdants 2
+      par jour : 10/10 +59$  11/10 +80$  12/10 -20$  13/10 -85$  14/10 +41$  15/10 +16$  16/10 +20$  17/10 +175$  18/10 +39$  19/10 +150$
+  F1 flux (courbe pump.fun)                     82 trades  total    +606$  sans les 3 meilleurs   +231$  jours positifs 8/10  moyenne +7.39$ [+0.88; +14.98]
+      par jour : 10/10 +59$  11/10 +80$  12/10 -20$  13/10 -85$  14/10 +173$  15/10 +16$  16/10 +20$  17/10 +175$  18/10 +39$  19/10 +150$
+  F2 = F1 si achat du wallet >= 2,5 SOL         53 trades  total    +569$  sans les 3 meilleurs   +194$  jours positifs 8/10  moyenne +10.73$ [+1.68; +21.00]
+  F3 = F1 si copie < +10 % du prix du wallet    40 trades  total    +543$  sans les 3 meilleurs   +169$  jours positifs 7/10  moyenne +13.58$ [+2.95; +26.62]
+  copier ses ventes (courbe)                    82 trades  total    +414$  sans les 3 meilleurs   -317$  jours positifs 6/10  moyenne +5.05$ [-5.96; +19.17]
+  TP x1,5 / stop -30 % (courbe)                 82 trades  total    +163$  sans les 3 meilleurs    +59$  jours positifs 7/10  moyenne +1.99$ [-2.68; +6.65]
+  climax + retest (courbe)                      82 trades  total    +187$  sans les 3 meilleurs   -539$  jours positifs 4/10  moyenne +2.28$ [-10.13; +16.23]
+  F1 sur tous les achats (sans filtre)         146 trades  total    +356$  sans les 3 meilleurs    -18$  jours positifs 6/10  moyenne +2.44$ [-1.46; +6.83]
+      par jour : 10/10 +32$  11/10 +97$  12/10 -25$  13/10 -100$  14/10 +57$  15/10 -19$  16/10 -12$  17/10 +121$  18/10 +35$  19/10 +169$
+  F1, robustesse :
+      copie 4 s plus tard              total    +575$  sans les 3 meilleurs   +215$
+      copie 10 s plus tard             total    +484$  sans les 3 meilleurs   +151$
+      glissement 4 % au lieu de 2 %    total    +508$  sans les 3 meilleurs   +144$
+      frais du bot 0,5 % au lieu de 1 % total    +653$  sans les 3 meilleurs   +274$
+      mise 100 $                       total   +1115$  sans les 3 meilleurs   +380$
+      mise 25 $                        total    +296$  sans les 3 meilleurs   +108$
+
+=== Jours mis de côté (jamais vus pendant la mise au point): 321 achats du wallet exploitables, 9 jours
+  F1 + filtre forme (15 derniers > 0)           63 trades  total    +471$  jours positifs 3/9  jours perdants 3
+      par jour : 01/10 +27$  02/10 -87$  03/10 -28$  04/10 +0$  05/10 +0$  06/10 +0$  07/10 -3$  08/10 +198$  09/10 +365$
+  F1 flux (courbe pump.fun)                    207 trades  total    -218$  sans les 3 meilleurs   -792$  jours positifs 3/9  moyenne -1.05$ [-4.88; +3.93]
+      par jour : 01/10 +27$  02/10 -73$  03/10 -213$  04/10 -31$  05/10 -32$  06/10 -329$  07/10 -77$  08/10 +145$  09/10 +365$
+  F2 = F1 si achat du wallet >= 2,5 SOL        142 trades  total    -385$  sans les 3 meilleurs   -618$  jours positifs 5/9  moyenne -2.71$ [-6.06; +0.66]
+  F3 = F1 si copie < +10 % du prix du wallet   108 trades  total     -69$  sans les 3 meilleurs   -362$  jours positifs 4/9  moyenne -0.64$ [-4.98; +4.40]
+  copier ses ventes (courbe)                   207 trades  total    -945$  sans les 3 meilleurs  -1645$  jours positifs 2/9  moyenne -4.57$ [-8.71; +1.07]
+  TP x1,5 / stop -30 % (courbe)                207 trades  total    -783$  sans les 3 meilleurs   -888$  jours positifs 2/9  moyenne -3.78$ [-6.56; -1.13]
+  climax + retest (courbe)                     207 trades  total   -2068$  sans les 3 meilleurs  -2516$  jours positifs 2/9  moyenne -9.99$ [-14.51; -5.13]
+  F1 sur tous les achats (sans filtre)         321 trades  total    -567$  sans les 3 meilleurs  -1140$  jours positifs 2/9  moyenne -1.77$ [-4.73; +1.80]
+      par jour : 01/10 -15$  02/10 -271$  03/10 -120$  04/10 -62$  05/10 -93$  06/10 -356$  07/10 -94$  08/10 +112$  09/10 +333$
+  F1, robustesse :
+      copie 4 s plus tard              total    -253$  sans les 3 meilleurs   -715$
+      copie 10 s plus tard             total    -342$  sans les 3 meilleurs   -803$
+      glissement 4 % au lieu de 2 %    total    -429$  sans les 3 meilleurs   -988$
+      frais du bot 0,5 % au lieu de 1 % total    -115$  sans les 3 meilleurs   -696$
+      mise 100 $                       total    -684$  sans les 3 meilleurs  -1805$
+      mise 25 $                        total    -114$  sans les 3 meilleurs   -403$
+
+=== Toutes les journées: 467 achats du wallet exploitables, 19 jours
+  F1 + filtre forme (15 derniers > 0)          138 trades  total    +945$  jours positifs 11/19  jours perdants 5
+      par jour : 01/10 +27$  02/10 -87$  03/10 -28$  04/10 +0$  05/10 +0$  06/10 +0$  07/10 -3$  08/10 +198$  09/10 +365$  10/10 +59$  11/10 +80$  12/10 -20$  13/10 -85$  14/10 +41$  15/10 +16$  16/10 +20$  17/10 +175$  18/10 +39$  19/10 +150$
+  F1 flux (courbe pump.fun)                    289 trades  total    +387$  sans les 3 meilleurs   -262$  jours positifs 11/19  moyenne +1.34$ [-2.21; +5.25]
+      par jour : 01/10 +27$  02/10 -73$  03/10 -213$  04/10 -31$  05/10 -32$  06/10 -329$  07/10 -77$  08/10 +145$  09/10 +365$  10/10 +59$  11/10 +80$  12/10 -20$  13/10 -85$  14/10 +173$  15/10 +16$  16/10 +20$  17/10 +175$  18/10 +39$  19/10 +150$
+  F2 = F1 si achat du wallet >= 2,5 SOL        195 trades  total    +183$  sans les 3 meilleurs   -222$  jours positifs 13/19  moyenne +0.94$ [-2.61; +4.91]
+  F3 = F1 si copie < +10 % du prix du wallet   148 trades  total    +474$  sans les 3 meilleurs    +43$  jours positifs 11/19  moyenne +3.20$ [-1.10; +8.48]
+  copier ses ventes (courbe)                   289 trades  total    -531$  sans les 3 meilleurs  -1527$  jours positifs 8/19  moyenne -1.84$ [-6.41; +3.78]
+  TP x1,5 / stop -30 % (courbe)                289 trades  total    -620$  sans les 3 meilleurs   -732$  jours positifs 9/19  moyenne -2.14$ [-4.55; +0.23]
+  climax + retest (courbe)                     289 trades  total   -1881$  sans les 3 meilleurs  -2630$  jours positifs 6/19  moyenne -6.51$ [-11.39; -1.00]
+  F1 sur tous les achats (sans filtre)         467 trades  total    -211$  sans les 3 meilleurs   -859$  jours positifs 8/19  moyenne -0.45$ [-2.89; +2.21]
+      par jour : 01/10 -15$  02/10 -271$  03/10 -120$  04/10 -62$  05/10 -93$  06/10 -356$  07/10 -94$  08/10 +112$  09/10 +333$  10/10 +32$  11/10 +97$  12/10 -25$  13/10 -100$  14/10 +57$  15/10 -19$  16/10 -12$  17/10 +121$  18/10 +35$  19/10 +169$

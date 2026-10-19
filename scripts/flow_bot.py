@@ -10,6 +10,8 @@ price impact), follows every trade of the token (swap-api.pump.fun, polled every
   3. after 5 min: new-wallet inflow (per minute) < 30% of its peak -> sell the rest
   4. at +5 min: price < x0.85 -> sell all;  5. 45 min -> sell all
 Paper fills: spot at the next poll x (1 - 2% slippage - impact), 2.25% fee per side, 0.21 $ gas per transaction.
+"Form" filter: every signal is paper-traded, but a position counts as TAKEN only if the last FORM_N closed
+paper trades sum > 0 (seeded with the last FORM_N backtest results, --seed file). The summary reports both.
 Journal: data/paper/journal.jsonl (one line per event), data/paper/summary.json.
 
 Usage: flow_bot.py <wallet> [--stake 50] [--hours 12]
@@ -29,15 +31,30 @@ FEE, SLIP, GAS, POLL = 0.0225, 0.02, 0.21, 2.0
 OUT = os.path.join(os.path.dirname(__file__), "..", "data", "paper")
 H = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 POSITIONS = {}
+FORM_N = 15
+CLOSED_PNL = []          # chronological results of closed paper trades (seeded from the backtest)
+
+
+def form_active():
+    last = CLOSED_PNL[-FORM_N:]
+    return len(last) < FORM_N or sum(last) > 0
 
 
 def write_summary():
     closed = [p for p in POSITIONS.values() if p.state == "closed" and hasattr(p, "pnl")]
-    by_day = collections.defaultdict(float)
+    by_day, by_day_f = collections.defaultdict(float), collections.defaultdict(float)
     for p in closed:
-        by_day[time.strftime("%d/%m", time.gmtime(p.t_trigger + 7200))] += p.pnl
+        d = time.strftime("%d/%m", time.gmtime(p.t_trigger + 7200))
+        by_day[d] += p.pnl
+        if getattr(p, "taken", True):
+            by_day_f[d] += p.pnl
     json.dump({"positions_cloturees": len(closed), "ouvertes": sum(p.state == "open" for p in POSITIONS.values()),
-               "pnl_total": round(sum(p.pnl for p in closed), 2), "par_jour": {d: round(v, 2) for d, v in by_day.items()}},
+               "pnl_F1_brut": round(sum(p.pnl for p in closed), 2),
+               "pnl_F1_filtre_forme": round(sum(p.pnl for p in closed if getattr(p, "taken", True)), 2),
+               "positions_prises_avec_filtre": sum(1 for p in closed if getattr(p, "taken", True)),
+               "filtre_forme_actif_maintenant": form_active(), "somme_15_derniers": round(sum(CLOSED_PNL[-FORM_N:]), 2),
+               "par_jour_brut": {d: round(v, 2) for d, v in by_day.items()},
+               "par_jour_filtre": {d: round(v, 2) for d, v in by_day_f.items()}},
               open(os.path.join(OUT, "summary.json"), "w"), indent=1)
 
 
@@ -113,7 +130,8 @@ class Position:
             self.left = 0.0
         self.pnl = self.cash - self.stake - GAS * self.ntx
         self.state = "closed"
-        log("cloture", mint=self.mint, pnl=round(self.pnl, 2))
+        CLOSED_PNL.append(self.pnl)
+        log("cloture", mint=self.mint, pnl=round(self.pnl, 2), prise=getattr(self, "taken", True))
         write_summary()
 
     def step(self):
@@ -157,7 +175,9 @@ async def follow(pos):
     pos.impact = 0.005                      # ~50 $ on a ~20 k$ curve; refined below if the SOL reserve is known
     pos.entry = pos.entry_spot * (1 + pos.impact)
     pos.state = "open"
-    log("entree", mint=pos.mint, mc=round(pos.entry_spot * 1e9), ecart_wallet=round(pos.entry_spot / wallet_px - 1, 3) if wallet_px else None)
+    pos.taken = form_active()
+    log("entree", mint=pos.mint, mc=round(pos.entry_spot * 1e9), ecart_wallet=round(pos.entry_spot / wallet_px - 1, 3) if wallet_px else None,
+        prise=pos.taken, somme_15_derniers=round(sum(CLOSED_PNL[-FORM_N:]), 2))
     while pos.state == "open":
         await asyncio.sleep(POLL)
         trs = await asyncio.to_thread(trades_since, pos.mint, int(time.time()) - 20)
@@ -203,7 +223,10 @@ if __name__ == "__main__":
     ap.add_argument("--stake", type=float, default=50.0)
     ap.add_argument("--hours", type=float, default=12.0)
     ap.add_argument("--test-mint", help="dry run of the position logic on one token, as if the wallet had just bought it")
+    ap.add_argument("--seed", help="json list of the latest backtest results (oldest first) to start the form filter")
     a = ap.parse_args()
+    if a.seed:
+        CLOSED_PNL.extend(json.load(open(a.seed)))
     if a.test_mint:
         OUT = os.path.join(OUT, "test")
         POSITIONS[a.test_mint] = Position(a.test_mint, None, a.stake)
