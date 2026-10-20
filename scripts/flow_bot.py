@@ -14,9 +14,9 @@ price impact), follows every trade of the token (swap-api.pump.fun, polled every
 Paper fills: spot at the next poll x (1 - 2% slippage - impact), 2.25% fee per side, 0.21 $ gas per transaction.
 "Form" filter: every signal is paper-traded, but a position counts as TAKEN only if the last FORM_N closed
 paper trades sum > 0 (seeded with the last FORM_N backtest results, --seed file). The summary reports both.
-Journal: data/paper/journal.jsonl (one line per event), data/paper/summary.json.
+Journal: data/paper/journal.jsonl (one line per event), data/paper/summary.json (--out for another folder).
 
-Usage: flow_bot.py <wallet> [--stake 50] [--hours 12]
+Usage: flow_bot.py <wallet> [--stake 50] [--hours 12] [--out data/paper_<wallet>]
 """
 import argparse
 import asyncio
@@ -223,6 +223,10 @@ async def main(wallet, stake, hours):
         except Exception as e:
             log("reconnexion", erreur=str(e)[:120])
             await asyncio.sleep(5)
+    if tasks:                                   # let open positions finish before stopping
+        log("fin_ecoute", positions_ouvertes=len(tasks))
+        await asyncio.gather(*tasks, return_exceptions=True)
+    log("arret")
 
 
 if __name__ == "__main__":
@@ -233,7 +237,10 @@ if __name__ == "__main__":
     ap.add_argument("--test-mint", help="dry run of the position logic on one token, as if the wallet had just bought it")
     ap.add_argument("--seed", help="json list of the latest backtest results (oldest first) to start the form filter")
     ap.add_argument("--no-runner", action="store_true", help="plain F1 (everything sold within 45 min)")
+    ap.add_argument("--out", help="journal folder (default data/paper)")
     a = ap.parse_args()
+    if a.out:
+        OUT = a.out
     RUNNER = not a.no_runner
     if a.seed:
         CLOSED_PNL.extend(json.load(open(a.seed)))
