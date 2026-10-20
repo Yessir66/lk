@@ -208,19 +208,22 @@ def first(mask, start=0):
 
 
 def evaluate(p, levels=(), sl0=None, sl1=None, trail=None, tmax=None, tall=None, wallet=None, climax=None, masks=(), t_start=0,
-             return_exit=False):
+             return_exit=False, log=None):
     """levels: [(multiple, fraction)] take profits in order; sl0: loss before the first take profit;
     sl1: stop (multiple of entry) once a take profit or climax sale happened; trail: (drop, arming multiple)
     on what is left; tmax: s without any sale -> sell all; tall: s -> sell all; wallet: (share sold by the
     trigger wallet, fraction we sell then); climax: (acc, chg1, multiple, fraction).
-    Returns $ result."""
+    Returns $ result (and the index of the last sale if return_exit); log: list receiving (index, fraction, fill, kind).
+    """
     x, n = p.x, len(p.x)
     left, cash, ntx, t, sold_any = 1.0, 0.0, 1, t_start, False
     value = p.stake / (1 + p.fee)
 
-    def sell(i, f):
+    def sell(i, f, kind="fin"):
         nonlocal left, cash, ntx
         f = min(f, left)
+        if log is not None:
+            log.append((i, f, p.fill[i], kind))
         cash += f * value * p.fill[i] * (1 - p.fee)
         left -= f
         ntx += 1
@@ -261,16 +264,16 @@ def evaluate(p, levels=(), sl0=None, sl1=None, trail=None, tmax=None, tall=None,
             break
         i, kind = min(ev)
         if kind == "tp":
-            sell(i, levels[k][1]); k += 1; sold_any = True
+            sell(i, levels[k][1], kind); k += 1; sold_any = True
         elif kind == "wallet":
-            sell(i, wallet[1] if wallet[1] < 1 else left); w_done = True; sold_any = True
+            sell(i, wallet[1] if wallet[1] < 1 else left, kind); w_done = True; sold_any = True
         elif kind == "climax":
-            sell(i, climax[3]); c_done = True; sold_any = True
+            sell(i, climax[3], kind); c_done = True; sold_any = True
         elif kind.startswith("mask"):
             j = int(kind[4:]); m_done[j] = True
-            sell(i, mk[j][1] if mk[j][1] < 1 else left)
+            sell(i, mk[j][1] if mk[j][1] < 1 else left, kind)
         else:
-            sell(i, left)
+            sell(i, left, kind)
         t = i + 1
     last = t - 1
     if left > 1e-9:
