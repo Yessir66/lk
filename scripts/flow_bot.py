@@ -9,6 +9,8 @@ price impact), follows every trade of the token (swap-api.pump.fun, polled every
   2. price >= x1.5 -> sell half
   3. after 5 min: new-wallet inflow (per minute) < 30% of its peak -> sell the rest
   4. at +5 min: price < x0.85 -> sell all;  5. 45 min -> sell all
+  F1R (default, --no-runner for F1): the exhaustion exit (3) only applies below x3 and during the first 45 min;
+  once the price has reached x3, what is left is sold 50% under its high; everything is sold at 3 h.
 Paper fills: spot at the next poll x (1 - 2% slippage - impact), 2.25% fee per side, 0.21 $ gas per transaction.
 "Form" filter: every signal is paper-traded, but a position counts as TAKEN only if the last FORM_N closed
 paper trades sum > 0 (seeded with the last FORM_N backtest results, --seed file). The summary reports both.
@@ -31,6 +33,7 @@ FEE, SLIP, GAS, POLL = 0.0225, 0.02, 0.21, 2.0
 OUT = os.path.join(os.path.dirname(__file__), "..", "data", "paper")
 H = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 POSITIONS = {}
+RUNNER, RUN_ABOVE, RUN_TRAIL = True, 3.0, 0.5    # F1R: once x3 is reached, the rest runs on a 50% trailing stop, up to 3 h
 FORM_N = 15
 CLOSED_PNL = []          # chronological results of closed paper trades (seeded from the backtest)
 
@@ -154,10 +157,15 @@ class Position:
             self.slow_done = True
             if x < 0.85:
                 return self.sell(1.0, f"5 min sous x0.85 (x{x:.2f})")
-        if el >= 300 and self.peak_new >= 20 and new1 < 0.3 * self.peak_new:
+        self.peak_x = max(getattr(self, "peak_x", 1.0), x)
+        runner = RUNNER and self.peak_x >= RUN_ABOVE
+        if (el >= 300 and el < 45 * 60 and self.peak_new >= 20 and new1 < 0.3 * self.peak_new
+                and not (RUNNER and x >= RUN_ABOVE)):
             return self.sell(1.0, f"essoufflement: {new1}/min < 30% du pic {self.peak_new}")
-        if el >= 45 * 60:
-            return self.sell(1.0, "45 min")
+        if runner and x <= (1 - RUN_TRAIL) * self.peak_x:
+            return self.sell(1.0, f"course: x{x:.2f} < {int(100 * (1 - RUN_TRAIL))}% du plus haut x{self.peak_x:.2f}")
+        if el >= (3 * 3600 if RUNNER else 45 * 60):
+            return self.sell(1.0, "3 h" if RUNNER else "45 min")
 
 
 async def follow(pos):
@@ -224,7 +232,9 @@ if __name__ == "__main__":
     ap.add_argument("--hours", type=float, default=12.0)
     ap.add_argument("--test-mint", help="dry run of the position logic on one token, as if the wallet had just bought it")
     ap.add_argument("--seed", help="json list of the latest backtest results (oldest first) to start the form filter")
+    ap.add_argument("--no-runner", action="store_true", help="plain F1 (everything sold within 45 min)")
     a = ap.parse_args()
+    RUNNER = not a.no_runner
     if a.seed:
         CLOSED_PNL.extend(json.load(open(a.seed)))
     if a.test_mint:
