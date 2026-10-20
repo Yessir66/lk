@@ -6,7 +6,10 @@ Fetches all trades of the token (swap-api.pump.fun) from 5 min before the first 
 one (or now), then for each entry time prints every sale of each algorithm and the $ result for a 50 $ buy.
 
 Usage: callout_test.py <mint> <YYYY-MM-DD> <HH:MM:SS French time> [<HH:MM:SS> ...]
+       callout_test.py <mint> --wallet <wallet> [--hours 6]   entry 2 s after the wallet's first buy of the token
+                                                               (trades of the last --hours hours)
 """
+import argparse
 import calendar
 import json
 import os
@@ -22,7 +25,7 @@ import flow_backtest as B  # noqa: E402
 TZ = 7200
 H = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 NAMES = {"tp": "50 % à x1,5", "mask0": "contrôle 2 min (< 50 nouveaux acheteurs)", "stop": "stop suiveur -50 % / fin",
-         "fin": "fin des données"}
+         "fin": "fin des données", "wallet": "le wallet a vendu >= 50 % de ses tokens"}
 RULES = {"F1R": (B.runner_rule(), {"mask1": "lent (< x0,85 à 5 min)",
                                    "mask2": "essoufflement du flux (< 30 % du pic, sauf au-dessus de x3)"}),
          "F1": (B.flow_rule(), {"mask1": "essoufflement du flux (< 30 % du pic)", "mask2": "lent (< x0,85 à 5 min)"})}
@@ -57,17 +60,34 @@ def fetch(mint, a, b):
 
 
 def main():
-    mint, day, hours = sys.argv[1], sys.argv[2], sys.argv[3:]
-    ets = sorted(calendar.timegm(time.strptime(f"{day} {h}", "%Y-%m-%d %H:%M:%S")) - TZ for h in hours)
-    tr, ok = fetch(mint, ets[0] - 300, min(int(time.time()), ets[-1] + B.HORIZON))
+    ap = argparse.ArgumentParser()
+    ap.add_argument("mint")
+    ap.add_argument("day", nargs="?")
+    ap.add_argument("times", nargs="*")
+    ap.add_argument("--wallet")
+    ap.add_argument("--hours", type=float, default=6.0)
+    a = ap.parse_args()
+    mint = a.mint
     fr = lambda s: time.strftime("%H:%M:%S", time.gmtime(s + TZ))
+    if a.wallet:
+        now = int(time.time())
+        tr, ok = fetch(mint, now - int(a.hours * 3600), now)
+        buys = [t for t in tr if t["userAddress"] == a.wallet and t["type"] == "buy"]
+        if not buys:
+            raise SystemExit(f"aucun achat de {a.wallet} sur {mint} dans les {a.hours:g} dernières heures")
+        entries = [(B.ts(buys[0]["timestamp"]), buys[0]["tx"])]
+        print(f"Achat du wallet : {fr(entries[0][0])}, {float(buys[0]['amountSol']):.2f} SOL, "
+              f"MC {float(buys[0]['priceUsd']) * 1e9 / 1e3:.1f}k$ ({buys[0]['program']})")
+    else:
+        ets = sorted(calendar.timegm(time.strptime(f"{a.day} {h}", "%Y-%m-%d %H:%M:%S")) - TZ for h in a.times)
+        tr, ok = fetch(mint, ets[0] - 300, min(int(time.time()), ets[-1] + B.HORIZON))
+        entries = [(et, tr[max(i for i, t in enumerate(tr) if B.ts(t["timestamp"]) <= et)]["tx"]) for et in ets]
     print(f"{mint}: {len(tr)} trades {'' if ok else '(INCOMPLET) '}de {fr(B.ts(tr[0]['timestamp']))} à {fr(B.ts(tr[-1]['timestamp']))}")
     os.makedirs("data/callout", exist_ok=True)
-    for et in ets:
-        k = max(i for i, t in enumerate(tr) if B.ts(t["timestamp"]) <= et)
+    for et, sig in entries:
         f = f"data/callout/{mint}_{et}.json"
-        json.dump({"mint": mint, "bt": et, "sig": tr[k]["tx"], "complete": True, "trades": tr}, open(f, "w"))
-        w = B.Window(f, "none")
+        json.dump({"mint": mint, "bt": et, "sig": sig, "complete": True, "trades": tr}, open(f, "w"))
+        w = B.Window(f, a.wallet or "none")
         if not w.ok:
             print(f"\n### Entrée {fr(et)} : pas assez de données")
             continue
@@ -77,7 +97,11 @@ def main():
         print(f"\n### Entrée {fr(et)} (achat à {fr(p.t0)}, MC {mc0 / 1e3:.1f}k$ avec notre impact {p.impact:.1%}, "
               f"{'courbe pump.fun' if w.venue == 'pump' else w.venue}) — plus haut ensuite x{p.x[top]:.2f} à {fr(p.t0 + top)}")
         print(f"    nouveaux acheteurs à +2 min : {B.cum_new(p, 120):.0f}")
-        for lab, (rule, extra) in RULES.items():
+        rules = dict(RULES)
+        if a.wallet:
+            rules["copier ses ventes"] = (dict(wallet=(0.5, 1.0)), {})
+            rules["F1R + ses ventes"] = (dict(B.runner_rule(), wallet=(0.5, 1.0)), RULES["F1R"][1])
+        for lab, (rule, extra) in rules.items():
             log = []
             pnl = B.evaluate(p, **rule, log=log)
             print(f"  {lab}: résultat {pnl:+.2f}$ sur 50$")
