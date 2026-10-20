@@ -571,7 +571,10 @@ def setup_alerts(username):
     token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat:
         return print("alertes désactivées : définis TELEGRAM_BOT_TOKEN et TELEGRAM_CHAT_ID (ceux de ton bot d'alertes)")
-    wallet, _ = resolve(username)
+    try:
+        wallet, _ = resolve(username)
+    except SystemExit as e:   # an unknown name must not stop the bot, only its alerts
+        return print(f"alertes désactivées : {e} ; donne plutôt ton wallet, il ne change pas si tu renommes ton profil")
     alerts.update(token=token, chat=chat, owner=wallet, follows={}, seen=set())
     refresh_follows()
     print(f"alertes Telegram pour les {len(alerts['follows'])} comptes suivis par {username}")
