@@ -188,6 +188,7 @@ class Path:
         i0 = min(w.i0 + delay_s, w.i1 - 1)
         self.impact = min(0.2, stake / max(A["liq"][i0] / 2, 1))
         self.entry = (w.entry_spot if delay_s == 0 else A["mc"][i0] / 1e9) * (1 + self.impact)
+        self.t0 = w.t0 + (i0 - w.i0)
         self.x = A["mc"][i0:w.i1 + 1] / 1e9 / self.entry
         self.gas = gas
         n = len(self.x)
@@ -206,14 +207,14 @@ def first(mask, start=0):
     return int(k[0]) + start if len(k) else None
 
 
-def evaluate(p, levels=(), sl0=None, sl1=None, trail=None, tmax=None, tall=None, wallet=None, climax=None, masks=()):
+def evaluate(p, levels=(), sl0=None, sl1=None, trail=None, tmax=None, tall=None, wallet=None, climax=None, masks=(), t_start=0):
     """levels: [(multiple, fraction)] take profits in order; sl0: loss before the first take profit;
     sl1: stop (multiple of entry) once a take profit or climax sale happened; trail: (drop, arming multiple)
     on what is left; tmax: s without any sale -> sell all; tall: s -> sell all; wallet: (share sold by the
     trigger wallet, fraction we sell then); climax: (acc, chg1, multiple, fraction).
     Returns $ result."""
     x, n = p.x, len(p.x)
-    left, cash, ntx, t, sold_any = 1.0, 0.0, 1, 0, False
+    left, cash, ntx, t, sold_any = 1.0, 0.0, 1, t_start, False
     value = p.stake / (1 + p.fee)
 
     def sell(i, f):
@@ -280,7 +281,7 @@ def mask_cum_new(t, nmin):
     """at t s after entry: True if fewer than nmin new wallets bought since entry (disjoint 30 s blocks)"""
     def fn(p):
         m = np.zeros(len(p.x), bool)
-        if t < len(m) and sum(p.A["new30s"][k] for k in range(30, t + 1, 30)) < nmin:
+        if t < len(m) and cum_new(p, t) < nmin:     # new30s may be shorter than the price path (candles)
             m[t] = True
         return m
     return fn
@@ -313,3 +314,83 @@ def flow_rule(check_t=120, check_new=50, tp=1.5, tp_frac=0.5, exh=0.3, slow_t=30
     4. at slow_t s: price under slow_x x entry -> sell all; optional fixed stop sl; 45 min horizon."""
     return dict(levels=[(tp, tp_frac)], sl0=sl,
                 masks=[(mask_cum_new(check_t, check_new), 1), (mask_exhaustion(exh), 1), (mask_slow(slow_t, slow_x), 1)])
+
+
+# ---- long horizon: minute candles after the trade window ------------------------------------------------------
+def extend_with_candles(p, w, wallet, until_s=3 * 3600):
+    """Append to path p the price after the trade window, from minute candles (copy_sim.candles: pump.fun's
+    own or GeckoTerminal, USD), up to until_s seconds after entry. Inside a minute: open, then low and high
+    (or high and low if it closed down), then close, 15 s each; minutes without trades repeat the last close.
+    Indicator arrays are not extended (signals stop at the trade window; price-based exits keep working).
+    Returns False if the candles do not cover the period."""
+    import copy_sim as CS
+    CS.setup(wallet)
+    c = CS.candles(w.mint)
+    n0 = len(p.x)
+    t0 = p.t0 if hasattr(p, "t0") else None
+    if c is None or t0 is None:
+        return False
+    ks, vs, cov = c
+    if cov > t0:
+        return False
+    start, end = t0 + n0, t0 + until_s
+    import bisect
+    i = bisect.bisect_left(ks, (start // 60) * 60)
+    last = p.x[-1] * p.entry
+    ext = []
+    for minute in range((start // 60) * 60, end, 60):
+        if i < len(ks) and ks[i] == minute:
+            o, h, l, cl = vs[i][:4]
+            seq = (o, l, h, cl) if cl >= o else (o, h, l, cl)
+            i += 1
+            last = cl
+        else:
+            seq = (last,) * 4
+        for v in seq:
+            ext += [v] * 15
+    ext = np.array(ext[start - (start // 60) * 60:]) / p.entry
+    if not len(ext):
+        return True
+    p.x = np.concatenate([p.x, ext])
+    n = len(p.x)
+    p.fill = p.x[np.minimum(np.arange(n) + DELAY, n - 1)] * (1 - SLIP - p.impact)
+    p.runmax = np.maximum.accumulate(p.x)
+    return True
+
+
+def cum_new(p, t):
+    """new wallets that bought since entry, up to t s (disjoint 30 s blocks)"""
+    return float(sum(p.A["new30s"][k] for k in range(30, min(t, len(p.A["new30s"]) - 1) + 1, 30)))
+
+
+def evaluate_modes(p, t_c, classify, rules, hard_stop=0.4):
+    """Three-mode algorithm. Before t_c s: only a hard stop (-hard_stop). At t_c: classify(p, t_c) returns
+    "exit" (sell everything), or a key of `rules` whose evaluate() arguments apply from t_c on.
+    Returns ($ result, mode)."""
+    if t_c >= len(p.x):
+        return evaluate(p), "court"
+    i = first(p.x[:t_c] <= 1 - hard_stop)
+    if i is not None:
+        return evaluate(p, sl0=hard_stop), "stop"
+    mode = classify(p, t_c)
+    if mode == "exit":
+        return evaluate(p, masks=[(lambda q, t=t_c: np.arange(len(q.x)) == t, 1)]), mode
+    return evaluate(p, t_start=t_c, **rules[mode]), mode
+
+
+def mask_exhaustion_unless(frac, above, min_el=300, floor=20):
+    """exhaustion exit (mask_exhaustion), except while the price is at or above `above` x entry"""
+    base = mask_exhaustion(frac, min_el, floor)
+
+    def fn(p):
+        m = base(p)
+        return m & (p.x[:len(m)] < above)
+    return fn
+
+
+def runner_rule(above=3.0, trail=0.5, horizon=3 * 3600):
+    """F1R: F1, but once the price reaches `above` x entry the exhaustion exit stops applying and what is left
+    runs with a trailing stop `trail` under its high, up to `horizon` s (needs paths extended with candles)."""
+    return dict(levels=[(1.5, 0.5)],
+                masks=[(mask_cum_new(120, 50), 1), (mask_slow(300, 0.85), 1), (mask_exhaustion_unless(0.3, above), 1)],
+                trail=(trail, above), tall=horizon)
