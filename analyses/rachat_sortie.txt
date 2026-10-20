@@ -1,0 +1,11 @@
+Octobre: 286 achats, F1R +615$ ; après la vente F1R, le token monte ensuite à ≥x2: 76, ≥x3: 40, ≥x5: 22, ≥x10: 8 (vs notre 1re entrée)
+Septembre: 258 achats, F1R -609$ ; après la vente F1R, le token monte ensuite à ≥x2: 59, ≥x3: 36, ≥x5: 21, ≥x10: 8 (vs notre 1re entrée)
+2442 réglages du rachat. Octobre : 0 positifs, médiane -795$, validation croisée par blocs de jours -407$
+Meilleur réglage d'octobre (('flux', 150, 1.3, 180), (0.5, (2.0, 0.5), (0.4, 1.0))): octobre -134$, septembre -48$
+Septembre : 845 positifs (médiane -92$) ; sans le token x180 : 0 positifs (médiane -469$)
+  flux    F1R          médianes : octobre   -465$  septembre   -149$  septembre sans x180   -269$
+  flux    stop/suiveur médianes : octobre   -458$  septembre    -99$  septembre sans x180   -350$
+  prix    F1R          médianes : octobre   -480$  septembre   +122$  septembre sans x180   -255$
+  prix    stop/suiveur médianes : octobre   -886$  septembre   -428$  septembre sans x180   -566$
+  record  F1R          médianes : octobre   -554$  septembre   +101$  septembre sans x180   -224$
+  record  stop/suiveur médianes : octobre  -1003$  septembre     +2$  septembre sans x180   -435$

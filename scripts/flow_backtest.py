@@ -207,7 +207,8 @@ def first(mask, start=0):
     return int(k[0]) + start if len(k) else None
 
 
-def evaluate(p, levels=(), sl0=None, sl1=None, trail=None, tmax=None, tall=None, wallet=None, climax=None, masks=(), t_start=0):
+def evaluate(p, levels=(), sl0=None, sl1=None, trail=None, tmax=None, tall=None, wallet=None, climax=None, masks=(), t_start=0,
+             return_exit=False):
     """levels: [(multiple, fraction)] take profits in order; sl0: loss before the first take profit;
     sl1: stop (multiple of entry) once a take profit or climax sale happened; trail: (drop, arming multiple)
     on what is left; tmax: s without any sale -> sell all; tall: s -> sell all; wallet: (share sold by the
@@ -271,9 +272,12 @@ def evaluate(p, levels=(), sl0=None, sl1=None, trail=None, tmax=None, tall=None,
         else:
             sell(i, left)
         t = i + 1
+    last = t - 1
     if left > 1e-9:
         sell(n - 1, left)
-    return cash - p.stake - p.gas * ntx
+        last = n - 1
+    pnl = cash - p.stake - p.gas * ntx
+    return (pnl, last) if return_exit else pnl
 
 
 # ---- the "flow" algorithm (pre-registered form; parameters frozen in flow_report.py) ---------------------------

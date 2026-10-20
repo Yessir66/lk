@@ -30,7 +30,19 @@ Le filtre « forme » réduit les pertes dans les deux mois ; aucune variante n'
   La règle « on repère les gros gagnants en 2 minutes » n'est donc pas stable d'un mois à l'autre.
 
 ## Pistes
-* **Rachat** : si un token vendu au contrôle repart plus tard (afflux de nouveaux acheteurs, prix au-dessus
-  de l'entrée), y revenir — pour ne plus rater les gros gagnants lents.
 * Plusieurs wallets déclencheurs pour diversifier.
 * Test en direct (bot de simulation) pour juger sur des données vraiment nouvelles.
+
+## Test du rachat des gros gagnants (20/10) — rejeté
+Idée : quand F1R a tout vendu et que le token repart, racheter 50 $ pour ne plus rater les gros gagnants.
+Script : `scripts/reentry_test.py` (sortie : `analyses/rachat_sortie.txt`).
+
+* Le potentiel existe : après la vente F1R, 22 tokens d'octobre et 21 de septembre montent encore à ≥ ×5
+  (vs notre 1re entrée), 8 par mois à ≥ ×10.
+* 2 442 réglages testés : déclencheur prix (×1,2 à ×3 de l'entrée), nouveau record, afflux de nouveaux
+  wallets (40 à 150 en 1 min) ; gestion par stop −25/−35/−50 %, prise de profit à ×2, stop suiveur, ou F1R.
+* **Octobre (mise au point) : aucun réglage positif** (médiane −795 $, validation croisée −407 $).
+* Septembre : positif seulement grâce au token ×180 ; sans lui, aucun réglage positif (médiane −469 $).
+* Pourquoi : les vrais gros gagnants rechutent de 50 à 77 % avant leur plus haut. Un stop les coupe ; sans
+  stop, les nombreux faux départs coûtent plus que les rares gagnants ne rapportent (tenir 3 h :
+  −2 481 $ en octobre). Racheter plus haut, c'est payer plus cher le même pari.
