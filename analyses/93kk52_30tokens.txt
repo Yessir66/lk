@@ -1,0 +1,53 @@
+1500 transactions (20/10 19:36:29 -> maintenant) : 3 tokens utilisables
+3000 transactions (20/10 19:09:23 -> maintenant) : 8 tokens utilisables
+4500 transactions (20/10 18:58:47 -> maintenant) : 11 tokens utilisables
+6000 transactions (20/10 18:32:32 -> maintenant) : 18 tokens utilisables
+7500 transactions (20/10 18:06:09 -> maintenant) : 20 tokens utilisables
+9000 transactions (20/10 17:31:12 -> maintenant) : 25 tokens utilisables
+10500 transactions (20/10 17:14:23 -> maintenant) : 32 tokens utilisables
+
+achat (FR)      token     lieu     MC wallet MC copie    max nouv.2m  wallet        F1R         F1 ses ventes F1R+ventes  vente 50 % (tx / flux)
+20/10 17:39:53 7xXPtTHg  pump          9.9k    11.7k x 2.47     334 x  1.50      +7.22      +7.22     +11.74     +15.99  17:40:31 / 17:40:31
+20/10 17:41:30 Az8Ghjfn  pump          5.7k     8.9k x 1.11      35 x  1.06      -7.87      -7.87     -16.12      -7.87  17:44:14 / 17:44:14
+20/10 17:42:36 BaQjWXBa  pump          3.7k     5.6k x 1.34      83 x  1.22     -18.30     -18.30     -20.76     -20.76  17:43:42 / 17:43:42
+20/10 17:43:29 DYxJc5Wb  pump          8.4k     9.8k x 4.66     290 x  0.86     +31.86     +35.33     -15.82     -15.82  17:43:39 / 17:43:39
+20/10 17:44:35 A2xax3sB  pump         11.4k    11.8k x 0.90      81 x  0.82     -33.23     -33.23     -16.03     -16.03  17:44:54 / 17:44:36
+20/10 17:50:30 E4iQG46w  pump          3.7k     5.6k x 1.04      29 x  1.01     -25.00     -25.00     -22.24     -22.24  17:50:46 / 17:50:46
+20/10 17:50:43 ArvkyNhb  pump          3.6k     6.0k x 1.44      18 x  1.36     -20.36     -20.36     -11.54     -11.54  17:51:07 / 17:51:07
+20/10 17:51:28 9okj9ZW9  pump          4.8k     6.6k x 0.99      22 x  0.85     -28.60     -28.60     -23.89     -23.89  17:51:58 / 17:51:58
+20/10 18:05:40 2ekC92ru  pump          6.3k     7.3k x 0.99      35 x  0.78     -23.89     -23.89     -22.71     -22.71  18:05:54 / 18:05:54
+20/10 18:20:55 HgNrXTXf  pump         17.9k    17.7k x 2.46     235 x  2.12      +9.86      +9.86     +44.09     +29.14  18:24:46 / 18:24:46
+20/10 18:42:09 7pdf2FPZ  pump          5.2k     6.7k x 2.82      99 x  2.91      -2.43      -2.43     +64.18     +41.26  18:45:48 / 18:45:48
+20/10 18:45:37 39ASXk1w  pump         11.3k    13.7k x 1.14      36 x  0.82     -13.30     -13.30     -24.92     -13.30  18:51:56 / 18:51:56
+20/10 18:55:10 7vroZUHn  pump         12.6k    11.6k x 2.89     172 x  0.88     +21.69     +21.69     -13.15     -13.15  18:55:31 / 18:55:12
+20/10 18:58:19 4hBbwHV9  pump          7.8k     9.8k x 1.12     130 x  1.00     -35.74     -35.74     -11.16     -11.16  18:58:46 / 18:58:46
+20/10 19:03:34 6G7qQvTh  pump          3.5k     5.0k x 0.99       3 x  1.18     -18.52     -18.52     -17.21     -17.21  19:03:35 / 19:03:35
+20/10 19:04:10 4JBbhpNN  pump          4.9k     6.7k x 1.28      96 x  1.07     -20.33     -20.33     -17.59     -17.59  19:05:50 / 19:05:50
+20/10 19:05:57 366edMrX  pump          4.0k     6.6k x 1.99     178 x  1.21      +1.90      +1.90     -20.25      +1.81  19:08:28 / 19:08:28
+20/10 19:08:37 3UdYADgZ  ignoré : pas de données de trades
+20/10 19:09:58 79FJtnAP  pump         10.7k    12.4k x 1.54     168 x  1.45      -9.06      -9.06      +1.74      +8.78  19:12:27 / 19:12:27
+20/10 19:14:46 hSho6zMn  pump          5.4k     8.3k x 2.50     110 x  1.76     +11.40     +11.40      +2.21      -0.11  19:16:15 / 19:16:15
+20/10 19:17:33 wTPN2A1G  pump          8.0k    10.6k x 1.61      15 x  0.88     -16.59     -16.59     -15.46     -16.59  19:35:11 / 19:35:11
+20/10 19:18:32 F1skAL4Y  pump         10.2k    12.3k x 2.24     321 x  1.68      -4.23      -4.23      -1.71     +12.77  19:19:58 / 19:19:58
+20/10 19:26:32 DYixvwQJ  pump          3.9k     5.9k x 6.36     218 x  2.05     +58.36     +50.05      +7.68     +13.90  19:27:36 / 19:27:36
+20/10 19:32:49 13v67Ewb  pump         12.7k    16.1k x 3.03     267 x  0.97     +40.61     +40.61     -15.92     -15.92  19:32:57 / 19:32:57
+20/10 19:33:02 ABLMQjh1  pump          6.4k     6.2k x 1.30      43 x  0.76     -12.58     -12.58     -17.21     -17.21  19:33:53 / 19:33:53
+20/10 19:36:05 JBgC482P  pump          6.1k     6.6k x 1.25      84 x  0.83     -29.63     -29.63     -12.58     -12.58  19:37:47 / 19:36:20
+20/10 19:40:02 8Q63AzML  pump          7.2k     9.1k x10.10     206 x  4.56    +101.63    +187.87     +79.20     +50.00  19:43:20 / 19:43:20
+20/10 19:54:21 8gxHUMF8  pump          5.4k     7.3k x 1.96     100 x  1.42      -2.97      -2.97     -14.56      +4.64  19:55:53 / 19:55:53
+20/10 20:00:09 8UhhAfvv  pump         21.3k    19.5k x 1.02     162 x  0.68     -41.81     -41.81     -25.66     -25.66  20:00:18 / 20:00:18
+20/10 20:00:39 BGCLPdYC  pump          9.9k     9.6k x 3.64     213 x  2.87     +17.46      -8.22     +85.91     +43.70  20:04:43 / 20:04:43
+
+Total tous (29 tokens, 50 $ chacun) :
+  F1R           -62.43 $   gagnants 10/29   sans le meilleur  -164.06 $   sans les 3 meilleurs  -263.03 $
+  F1             -6.71 $   gagnants  9/29   sans le meilleur  -194.58 $   sans les 3 meilleurs  -285.23 $
+  ses ventes    -59.72 $   gagnants  8/29   sans le meilleur  -145.64 $   sans les 3 meilleurs  -289.01 $
+  F1R+ventes    -79.34 $   gagnants 10/29   sans le meilleur  -129.34 $   sans les 3 meilleurs  -214.29 $
+  le wallet lui-même : 55.51 SOL investis, 71.91 SOL récupérés (x1.30)
+
+Total courbe pump.fun (29 tokens, 50 $ chacun) :
+  F1R           -62.43 $   gagnants 10/29   sans le meilleur  -164.06 $   sans les 3 meilleurs  -263.03 $
+  F1             -6.71 $   gagnants  9/29   sans le meilleur  -194.58 $   sans les 3 meilleurs  -285.23 $
+  ses ventes    -59.72 $   gagnants  8/29   sans le meilleur  -145.64 $   sans les 3 meilleurs  -289.01 $
+  F1R+ventes    -79.34 $   gagnants 10/29   sans le meilleur  -129.34 $   sans les 3 meilleurs  -214.29 $
+  le wallet lui-même : 55.51 SOL investis, 71.91 SOL récupérés (x1.30)
