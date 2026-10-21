@@ -5,20 +5,20 @@ indicators computed from the token's trades, and the indicators are compared bet
 tokens that fail. Indicators and outcomes were fixed before looking at any alert.
 
 At the alert (start of its minute t, trades before t only):
-  MC, age (min since the first trade seen, 30 = 30 or more), volume 1 min / 5 min ($), accélération
+  MC, age (min since the first trade seen, 5 = 5 or more), volume 1 min / 5 min ($), accélération
   (5 x vol 1 min / vol 5 min), achats % (buy share of the last minute's $ volume), achats/ventes (counts, 1 min),
-  nouveaux 1 min (wallets whose first trade is a buy, last 60 s), acheteurs (distinct buyers so far),
+  nouveaux 1 min (wallets whose first trade is a buy, last 60 s), acheteurs (distinct buyers, last 6 min),
   var 1 min / var 5 min (price change), vs ATH (price / highest price before t), gros acheteur % (largest
   wallet's share of the last 5 min's buy volume), achat moyen ($, 1 min), dev vendu (share of its tokens the
   creator has sold, when the creation is in the data).
 One minute after the alert (t + 60 s): nouveaux après 1 min, var après 1 min.
 Outcomes, buying at the end of the alert minute (t + 59 s), or at t + 119 s for the "after 1 min" indicators:
-  performe = reaches x2 within 45 min; mauvais = never reaches x1.3; result of a 50 $ F1R position.
+  performe = reaches x2 within the horizon (45 min by default); mauvais = never reaches x1.3; result of a 50 $ F1R position.
 Analysis: medians (performe vs mauvais) and AUC of each indicator (probability that a performing token has a
 higher value than a bad one: 0.5 = useless, near 0 or 1 = discriminating); one-indicator filters chosen on
 the first half of the alerts (in time) and checked on the second half.
 
-Usage: alerts_features.py <alerts.csv>   (same CSV as alerts_test.py; Windows: python scripts\\alerts_features.py)
+Usage: alerts_features.py <alerts.csv> [--minutes 45] [--cache-only]   (same CSV and options as alerts_test.py)
 """
 import collections
 import datetime
@@ -31,13 +31,15 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
 import flow_backtest as B  # noqa: E402
-from alerts_test import OUT, PARIS, PRE_S, prefetch, read_alerts, trades_for, window  # noqa: E402
+import alerts_test as AT  # noqa: E402
+from alerts_test import OUT, PRE_S, prefetch, trades_for, window  # noqa: E402
 
 warnings.simplefilter("ignore", RuntimeWarning)         # medians of empty groups
 AT_ALERT = ["MC", "âge (min)", "volume 1 min", "volume 5 min", "accélération", "achats %", "achats/ventes",
             "nouveaux 1 min", "acheteurs", "var 1 min", "var 5 min", "vs ATH", "gros acheteur %", "achat moyen",
             "dev vendu"]
 AFTER = ["nouveaux après 1 min", "var après 1 min"]
+CAP = (PRE_S - 60) / 60                                  # age seen at most (min)
 
 
 def price_at(T, px, t):
@@ -59,7 +61,7 @@ def features(mint, t, tr):
     first = {}
     for u, tt, b in zip(user, T, buy):
         first.setdefault(u, (tt, b))
-    f = {"MC": price_at(T, px, t - 1), "âge (min)": min(30.0, (t - T[0]) / 60) if seen_start else 30.0}
+    f = {"MC": price_at(T, px, t - 1), "âge (min)": min(CAP, (t - T[0]) / 60) if seen_start else CAP}
     w = window(mint, t, tr)
     if w is None:
         return None
@@ -136,13 +138,19 @@ def best_filter(rows, names, out, min_keep=0.3):
 
 
 def main():
-    alerts, _ = read_alerts(sys.argv[1])
+    alerts, _ = AT.setup(sys.argv[1:])
     prefetch(alerts)
-    rows = []
+    rows, failed = [], 0
     for mint, t in sorted(alerts.items(), key=lambda kv: kv[1]):
-        f = features(mint, t, trades_for(mint, t))
+        tr = trades_for(mint, t)
+        if tr is None:
+            failed += 1
+            continue
+        f = features(mint, t, tr)
         if f:
             rows.append(f)
+    if failed:
+        print(f"{failed} alertes au téléchargement incomplet (limite de l'API) laissées de côté : relancer plus tard")
     json.dump(rows, open(os.path.join(OUT, "features.json"), "w"), indent=1, default=float)
     print(f"{len(alerts)} alertes NOUVEAU, {len(rows)} analysables")
     if len(rows) < 10:
@@ -154,7 +162,7 @@ def main():
         bad = [r for r in rows if r["max" + key] < 1.3]
         pnl = np.array([r["F1R" + key] for r in rows])
         print(f"\n=== {title}")
-        print(f"{len(perf)} performent (≥ x2 en 45 min), {len(bad)} mauvais (jamais x1,3), {len(rows) - len(perf) - len(bad)} entre les deux ; "
+        print(f"{len(perf)} performent (≥ x2 en {B.HORIZON // 60} min), {len(bad)} mauvais (jamais x1,3), {len(rows) - len(perf) - len(bad)} entre les deux ; "
               f"F1R sur toutes : {pnl.sum():+.0f} $ ({int((pnl > 0).sum())} gagnants / {len(pnl)})")
         tab = []
         for nm in names:

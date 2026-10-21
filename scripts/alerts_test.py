@@ -6,13 +6,16 @@ notifications (x2, x3...) right?
 Input: CSV, one line per bot message, oldest first, ';'-separated: type;date;heure;adresse;multiple;infos
   type NOUVEAU (new token alert) or PERFORMANCE (x2, x3... notification); date dd/mm/yyyy or yyyy-mm-dd;
   heure HH:MM or HH:MM:SS, Paris time (Discord shows minutes only); multiple e.g. "x2" (PERFORMANCE only).
-For each NOUVEAU alert: all trades of the token (swap-api.pump.fun) from 5 min before to 45 min after, then a
+For each NOUVEAU alert: all trades of the token (swap-api.pump.fun) from 6 min before to 45 min after, then a
 50 $ buy at the start of the alert's minute, at its end and 30 s later, sold by F1R and F1 (flow_backtest.py);
 plus the highest multiple reached in 45 min vs the price at the start of the minute.
 For each PERFORMANCE notification: the multiple our data shows at that time vs the announced one.
 
-Usage: alerts_test.py <alerts.csv>      (Windows: python scripts\\alerts_test.py alerts.csv, needs pip install tzdata)
+Usage: alerts_test.py <alerts.csv> [--minutes 45] [--cache-only]
+  --minutes: horizon after the alert (shorter = fewer trades to download); --cache-only: only the alerts already
+  downloaded (a first look while the download goes on). Windows: python scripts\\alerts_test.py, pip install tzdata
 """
+import argparse
 import collections
 import concurrent.futures
 import csv
@@ -37,7 +40,8 @@ except zoneinfo.ZoneInfoNotFoundError:
 DELAYS = {"début minute": 0, "fin minute": 59, "+30 s": 89}
 RULES = {"F1R": B.runner_rule(), "F1": B.flow_rule()}
 OUT = os.path.join(os.path.dirname(__file__), "..", "data", "alerts")
-PRE_S, POST_S = 1800, 119 + B.HORIZON          # trades kept around each alert (s before, s after)
+PRE_S = 360                                      # trades kept before each alert (s)
+POST_S = 119 + B.HORIZON                         # and after (set by setup() from --minutes)
 
 
 def when(date, hour):
@@ -46,6 +50,24 @@ def when(date, hour):
     y, m, dd = (int(d[0]), int(d[1]), int(d[2])) if len(d[0]) == 4 else (int(d[2]), int(d[1]), int(d[0]))
     h = [int(x) for x in hour.strip().split(":")] + [0]
     return int(datetime.datetime(y, m, dd, h[0], h[1], h[2], tzinfo=PARIS).timestamp())
+
+
+def setup(argv):
+    """common options of the alert scripts -> (alerts, perf); sets the horizon"""
+    global POST_S
+    ap = argparse.ArgumentParser()
+    ap.add_argument("csv")
+    ap.add_argument("--minutes", type=int, default=45, help="horizon after the alert (min), 45 by default")
+    ap.add_argument("--cache-only", action="store_true", help="only the alerts whose trades are already downloaded")
+    a = ap.parse_args(argv)
+    B.HORIZON = a.minutes * 60
+    POST_S = 119 + B.HORIZON
+    alerts, perf = read_alerts(a.csv)
+    if a.cache_only:
+        alerts = {m: t for m, t in alerts.items() if os.path.exists(os.path.join(OUT, f"trades_{m}_{t}.json"))}
+        print(f"{len(alerts)} alertes déjà téléchargées analysées (--cache-only)")
+    print(f"Horizon : {a.minutes} min après l'alerte")
+    return alerts, perf
 
 
 def read_alerts(path):
@@ -70,15 +92,18 @@ def read_alerts(path):
 
 
 def trades_for(mint, t):
-    """all trades of mint from PRE_S before to POST_S after t (cached in data/alerts)"""
+    """trades of mint from PRE_S before to POST_S after t (cached in data/alerts); None if the download failed"""
     f = os.path.join(OUT, f"trades_{mint}_{t}.json")
     if os.path.exists(f):
-        return json.load(open(f))["trades"]
-    now = int(datetime.datetime.now().timestamp())
-    tr, ok = fetch(mint, t - PRE_S, min(t + POST_S, now))
-    if t + POST_S < now:                        # complete period only
-        json.dump({"ok": ok, "trades": tr}, open(f, "w"))
-    return tr
+        tr = json.load(open(f))["trades"]
+    else:
+        now = int(datetime.datetime.now().timestamp())
+        tr, ok = fetch(mint, t - PRE_S, min(t + POST_S, now))
+        if not ok:                              # rate limit or API error: retried on the next run
+            return None
+        if t + POST_S < now:                    # complete period only
+            json.dump({"ok": ok, "trades": tr}, open(f, "w"))
+    return [x for x in tr if t - PRE_S <= B.ts(x["timestamp"]) <= t + POST_S]
 
 
 def prefetch(alerts, threads=4):
@@ -101,13 +126,17 @@ def window(mint, t, trades):
 
 
 def main():
-    alerts, perf = read_alerts(sys.argv[1])
+    alerts, perf = setup(sys.argv[1:])
     prefetch(alerts)
     res = []
     fr = lambda t: datetime.datetime.fromtimestamp(t, PARIS).strftime("%d/%m %H:%M:%S")
     for mint, t in sorted(alerts.items(), key=lambda kv: kv[1]):
         trades = trades_for(mint, t)
-        r = dict(mint=mint, t=t, n=len(trades))
+        r = dict(mint=mint, t=t, n=len(trades or []))
+        if trades is None:
+            r["skip"] = "téléchargement incomplet (limite de l'API), à relancer"
+            res.append(r)
+            continue
         w0 = window(mint, t, trades)
         if w0 is None:
             r["skip"] = "pas de données pump.fun" if not trades else "trop peu de trades"
@@ -129,7 +158,7 @@ def main():
 
     ok = [r for r in res if "skip" not in r]
     print(f"{len(alerts)} alertes NOUVEAU, {len(ok)} testables, {len(perf)} notifications de performance\n")
-    print(f"{'alerte':15s} {'token':9s} {'lieu':8s} {'MC':>7s} {'max 45 min':>10s} " +
+    print(f"{'alerte':15s} {'token':9s} {'lieu':8s} {'MC':>7s} {'max horizon':>10s} " +
           " ".join(f"{'F1R ' + k:>16s}" for k in DELAYS))
     for r in res:
         if "skip" in r:
@@ -142,7 +171,7 @@ def main():
     if not ok:
         return
     top = np.array([r["top"] for r in ok])
-    print(f"\nPlus haut en 45 min (vs prix au début de la minute de l'alerte) : "
+    print(f"\nPlus haut en {B.HORIZON // 60} min (vs prix au début de la minute de l'alerte) : "
           + ", ".join(f"≥x{k}: {(top >= k).sum()}/{len(ok)}" for k in (1.5, 2, 3, 5, 10)))
     print("Résultat avec 50 $ par alerte :")
     for k in RULES:

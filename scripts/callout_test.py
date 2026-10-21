@@ -15,6 +15,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 
 import numpy as np
@@ -32,9 +33,12 @@ RULES = {"F1R": (B.runner_rule(), {"mask1": "lent (< x0,85 à 5 min)",
 
 
 def get(url):
-    for k in range(6):
+    """json of url; waits and retries on errors, longer on 429 (rate limit); None after ~6 min of failures"""
+    for k in range(12):
         try:
             return json.loads(urllib.request.urlopen(urllib.request.Request(url, headers=H), timeout=30).read())
+        except urllib.error.HTTPError as e:
+            time.sleep(min(60, 10 * (k + 1)) if e.code == 429 else 2 + 3 * k)
         except Exception:
             time.sleep(2 + 3 * k)
     return None
