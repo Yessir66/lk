@@ -14,6 +14,7 @@ For each PERFORMANCE notification: the multiple our data shows at that time vs t
 Usage: alerts_test.py <alerts.csv>      (Windows: python scripts\\alerts_test.py alerts.csv, needs pip install tzdata)
 """
 import collections
+import concurrent.futures
 import csv
 import datetime
 import json
@@ -36,6 +37,7 @@ except zoneinfo.ZoneInfoNotFoundError:
 DELAYS = {"début minute": 0, "fin minute": 59, "+30 s": 89}
 RULES = {"F1R": B.runner_rule(), "F1": B.flow_rule()}
 OUT = os.path.join(os.path.dirname(__file__), "..", "data", "alerts")
+PRE_S, POST_S = 1800, 119 + B.HORIZON          # trades kept around each alert (s before, s after)
 
 
 def when(date, hour):
@@ -44,6 +46,43 @@ def when(date, hour):
     y, m, dd = (int(d[0]), int(d[1]), int(d[2])) if len(d[0]) == 4 else (int(d[2]), int(d[1]), int(d[0]))
     h = [int(x) for x in hour.strip().split(":")] + [0]
     return int(datetime.datetime(y, m, dd, h[0], h[1], h[2], tzinfo=PARIS).timestamp())
+
+
+def read_alerts(path):
+    """{mint: unix time of its first NOUVEAU alert}, [(mint, unix time, announced multiple)]"""
+    rows = [r for r in csv.reader(open(path, encoding="utf-8-sig"), delimiter=";") if len(r) >= 4]
+    alerts, perf = {}, []
+    for r in rows:
+        kind = r[0].strip().upper()
+        if kind not in ("NOUVEAU", "PERFORMANCE"):
+            continue
+        t, mint = when(r[1], r[2]), r[3].strip()
+        if kind == "NOUVEAU":
+            alerts.setdefault(mint, t)
+        else:
+            mult = re.search(r"(\d+(?:[.,]\d+)?)", r[4] if len(r) > 4 else "")
+            perf.append((mint, t, float(mult.group(1).replace(",", ".")) if mult else None))
+    return alerts, perf
+
+
+def trades_for(mint, t):
+    """all trades of mint from PRE_S before to POST_S after t (cached in data/alerts)"""
+    f = os.path.join(OUT, f"trades_{mint}_{t}.json")
+    if os.path.exists(f):
+        return json.load(open(f))["trades"]
+    now = int(datetime.datetime.now().timestamp())
+    tr, ok = fetch(mint, t - PRE_S, min(t + POST_S, now))
+    if t + POST_S < now:                        # complete period only
+        json.dump({"ok": ok, "trades": tr}, open(f, "w"))
+    return tr
+
+
+def prefetch(alerts, threads=4):
+    os.makedirs(OUT, exist_ok=True)
+    with concurrent.futures.ThreadPoolExecutor(threads) as ex:
+        for k, _ in enumerate(ex.map(lambda kv: trades_for(*kv), alerts.items()), 1):
+            if k % 10 == 0:
+                print(f"  trades récupérés pour {k}/{len(alerts)} alertes", flush=True)
 
 
 def window(mint, t, trades):
@@ -58,21 +97,12 @@ def window(mint, t, trades):
 
 
 def main():
-    os.makedirs(OUT, exist_ok=True)
-    rows = [r for r in csv.reader(open(sys.argv[1], encoding="utf-8"), delimiter=";") if len(r) >= 4]
-    rows = [r for r in rows if r[0].strip().upper() in ("NOUVEAU", "PERFORMANCE")]
-    alerts, perf = {}, []
-    for r in rows:
-        kind, t, mint = r[0].strip().upper(), when(r[1], r[2]), r[3].strip()
-        if kind == "NOUVEAU":
-            alerts.setdefault(mint, t)
-        else:
-            mult = re.search(r"(\d+(?:[.,]\d+)?)", r[4] if len(r) > 4 else "")
-            perf.append((mint, t, float(mult.group(1).replace(",", ".")) if mult else None))
+    alerts, perf = read_alerts(sys.argv[1])
+    prefetch(alerts)
     res = []
     fr = lambda t: datetime.datetime.fromtimestamp(t, PARIS).strftime("%d/%m %H:%M:%S")
     for mint, t in sorted(alerts.items(), key=lambda kv: kv[1]):
-        trades, ok = fetch(mint, t - 300, t + 89 + B.HORIZON)
+        trades = trades_for(mint, t)
         r = dict(mint=mint, t=t, n=len(trades))
         w0 = window(mint, t, trades)
         if w0 is None:
