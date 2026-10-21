@@ -62,7 +62,11 @@ def read_alerts(path):
         else:
             mult = re.search(r"(\d+(?:[.,]\d+)?)", r[4] if len(r) > 4 else "")
             perf.append((mint, t, float(mult.group(1).replace(",", ".")) if mult else None))
-    return alerts, perf
+    now = datetime.datetime.now().timestamp()
+    recent = [m for m, t in alerts.items() if t + POST_S > now]
+    if recent:                                  # their 45 min after the alert are not over yet
+        print(f"{len(recent)} alertes de moins de {POST_S // 60 + 1} min ignorées pour l'instant (résultat pas encore connu)")
+    return {m: t for m, t in alerts.items() if m not in recent}, perf
 
 
 def trades_for(mint, t):
