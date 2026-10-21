@@ -9,10 +9,12 @@ analyses/alerts_preregistration.md), on later alerts only:
 Compared with buying every alert at t + 119 s and at t + 59 s (same exits). Other thresholds are shown for
 information only (not part of the frozen rule).
 
-Usage: alerts_rule.py <alerts.csv> --after "DD/MM/YYYY HH:MM" [--minutes 20] [--cache-only]
+Usage: alerts_rule.py <alerts.csv> --after "DD/MM/YYYY HH:MM" [--sample N] [--minutes 20] [--cache-only]
+  --sample N: only N of these alerts, drawn at random with a fixed seed (same draw on every run)
 """
 import datetime
 import os
+import random
 import sys
 
 import numpy as np
@@ -26,11 +28,25 @@ NEW_MIN = 131                                  # frozen on the first 90 alerts
 
 def main():
     argv = sys.argv[1:]
+    sample = None
+    if "--sample" in argv:
+        j = argv.index("--sample")
+        sample = int(argv[j + 1])
+        argv = argv[:j] + argv[j + 2:]
+    cache_only = "--cache-only" in argv                    # applied after the draw, so the draw never depends on it
+    argv = [a for a in argv if a != "--cache-only"]
     i = argv.index("--after")
     after = datetime.datetime.strptime(argv[i + 1], "%d/%m/%Y %H:%M").replace(tzinfo=AT.PARIS).timestamp()
     alerts, _ = AT.setup(argv[:i] + argv[i + 2:])
     alerts = {m: t for m, t in alerts.items() if t >= after}
     print(f"{len(alerts)} alertes à partir du {argv[i + 1]} (jamais utilisées pour choisir la règle)")
+    if sample and sample < len(alerts):
+        keep = random.Random(0).sample(sorted(alerts), sample)
+        alerts = {m: alerts[m] for m in keep}
+        print(f"échantillon tiré au hasard (graine fixe) : {len(alerts)} alertes")
+    if cache_only:
+        alerts = {m: t for m, t in alerts.items() if os.path.exists(os.path.join(AT.OUT, f"trades_{m}_{t}.json"))}
+        print(f"dont {len(alerts)} déjà téléchargées (--cache-only)")
     AT.prefetch(alerts)
     rows = []
     for mint, t in sorted(alerts.items(), key=lambda kv: kv[1]):
