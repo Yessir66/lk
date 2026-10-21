@@ -11,7 +11,7 @@ For each NOUVEAU alert: all trades of the token (swap-api.pump.fun) from 5 min b
 plus the highest multiple reached in 45 min vs the price at the start of the minute.
 For each PERFORMANCE notification: the multiple our data shows at that time vs the announced one.
 
-Usage: alerts_test.py <alerts.csv>
+Usage: alerts_test.py <alerts.csv>      (Windows: python scripts\\alerts_test.py alerts.csv, needs pip install tzdata)
 """
 import collections
 import csv
@@ -28,7 +28,11 @@ sys.path.insert(0, os.path.dirname(__file__))
 import flow_backtest as B  # noqa: E402
 from callout_test import fetch  # noqa: E402
 
-PARIS = zoneinfo.ZoneInfo("Europe/Paris")
+sys.stdout.reconfigure(encoding="utf-8")          # Windows consoles and pipes
+try:
+    PARIS = zoneinfo.ZoneInfo("Europe/Paris")
+except zoneinfo.ZoneInfoNotFoundError:
+    raise SystemExit("Fuseau horaire Europe/Paris introuvable : lancer « pip install tzdata » (Windows)")
 DELAYS = {"début minute": 0, "fin minute": 59, "+30 s": 89}
 RULES = {"F1R": B.runner_rule(), "F1": B.flow_rule()}
 OUT = os.path.join(os.path.dirname(__file__), "..", "data", "alerts")
