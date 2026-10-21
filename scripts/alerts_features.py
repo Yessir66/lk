@@ -103,7 +103,7 @@ def features(mint, t, tr):
 def auc(a, b):
     a, b = np.asarray(a, float), np.asarray(b, float)
     a, b = a[~np.isnan(a)], b[~np.isnan(b)]
-    if not len(a) or not len(b):
+    if len(a) < 8 or len(b) < 8:                         # too few values (e.g. "dev vendu"): no score
         return np.nan
     return float(((a[:, None] > b[None, :]).sum() + 0.5 * (a[:, None] == b[None, :]).sum()) / (len(a) * len(b)))
 
@@ -156,8 +156,8 @@ def main():
     if len(rows) < 10:
         print("Trop peu d'alertes pour comparer les indicateurs.")
         return
-    for title, names, key in (("Au moment de l'alerte (achat à la fin de la minute)", AT_ALERT, ""),
-                              ("En attendant 1 minute après l'alerte (achat 1 min plus tard)", AT_ALERT + AFTER, " après 1 min")):
+    for title, names, key in (("Au moment de l'alerte (achat 59 s après)", AT_ALERT, ""),
+                              ("En attendant 1 minute après l'alerte (achat 2 min après)", AT_ALERT + AFTER, " après 1 min")):
         perf = [r for r in rows if r["max" + key] >= 2]
         bad = [r for r in rows if r["max" + key] < 1.3]
         pnl = np.array([r["F1R" + key] for r in rows])

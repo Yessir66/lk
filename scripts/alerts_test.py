@@ -37,7 +37,7 @@ try:
     PARIS = zoneinfo.ZoneInfo("Europe/Paris")
 except zoneinfo.ZoneInfoNotFoundError:
     raise SystemExit("Fuseau horaire Europe/Paris introuvable : lancer « pip install tzdata » (Windows)")
-DELAYS = {"début minute": 0, "fin minute": 59, "+30 s": 89}
+DELAYS = {"à l'alerte": 0, "+59 s": 59, "+89 s": 89}       # buy delay after the alert time
 RULES = {"F1R": B.runner_rule(), "F1": B.flow_rule()}
 OUT = os.path.join(os.path.dirname(__file__), "..", "data", "alerts")
 PRE_S = 360                                      # trades kept before each alert (s)
@@ -94,19 +94,20 @@ def read_alerts(path):
 def trades_for(mint, t):
     """trades of mint from PRE_S before to POST_S after t (cached in data/alerts); None if the download failed"""
     f = os.path.join(OUT, f"trades_{mint}_{t}.json")
-    if os.path.exists(f):
-        tr = json.load(open(f))["trades"]
-    else:
+    d = json.load(open(f)) if os.path.exists(f) else None
+    if d is not None and d.get("end", t + 119 + 45 * 60) >= t + POST_S:    # older files covered 45 min
+        tr = d["trades"]
+    else:                                       # not downloaded yet, or for a shorter horizon
         now = int(datetime.datetime.now().timestamp())
         tr, ok = fetch(mint, t - PRE_S, min(t + POST_S, now))
         if not ok:                              # rate limit or API error: retried on the next run
             return None
         if t + POST_S < now:                    # complete period only
-            json.dump({"ok": ok, "trades": tr}, open(f, "w"))
+            json.dump({"ok": ok, "end": t + POST_S, "trades": tr}, open(f, "w"))
     return [x for x in tr if t - PRE_S <= B.ts(x["timestamp"]) <= t + POST_S]
 
 
-def prefetch(alerts, threads=4):
+def prefetch(alerts, threads=2):
     os.makedirs(OUT, exist_ok=True)
     with concurrent.futures.ThreadPoolExecutor(threads) as ex:
         for k, _ in enumerate(ex.map(lambda kv: trades_for(*kv), alerts.items()), 1):
@@ -148,9 +149,12 @@ def main():
             w = window(mint, t + d, trades)
             for k, rule in RULES.items():
                 r[f"{k} {lab}"] = B.evaluate(B.Path(w, stake=50.0), **rule) if w else 0.0
-        r["perf"] = []
+        r["perf"], r["perf_late"] = [], 0
         for m2, t2, mult in perf:
             if m2 == mint and t2 >= t:
+                if t2 + 60 > p0.t0 + len(p0.x):            # after our horizon: cannot be checked
+                    r["perf_late"] += 1
+                    continue
                 i = min(len(p0.x), t2 + 60 - p0.t0)        # notification minute included
                 r["perf"].append((t2, mult, float(np.nanmax(p0.x[:max(i, 1)]))))
         res.append(r)
@@ -182,7 +186,8 @@ def main():
     seen = [(m, s) for r in ok for _, m, s in r["perf"] if m]
     if seen:
         good = sum(s >= 0.9 * m for m, s in seen)
-        print(f"Notifications de performance confirmées par nos données (à 10 % près) : {good}/{len(seen)}")
+        print(f"Notifications de performance dans l'horizon confirmées par nos données (à 10 % près) : {good}/{len(seen)} "
+              f"({sum(r['perf_late'] for r in ok)} autres arrivées après l'horizon, non vérifiables)")
     by_day = collections.Counter(datetime.datetime.fromtimestamp(r["t"], PARIS).strftime("%d/%m") for r in ok)
     print("Alertes par jour : " + ", ".join(f"{d} {n}" for d, n in sorted(by_day.items())))
 

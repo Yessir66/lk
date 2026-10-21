@@ -14,6 +14,7 @@ import calendar
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -32,12 +33,28 @@ RULES = {"F1R": (B.runner_rule(), {"mask1": "lent (< x0,85 à 5 min)",
          "F1": (B.flow_rule(), {"mask1": "essoufflement du flux (< 30 % du pic)", "mask2": "lent (< x0,85 à 5 min)"})}
 
 
+PACE = {"gap": 0.3, "next": 0.0}             # shared by all threads: seconds between two requests, adapted to 429s
+PACE_LOCK = threading.Lock()
+
+
 def get(url):
-    """json of url; waits and retries on errors, longer on 429 (rate limit); None after ~6 min of failures"""
+    """json of url; one request at a time at an adaptive pace (slower after a 429, slowly faster after successes);
+    retries on errors; None after ~6 min of failures"""
     for k in range(12):
+        with PACE_LOCK:
+            wait = PACE["next"] - time.time()
+            PACE["next"] = max(PACE["next"], time.time()) + PACE["gap"]
+        if wait > 0:
+            time.sleep(wait)
         try:
-            return json.loads(urllib.request.urlopen(urllib.request.Request(url, headers=H), timeout=30).read())
+            d = json.loads(urllib.request.urlopen(urllib.request.Request(url, headers=H), timeout=30).read())
+            with PACE_LOCK:
+                PACE["gap"] = max(0.3, PACE["gap"] * 0.98)
+            return d
         except urllib.error.HTTPError as e:
+            if e.code == 429:
+                with PACE_LOCK:
+                    PACE["gap"] = min(4.0, PACE["gap"] * 1.5 + 0.2)
             time.sleep(min(60, 10 * (k + 1)) if e.code == 429 else 2 + 3 * k)
         except Exception:
             time.sleep(2 + 3 * k)
@@ -58,7 +75,6 @@ def fetch(mint, a, b):
         cursor = d["pagination"]["nextCursor"]
         if int(cursor.split("-")[1]) / 1000 < a:
             break
-        time.sleep(0.25)
     tr = [t for t in tr if a <= B.ts(t["timestamp"]) <= b]
     return sorted({t["tx"] + t["slotIndexId"]: t for t in tr}.values(), key=lambda t: t["slotIndexId"]), ok
 
