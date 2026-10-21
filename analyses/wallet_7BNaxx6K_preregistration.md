@@ -25,3 +25,12 @@ une entrée de copie (premier trade 2 s après celui du wallet) au lieu de son p
 
 ## Critère de succès
 Total positif sur l'échantillon de test et meilleur que « sans stop » et que « stop −30 % ».
+
+## Règle candidate B (figée le 22/10 vers 4 h, avant de regarder le 19/10)
+Choisie parmi 306 combinaisons (filtre d'entrée × sortie) sur le 20/10 et le 21/10 — seules 5 étaient
+positives les deux jours, de très peu : le risque que ce soit du hasard est élevé.
+* N'acheter que si la MC au moment de son achat est ≥ 22 600 $.
+* Vente totale à **x1,5** ; sinon vente **5 min** après son achat ; pas de stop.
+* Entrée au prix de copie (premier trade 2 s après le sien, +1 %).
+Test : premiers achats du 19/10 (même critère des 2 h). Succès si positif ; la règle x2 / 20 min de
+l'utilisateur est rapportée à côté.
