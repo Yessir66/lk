@@ -22,3 +22,29 @@ Avec 50 $ par token (frais compris) : sans stop +107 $ (perdants vendus au prix 
 (coupe AyCogdFp) ; stop −60 % +108 $ (ne protège presque rien) ; **sortie si pas de x2 en 20 min : +162 $, les
 5 wins gardés, pertes des perdants divisées par deux** ; 15 min : +159 $ (4 wins sur 5).
 À confirmer sur davantage de tokens : 10 tokens d'une seule journée, et le seuil de 20 min est ajusté sur eux.
+
+## Test sur un échantillon plus large (nuit du 21 au 22/10) — règle figée avant (`wallet_7BNaxx6K_preregistration.md`)
+Premiers achats du wallet le 21/10 (04:00 → 24:00), sélection automatique : 242 tokens, dont 145 rejetés car
+créés plus de 2 h avant son premier achat, 27 sans données pump.fun, 2 sans bougies ; **63 testés** (hors
+tokens de mise au point). Bougies minute pump.fun (vérifiées contre les trades sur les tokens de départ : mêmes
+plus hauts). NB : 3 tokens de la liste de départ ne respectent pas le critère des 2 h (HuShD8S8, 419RpM6K,
+BqsbFtfb avaient des trades plus de 2 h avant son achat).
+
+* x2 atteint en 30 min : **12 tokens sur 63 (19 %)** — la liste de départ (5 win / 5 loose) surestimait la
+  réussite ; x1,5 : 31/63 ; x1,3 : 42/63.
+* Avec 50 $ par token, depuis son prix d'achat :
+
+| Règle | Total | Par token |
+|---|---|---|
+| **Règle figée : x2, sinon vente à 20 min, stop −60 %** | **−512 $** | −8,1 $ |
+| Sans stop (x2 ou prix à 30 min) | −687 $ | −10,9 $ |
+| Stop −30 % | −543 $ | −8,6 $ |
+| x2, sinon vente à 10 min | −302 $ | −4,8 $ |
+| Prix de copie (2 s après lui) avec la règle figée | −592 $ | −9,7 $ |
+
+* Le stop au temps réduit les pertes mais ne rend pas la stratégie rentable.
+* 144 combinaisons (TP x1,3 / x1,5 / x2, stop, sortie à 5-30 min, contrôle à 1-5 min) choisies sur la 1re
+  moitié : **aucune n'est positive sur les deux moitiés**. Acheter seulement après confirmation (attendre 1 à
+  5 min et acheter si le prix est au-dessus du sien) : aucune variante positive non plus.
+* Seul indice : le prix 5 min après son achat sépare bien les tokens qui feront x2 (AUC 0,83), mais c'est
+  presque mécanique (ceux qui font x2 le font vite) et ça ne donne pas de règle d'achat rentable.
