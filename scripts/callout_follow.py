@@ -573,8 +573,13 @@ def setup_alerts(username):
         return print("alertes désactivées : définis TELEGRAM_BOT_TOKEN et TELEGRAM_CHAT_ID (ceux de ton bot d'alertes)")
     try:
         wallet, _ = resolve(username)
-    except SystemExit as e:   # an unknown name must not stop the bot, only its alerts
-        return print(f"alertes désactivées : {e} ; donne plutôt ton wallet, il ne change pas si tu renommes ton profil")
+    except SystemExit as e:   # an unknown name (a renamed profile) must not stop the bot
+        if not pump.get("kp"):
+            return print(f"alertes désactivées : {e} ; donne plutôt ton wallet, il ne change pas si tu renommes ton profil")
+        wallet = str(pump["kp"].pubkey())   # the pump.fun account of the repost wallet: the user's own
+        print(f"{username} introuvable sur pump.fun (profil renommé ?) : alertes pour les comptes suivis par ton propre "
+              f"compte, wallet {wallet}")
+        username = "ton compte"
     alerts.update(token=token, chat=chat, owner=wallet, follows={}, seen=set())
     refresh_follows()
     print(f"alertes Telegram pour les {len(alerts['follows'])} comptes suivis par {username}")
