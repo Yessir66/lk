@@ -48,3 +48,24 @@ BqsbFtfb avaient des trades plus de 2 h avant son achat).
   5 min et acheter si le prix est au-dessus du sien) : aucune variante positive non plus.
 * Seul indice : le prix 5 min après son achat sépare bien les tokens qui feront x2 (AUC 0,83), mais c'est
   presque mécanique (ceux qui font x2 le font vite) et ça ne donne pas de règle d'achat rentable.
+
+## Bilan sur 3 jours (19, 20 et 21/10) — nuit du 21 au 22/10
+720 premiers achats du wallet ; 378 tokens créés plus de 2 h avant son achat (rejetés), 97 sans données
+pump.fun, 14 sans bougies ; **226 tokens testés** (hors tokens de mise au point). x2 atteint en 30 min :
+**50 / 226 (22 %)**.
+
+| Règle (50 $ par token, depuis son prix d'achat) | 19/10 | 20/10 | 21/10 | Total | Par token |
+|---|---|---|---|---|---|
+| **x2, sinon vente à 20 min, stop −60 % (figée)** | −747 $ | −419 $ | −522 $ | **−1 688 $** | −7,5 $ |
+| Sans stop (x2 ou prix à 30 min) | −1 148 $ | −730 $ | −721 $ | −2 598 $ | −11,5 $ |
+| x2, stop −30 % | −508 $ | −254 $ | −484 $ | −1 245 $ | −5,5 $ |
+| x2, sinon vente à 10 min | −741 $ | −197 $ | −353 $ | −1 291 $ | −5,7 $ |
+
+Au prix de copie (2 s après lui) : règle figée −1 661 $ sur 214 tokens.
+**Règle candidate B** (MC ≥ 22,6 k$, x1,5 sinon vente à 5 min), choisie sur le 20 et le 21/10 où elle gagnait
++10 $ et +63 $ : **−243 $ sur 38 tokens le 19/10** (jamais utilisé pour la choisir). Rejetée.
+
+**Conclusion** : copier les premiers achats de ce wallet sur des tokens de moins de 2 h perd environ 6 à 11 $
+par token de 50 $, quelle que soit la sortie testée. Un stop (prix ou temps) réduit les pertes de moitié mais ne
+rend pas la stratégie rentable : seuls ~22 % des tokens font x2, alors que la liste de départ (5 win / 5 loose)
+laissait penser à 50 %.
