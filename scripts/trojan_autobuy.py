@@ -438,7 +438,7 @@ def main():
     a = ap.parse_args()
     cfg = dict(DEFAULTS)
     if os.path.exists(a.config):
-        cfg.update(json.load(open(a.config, encoding="utf-8")))
+        cfg.update(json.load(open(a.config, encoding="utf-8-sig")))
     elif a.live or a.test_telegram:
         sys.exit(f"{a.config} introuvable : copie trojan_config.example.json en trojan_config.json et remplis-le")
     try:
