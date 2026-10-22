@@ -1,0 +1,22 @@
+{
+ "api_id": 0,
+ "api_hash": "",
+ "trojan_bot": "solana_trojanbot",
+ "wallet": "7BNaxx6KdUYrjACNQZ9He26NBFoFxujQMAfNLnArLGH5",
+ "mise_usd": 5,
+ "mc_min_usd": 45000,
+ "age_max_min": 120,
+ "baisse_max_sous_ath": 0.5,
+ "launchpads": ["pump.fun", "stonkfun"],
+ "max_signaux_par_jour": 40,
+ "retard_max_s": 15,
+ "tp1": 1.5,
+ "tp2": 2.0,
+ "stop": 0.5,
+ "sortie_min": 20,
+ "vente_auto": false,
+ "bouton_vente_tout": "(?i)sell\\s*100\\s*%|sell\\s*all|vendre\\s*(100|tout)",
+ "alertes_achat": true,
+ "frais_fixes_usd_par_tx": 0.2,
+ "rpc": []
+}
