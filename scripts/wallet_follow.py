@@ -129,7 +129,7 @@ def ws_loop(wallets):
                      flush=True)
 
     async def run():
-        fails = 0
+        fails, quiet = 0, False   # quiet: connected and already said so
         while True:
             try:
                 async with websockets.connect(WS, ssl=SSL if WS.startswith("wss") else None, max_size=None,
@@ -144,10 +144,10 @@ def ws_loop(wallets):
                             if "result" in m:
                                 subs[m["result"]] = wallets[m["id"]]
                                 if len(subs) == len(wallets):
-                                    if fails or state["ws"] != "connecté":
+                                    if not quiet:
                                         print(f"{now_str()} WebSocket connecté : {len(subs)} wallets suivis en direct",
                                               flush=True)
-                                    state["ws"], fails = "connecté", 0
+                                    state["ws"], fails, quiet = "connecté", 0, True
                             else:
                                 print(f"  abonnement refusé pour {wallets[m['id']][:8]} : {m.get('error')}", flush=True)
                             continue
@@ -156,11 +156,12 @@ def ws_loop(wallets):
                         if w and not v.get("err"):
                             submit(v["signature"], w, any(BUY_LOG.search(x) for x in v.get("logs") or []))
             except Exception as e:
-                # the public endpoint drops connections now and then: reconnect at once, the HTTP backstop
-                # covers the gap
+                # the public endpoint drops connections every minute or so: reconnect silently at once, the HTTP
+                # backstop covers the gap
                 fails += 1
                 state["ws"] = f"reconnexion ({type(e).__name__})"
                 if fails == 5:
+                    quiet = False
                     print(f"{now_str()} WebSocket injoignable ({type(e).__name__}) : détection par HTTP seule en "
                           f"attendant, plus lente de quelques secondes", flush=True)
                 await asyncio.sleep(min(fails, 10))
