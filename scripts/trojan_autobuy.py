@@ -19,12 +19,14 @@ with its Autobuy setting (5 $). Rules and setup: analyses/trojan_autobuy_guide.m
 4. Exits: the take profits (half at x1.5, the rest at x2) and the -50 % stop are set in Trojan. The bot follows
    the price (Jupiter, every 2 s) and for the two exits Trojan cannot do on its own (stop moved to the entry
    price once x1.5 is reached, sale 20 min after the wallet's buy) sends an alert to the user's Telegram
-   "Saved Messages", or clicks Trojan's "sell 100 %" button when "vente_auto" is on. It also journals what the
+   "Saved Messages", or sells through Trojan's buttons when "vente_auto" is set to true in the config: "Sell"
+   under its message for the token -> sell panel, "Swap" and "100 %" selected -> "SELL". It also journals what the
    rule would have given (paper, backtest costs: 2.25 % fee a side, 2 % slippage on sales) to compare with the
    real trades. Trojan's replies are journaled (text and buttons).
 Journal: data/trojan/journal.jsonl ; summary data/trojan/resume.json ; CAs sent data/trojan/envoyes.json.
 
-Usage: trojan_autobuy.py [--live] [--config trojan_config.json] [--test-telegram]
+Usage: trojan_autobuy.py [--live] [--config trojan_config.json] [--test-telegram] [--test-vente <CA>]
+  --test-vente sells 100 % of that token through Trojan's buttons (to check the sell flow on a real position).
 """
 import argparse
 import asyncio
@@ -61,7 +63,7 @@ DEFAULTS = {
     "mise_usd": 5, "mc_min_usd": 45000, "age_max_min": 120, "baisse_max_sous_ath": 0.5,
     "launchpads": ["pump.fun", "stonkfun"], "max_signaux_par_jour": 40, "retard_max_s": 15,
     "tp1": 1.5, "tp2": 2.0, "stop": 0.5, "sortie_min": 20,
-    "vente_auto": False, "bouton_vente_tout": r"(?i)sell\s*100\s*%|sell\s*all|vendre\s*(100|tout)",
+    "vente_auto": False,
     "alertes_achat": True, "frais_fixes_usd_par_tx": 0.2,
     "rpc": [], "rpc_publics": ["https://solana-rpc.publicnode.com", "https://api.mainnet-beta.solana.com"],
 }
@@ -192,7 +194,7 @@ class Bot:
         self.rpc = Rpc(cfg["rpc"] + cfg["rpc_publics"])
         self.seen_sigs, self.seen_mints, self.pos = set(), set(), {}
         self.stats = collections.Counter()
-        self.tg = None
+        self.tg, self.sell_lock = None, asyncio.Lock()
         f = os.path.join(OUT, "envoyes.json")
         self.sent = json.load(open(f)) if os.path.exists(f) else {}          # CA -> time sent
 
@@ -222,16 +224,67 @@ class Bot:
         if not self.tg:
             return
         if self.cfg["vente_auto"]:
-            pat = re.compile(self.cfg["bouton_vente_tout"])
-            for m in await self.tg.get_messages(self.trojan, limit=20):
-                if p.mint in (m.raw_text or "") and m.buttons:
-                    for b in (b for row in m.buttons for b in row):
-                        if pat.search(b.text or ""):
-                            await b.click()
-                            log("vente_cliquee", mint=p.mint, bouton=b.text, raison=why)
-                            return await self.notify(f"VENDU (bot) {p.sym} : {why}\n{p.mint}")
-            log("bouton_vente_introuvable", mint=p.mint, raison=why)
+            try:
+                err, done = await self.sell_all(p.mint)
+            except Exception as e:
+                err, done = repr(e), ""
+            log("vente_trojan", mint=p.mint, raison=why, erreur=err, reponse=done[:300])
+            if not err:
+                return await self.notify(f"VENDU (bot) {p.sym} : {why}\n{done[:200]}\n{p.mint}")
+            why += f" (vente auto impossible : {err})"
         await self.notify(f"VENDS TOUT {p.sym} maintenant : {why}\n{p.mint}")
+
+    def find(self, msgs, mint, pat):
+        """newest Trojan message showing the token's CA with a button matching pat -> (message, button)"""
+        for m in msgs:
+            if m.out or mint not in (m.raw_text or ""):
+                continue
+            for b in (b for row in (m.buttons or []) for b in row):
+                if re.search(pat, b.text or ""):
+                    return m, b
+        return None, None
+
+    async def wait_for(self, mint, pat, cond=lambda b: True, timeout=10):
+        end = time.time() + timeout
+        while time.time() < end:
+            await asyncio.sleep(0.8)
+            m, b = self.find(await self.tg.get_messages(self.trojan, limit=60), mint, pat)
+            if b and cond(b):
+                return m, b
+        return None, None
+
+    async def sell_all(self, mint):
+        """Trojan's sell flow: "Sell" under its message for the token -> sell panel; "Swap" and "100 %" selected
+        (a check mark) -> "SELL". Only buttons of a message showing this CA are clicked. -> (error or None, reply)"""
+        async with self.sell_lock:
+            m, b = self.find(await self.tg.get_messages(self.trojan, limit=60), mint, r"^(Sell|SELL)$")
+            if not b:
+                return "aucun message Trojan avec ce CA et un bouton Sell", ""
+            if b.text == "Sell":
+                await b.click()
+                m, b = await self.wait_for(mint, r"^SELL$")
+                if not b:
+                    return "le panneau de vente ne s'est pas ouvert", ""
+            for pat in (r"Swap", r"(^|\s)100\s*%"):
+                _, b = self.find([m], mint, pat)
+                if b and "✅" not in b.text:
+                    await b.click()
+                    m, b = await self.wait_for(mint, pat, lambda x: "✅" in x.text)
+                    if not b:
+                        return f"impossible de sélectionner « {pat} »", ""
+            _, b = self.find([m], mint, r"^SELL$")
+            if not b:
+                return "bouton SELL introuvable", ""
+            t0 = time.time()
+            await b.click()
+            while time.time() < t0 + 20:                 # Trojan's answer: a new message or the panel edited
+                await asyncio.sleep(1)
+                for r in await self.tg.get_messages(self.trojan, limit=5):
+                    txt = r.raw_text or ""
+                    if mint in txt and re.search(r"(?i)sell success|fail|error|insufficient", txt):
+                        ok = re.search(r"(?i)sell success", txt)
+                        return (None if ok else "réponse de Trojan : " + txt[-200:]), txt
+            return None, "SELL cliqué, pas de confirmation de Trojan en 20 s : vérifie la position"
 
     # ---- wallet ----
     def first_buy_candidates(self, sig, tx):
@@ -428,6 +481,16 @@ async def test_telegram(cfg):
     await b.tg.disconnect()
 
 
+async def test_sell(cfg, mint):
+    """sells 100 % of one token through Trojan's buttons, as the bot does for its two exits"""
+    b = Bot(cfg, live=True)
+    await b.connect()
+    err, reply = await b.sell_all(mint)
+    log("test_vente", mint=mint, erreur=err, reponse=reply[:300])
+    print("OK" if not err else f"ÉCHEC : {err}", "\n" + reply)
+    await b.tg.disconnect()
+
+
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -435,14 +498,16 @@ def main():
     ap.add_argument("--live", action="store_true", help="envoie vraiment les CA à Trojan")
     ap.add_argument("--config", default=os.path.join(ROOT, "trojan_config.json"))
     ap.add_argument("--test-telegram", action="store_true")
+    ap.add_argument("--test-vente", metavar="CA")
     a = ap.parse_args()
     cfg = dict(DEFAULTS)
     if os.path.exists(a.config):
         cfg.update(json.load(open(a.config, encoding="utf-8-sig")))
-    elif a.live or a.test_telegram:
+    elif a.live or a.test_telegram or a.test_vente:
         sys.exit(f"{a.config} introuvable : copie trojan_config.example.json en trojan_config.json et remplis-le")
     try:
-        asyncio.run(test_telegram(cfg) if a.test_telegram else Bot(cfg, a.live).run())
+        asyncio.run(test_telegram(cfg) if a.test_telegram else test_sell(cfg, a.test_vente) if a.test_vente
+                    else Bot(cfg, a.live).run())
     except KeyboardInterrupt:
         print("arrêt demandé", flush=True)
 

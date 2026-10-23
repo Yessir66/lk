@@ -15,7 +15,6 @@
  "stop": 0.5,
  "sortie_min": 20,
  "vente_auto": false,
- "bouton_vente_tout": "(?i)sell\\s*100\\s*%|sell\\s*all|vendre\\s*(100|tout)",
  "alertes_achat": true,
  "frais_fixes_usd_par_tx": 0.2,
  "rpc": []

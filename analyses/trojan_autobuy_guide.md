@@ -32,12 +32,21 @@ Sorties de la règle :
   - la vente du reste si le prix retombe au prix d'entrée après x1,5 ;
   - la vente à 20 min.
 
-  Il suit le prix toutes les 2 s. Au bon moment, il t'envoie « VENDS TOUT … » dans tes **Messages enregistrés**
-  Telegram (tu reçois la notification sur ton téléphone).
+  Il suit le prix toutes les 2 s. Au bon moment :
+  - **sans la vente auto** (réglage par défaut), il t'envoie « VENDS TOUT … » dans tes **Messages
+    enregistrés** Telegram, et tu reçois la notification sur ton téléphone ;
+  - **avec `"vente_auto": true`** dans `trojan_config.json`, il vend lui-même en cliquant sur les boutons de
+    Trojan, comme toi :
+    1. « Sell » sous le message d'achat de Trojan qui contient le CA ;
+    2. dans le panneau de vente, « Swap » et « 100 % » cochés (✅) ;
+    3. « SELL », puis il attend la réponse de Trojan.
 
-  Une fois qu'on aura vu à quoi ressemblent les messages et les boutons de ton Trojan (étape 6), on pourra
-  activer `"vente_auto": true` : le bot cliquera alors lui-même sur le bouton « Sell 100 % » du message de
-  Trojan qui contient le CA.
+    Il ne clique que sur ces boutons, et seulement sous un message qui contient le CA de ce token. Il ne
+    recolle jamais le CA, car avec l'Autobuy activé Trojan rachèterait. Si une étape échoue, il t'envoie
+    « VENDS TOUT … » pour que tu vendes à la main.
+
+  Avant d'activer la vente auto, teste-la une fois sur une vraie position :
+  `python scripts\trojan_autobuy.py --test-vente <CA>` vend 100 % de ce token par ce même parcours.
 
 Ces deux sorties comptent. Sur les 88 tokens éligibles du 19 au 21/10, avec une entrée au prix de copie :
 
@@ -91,9 +100,9 @@ Ces deux sorties comptent. Sur les 88 tokens éligibles du 19 au 21/10, avec une
      en as un).
    - Il envoie un message de test dans tes Messages enregistrés.
    - Il affiche les derniers messages de Trojan avec leurs boutons. **Rien n'est envoyé à Trojan.**
-6. Envoie-moi la partie « boutons » de cette sortie, et les messages de Trojan après un achat. Masque ton
-   adresse de wallet et ton solde si tu préfères. Avec ça, je règle `bouton_vente_tout` pour la vente
-   automatique.
+6. Vente automatique (facultatif) : teste-la sur une position que tu veux vendre de toute façon, avec
+   `python scripts\trojan_autobuy.py --test-vente <CA>`. Si le script affiche « OK » et que Trojan confirme la
+   vente, ajoute `"vente_auto": true` dans `trojan_config.json`.
 7. Simulation, sans rien envoyer : `python scripts\trojan_autobuy.py`. Laisse tourner 1 h pour voir passer les
    signaux et les rejets.
 8. En réel : `python scripts\trojan_autobuy.py --live`
