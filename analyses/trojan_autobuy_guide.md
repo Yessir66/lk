@@ -21,6 +21,9 @@ Un CA n'est envoyé que si **toutes** ces conditions sont remplies :
 Sorties de la règle :
 - moitié vendue à **x1,5**, puis le stop remonte au **prix d'entrée** ;
 - le reste vendu à **x2** ;
+- tout vendu **5 s après x1,8** ;
+- tout vendu si **−30 % dans la première minute** après son achat ;
+- tout vendu **5 min après son achat** si le prix est encore **entre −20 % et +20 %** ;
 - tout vendu **20 min après son achat** si x2 n'est pas atteint ;
 - stop de départ à **−50 %**.
 
@@ -28,8 +31,11 @@ Sorties de la règle :
 
 - **Trojan** gère les ventes à prix fixe : TP +50 % (vendre 50 %), TP +100 % (vendre le reste), SL −50 %
   (tout vendre). Règle-les dans Trojan pour les achats automatiques.
-- **Le bot** gère les deux sorties que Trojan ne sait probablement pas faire seul :
-  - la vente du reste si le prix retombe au prix d'entrée après x1,5 ;
+- **Le bot** gère les sorties que Trojan ne sait pas faire seul :
+  - −30 % dans la première minute ;
+  - 5 s après x1,8 ;
+  - le retour au prix d'entrée après x1,5 ;
+  - le contrôle à 5 min (entre −20 % et +20 %) ;
   - la vente à 20 min.
 
   Il suit le prix toutes les 2 s. Au bon moment :
@@ -48,18 +54,26 @@ Sorties de la règle :
   Avant d'activer la vente auto, teste-la une fois sur une vraie position :
   `python scripts\trojan_autobuy.py --test-vente <CA>` vend 100 % de ce token par ce même parcours.
 
-Ces deux sorties comptent. Sur les 88 tokens éligibles du 19 au 21/10, avec une entrée au prix de copie :
+Ces sorties comptent. Sur les 88 tokens éligibles du 19 au 21/10, avec une entrée au prix de copie (bougies d'une
+minute, donc la première minute et les « 5 s après x1,8 » sont approximés) :
 
-| Sorties appliquées | Résultat par trade |
-|---|---|
-| Règle complète | **−5,4 %** |
-| Seulement le TP/SL de Trojan (sans le stop au prix d'entrée ni la sortie à 20 min) | **−10,3 %** |
+| Sorties appliquées | Résultat par trade | 19/10 | 20/10 | 21/10 |
+|---|---|---|---|---|
+| Seulement le TP/SL de Trojan | −10,3 % | | | |
+| Règle de départ (TP/SL + prix d'entrée après x1,5 + 20 min) | −5,4 % | −15,5 % | +0,3 % | −5,4 % |
+| + −30 % dans la première minute | −2,2 % | −9,9 % | +2,9 % | −3,1 % |
+| + contrôle à 5 min (entre −20 % et +20 %) | −5,0 % | −12,1 % | −1,2 % | −4,9 % |
+| + tout vendre à x1,8 | −3,4 % à −4,4 % | | | |
+| **Les 3 ajouts ensemble (règle actuelle du bot)** | **−0,6 % à +0,3 %** | −6,5 % à −5,5 % | +0,6 % à +1,2 % | +1,8 % à +2,9 % |
+
+La fourchette va de « vendu à x1,8 » à « vendu au prix de clôture de la minute ». Les trois ajouts ont été
+proposés par l'utilisateur, pas ajustés sur ces données ; ils améliorent chacun des trois jours.
 
 ## Ce qu'il faut attendre
 
 - **Nombre de signaux :** environ 30 par jour (20, 36 et 32 du 19 au 21/10).
-- **Résultat attendu :** légèrement négatif d'après le backtest (−5 % par trade avant les frais fixes). C'est
-  un test pour mesurer la tendance réelle, pas une stratégie gagnante prouvée.
+- **Résultat attendu :** autour de 0 % par trade d'après le backtest, avant les frais fixes. C'est un test pour
+  mesurer la tendance réelle, pas une stratégie gagnante prouvée.
 - **Frais fixes :** à 5 $ la position, ils pèsent lourd. Les frais de priorité de Trojan et la location de
   0,002 SOL par nouveau compte de token font plusieurs % par trade. La location est récupérable en fermant
   les comptes vides.

@@ -17,9 +17,14 @@ with its Autobuy setting (5 $). Rules and setup: analyses/trojan_autobuy_guide.m
    session file stay on the user's PC, trojan_config.json and *.session are gitignored). Without --live: the
    same detection, journal only (dry run).
 4. Exits: the take profits (half at x1.5, the rest at x2) and the -50 % stop are set in Trojan. The bot follows
-   the price (Jupiter, every 2 s) and for the two exits Trojan cannot do on its own (stop moved to the entry
-   price once x1.5 is reached, sale 20 min after the wallet's buy) sends an alert to the user's Telegram
-   "Saved Messages", or sells through Trojan's buttons when "vente_auto" is set to true in the config: "Sell"
+   the price (Jupiter, every 2 s) and for the exits Trojan cannot do on its own sells everything:
+   - -30 % within the first minute after the wallet's buy;
+   - x1.8 reached: 5 s later;
+   - back to the entry price once x1.5 was reached;
+   - 5 min after the wallet's buy, price between -20 % and +20 % of the entry;
+   - 20 min after the wallet's buy.
+   (The first three user rules took the 19-21/10 backtest from -5.4 % to about 0 % a trade, every day better.)
+   For each it sends an alert to the user's Telegram "Saved Messages", or sells through Trojan's buttons when "vente_auto" is set to true in the config: "Sell"
    under its message for the token -> sell panel, "Swap" and "100 %" selected -> "SELL". It also journals what the
    rule would have given (paper, backtest costs: 2.25 % fee a side, 2 % slippage on sales) to compare with the
    real trades. Trojan's replies are journaled (text and buttons).
@@ -63,6 +68,7 @@ DEFAULTS = {
     "mise_usd": 5, "mc_min_usd": 45000, "age_max_min": 120, "baisse_max_sous_ath": 0.5,
     "launchpads": ["pump.fun", "stonkfun"], "max_signaux_par_jour": 40, "retard_max_s": 15,
     "tp1": 1.5, "tp2": 2.0, "stop": 0.5, "sortie_min": 20,
+    "stop_1re_minute": 0.3, "vente_totale_a": 1.8, "delai_vente_totale_s": 5, "plage_5min": 0.2,
     "vente_auto": False,
     "alertes_achat": True, "frais_fixes_usd_par_tx": 0.2,
     "rpc": [], "rpc_publics": ["https://solana-rpc.publicnode.com", "https://api.mainnet-beta.solana.com"],
@@ -145,6 +151,7 @@ class Position:
         self.bot, self.c, self.mint, self.sym = bot, c, c["mint"], info.get("symbol", "?")
         self.entry = None
         self.left, self.cash, self.ntx, self.tp1, self.state, self.high = 1.0, 0.0, 1, False, "open", 0.0
+        self.t_full, self.check5_done = None, False
 
     def sell(self, frac, x, why):
         frac = min(frac, self.left)
@@ -171,21 +178,36 @@ class Position:
             return
         x = px / self.entry
         self.high = max(self.high, x)
+        el = time.time() - self.c["bt"]
         if x <= 1 - cfg["stop"]:
             return self.sell(1.0, x, f"stop -{cfg['stop']:.0%} (Trojan)")
+        if cfg["stop_1re_minute"] and el <= 60 and x <= 1 - cfg["stop_1re_minute"]:
+            return self.bot_exit(x, f"-{cfg['stop_1re_minute']:.0%} dans la première minute")
         if not self.tp1 and x >= cfg["tp1"]:
             self.tp1 = True
             self.sell(0.5, cfg["tp1"], f"x{cfg['tp1']:g} : moitié (Trojan)")
             await self.bot.notify(f"{self.sym} x{cfg['tp1']:g} atteint : Trojan a dû vendre la moitié. Le reste se vend "
-                                  f"à x{cfg['tp2']:g}, ou au prix d'entrée s'il y retombe.\n{self.mint}")
+                                  f"à x{cfg['tp2']:g}, 5 s après x{cfg['vente_totale_a']:g}, ou au prix d'entrée s'il y retombe.\n{self.mint}")
         if self.tp1 and x >= cfg["tp2"]:
             return self.sell(1.0, cfg["tp2"], f"x{cfg['tp2']:g} : le reste (Trojan)")
+        if cfg["vente_totale_a"] and self.t_full is None and x >= cfg["vente_totale_a"]:
+            self.t_full = time.time()
+        if self.t_full and time.time() >= self.t_full + cfg["delai_vente_totale_s"]:
+            return self.bot_exit(x, f"x{cfg['vente_totale_a']:g} atteint il y a {cfg['delai_vente_totale_s']} s")
         if self.tp1 and x <= 1.0:
-            await self.bot.exit_now(self, "retombé au prix d'entrée après x1,5")
-            return self.sell(1.0, x, "prix d'entrée après x1,5 (bot)")
-        if time.time() >= self.c["bt"] + 60 * cfg["sortie_min"]:
-            await self.bot.exit_now(self, f"{cfg['sortie_min']} min après son achat sans x{cfg['tp2']:g}")
-            return self.sell(1.0, x, f"{cfg['sortie_min']} min (bot)")
+            return self.bot_exit(x, "retombé au prix d'entrée après x1,5")
+        if cfg["plage_5min"] and not self.check5_done and el >= 300:
+            self.check5_done = True
+            if abs(x - 1) < cfg["plage_5min"]:
+                return self.bot_exit(x, f"5 min après son achat, toujours entre -{cfg['plage_5min']:.0%} et "
+                                        f"+{cfg['plage_5min']:.0%} ({x - 1:+.0%})")
+        if el >= 60 * cfg["sortie_min"]:
+            return self.bot_exit(x, f"{cfg['sortie_min']} min après son achat sans x{cfg['tp2']:g}")
+
+    def bot_exit(self, x, why):
+        """an exit Trojan does not do on its own: sold by the bot in the background (the price loop goes on)"""
+        asyncio.create_task(self.bot.exit_now(self, why))
+        self.sell(1.0, x, why + " (bot)")
 
 
 class Bot:
@@ -220,7 +242,7 @@ class Bot:
                 log("erreur_notification", erreur=str(e))
 
     async def exit_now(self, p, why):
-        """the two exits Trojan does not do on its own: click its sell-all button or alert the user"""
+        """an exit Trojan does not do on its own: sell through its buttons, or alert the user"""
         if not self.tg:
             return
         if self.cfg["vente_auto"]:
@@ -462,7 +484,8 @@ class Bot:
         await asyncio.to_thread(self.seed)
         log("demarrage", mode="RÉEL (envoi à Trojan)" if self.live else "simulation (rien n'est envoyé)",
             wallet=self.W, regles={k: self.cfg[k] for k in ("mc_min_usd", "age_max_min", "baisse_max_sous_ath",
-                                                             "tp1", "tp2", "stop", "sortie_min", "vente_auto")})
+                                                             "tp1", "tp2", "stop", "sortie_min", "stop_1re_minute",
+                                                             "vente_totale_a", "plage_5min", "vente_auto")})
         await self.notify("Bot Trojan démarré" + (" (envoi réel)" if self.live else ""))
         await asyncio.gather(self.watch(), self.track())
 
