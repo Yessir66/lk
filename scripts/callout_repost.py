@@ -96,6 +96,8 @@ class Execution:
         self.http = requests.Session(impersonate='chrome')
         self.pump = Pump('browser')
         self.keypair = None
+        self._price = None
+        self._price_at = 0
         self.owner = owner or self.pump.resolve(args.profile)[0]
         if args.live:
             from solders.keypair import Keypair
@@ -156,8 +158,7 @@ class Execution:
             raise RemoteError('La session pump.fun et le wallet ne correspondent pas')
 
     def prepare(self, mint):
-        from solders.transaction import VersionedTransaction
-        price = self.jupiter('/price/v3?ids=' + SOL)[SOL]['usdPrice']
+        price = self.sol_price()
         amount = lamports_for(self.args.usd, price)
         balance = self.rpc('getBalance', [self.owner, {'commitment': 'confirmed'}])['value']
         if balance < amount + 5_000_000:
@@ -165,6 +166,12 @@ class Execution:
         quote = self.jupiter(f'/swap/v1/quote?inputMint={SOL}&outputMint={mint}&amount={amount}&slippageBps={self.args.slippage_bps}')
         if quote.get('inputMint') != SOL or quote.get('outputMint') != mint or int(quote.get('inAmount', 0)) != amount:
             raise RemoteError('La cotation ne correspond pas au montant et au token demandés')
+        signed = self.sign_quote(quote)
+        signed.update(lamports=amount, cost_usd=str(Decimal(amount) / 10**9 * Decimal(str(price))))
+        return signed
+
+    def sign_quote(self, quote):
+        from solders.transaction import VersionedTransaction
         swap = self.jupiter('/swap/v1/swap', {'quoteResponse': quote, 'userPublicKey': self.owner,
                            'wrapAndUnwrapSol': True, 'dynamicComputeUnitLimit': True,
                            'prioritizationFeeLamports': {'priorityLevelWithMaxLamports': {
@@ -172,7 +179,43 @@ class Execution:
         unsigned = VersionedTransaction.from_bytes(base64.b64decode(swap['swapTransaction']))
         tx = VersionedTransaction(unsigned.message, [self.keypair])
         return {'raw': base64.b64encode(bytes(tx)).decode(), 'signature': str(tx.signatures[0]),
-                'last_valid_height': int(swap['lastValidBlockHeight']), 'lamports': amount}
+                'last_valid_height': int(swap['lastValidBlockHeight'])}
+
+    def sol_price(self):
+        if getattr(self, '_price', None) is None or time.monotonic() - self._price_at >= 5:
+            price = Decimal(str(self.jupiter('/price/v3?ids=' + SOL)[SOL]['usdPrice']))
+            if not price.is_finite() or price <= 0:
+                raise RemoteError('Prix SOL/USD invalide')
+            self._price, self._price_at = price, time.monotonic()
+        return self._price
+
+    def acquired(self, signature, mint):
+        tx = self.rpc('getTransaction', [signature, {'encoding': 'jsonParsed',
+                      'commitment': 'confirmed', 'maxSupportedTransactionVersion': 0}])
+        if not tx or not tx.get('meta') or tx['meta'].get('err'):
+            raise RemoteError('Métadonnées de l’achat indisponibles')
+        meta = tx['meta']
+        post = [b for b in meta.get('postTokenBalances', []) if b.get('mint') == mint and b.get('owner') == self.owner]
+        indexes = {b['accountIndex'] for b in post}
+        before = sum(int(b['uiTokenAmount']['amount']) for b in meta.get('preTokenBalances', [])
+                     if b.get('mint') == mint and (b.get('owner') == self.owner or b['accountIndex'] in indexes))
+        after = sum(int(b['uiTokenAmount']['amount']) for b in post)
+        if after <= before:
+            raise RemoteError('Quantité achetée non déterminée')
+        return after - before
+
+    def token_amount(self, mint):
+        result = self.rpc('getTokenAccountsByOwner', [self.owner, {'mint': mint},
+                          {'encoding': 'jsonParsed', 'commitment': 'confirmed'}])
+        return sum(int(a['account']['data']['parsed']['info']['tokenAmount']['amount']) for a in result['value'])
+
+    def exit_quote(self, mint, amount):
+        quote = self.jupiter(f'/swap/v1/quote?inputMint={mint}&outputMint={SOL}&amount={amount}&slippageBps={self.args.slippage_bps}')
+        if quote.get('inputMint') != mint or quote.get('outputMint') != SOL or int(quote.get('inAmount', 0)) != amount:
+            raise RemoteError('Cotation de vente incompatible avec la position')
+        if int(quote.get('otherAmountThreshold', 0)) <= 0:
+            raise RemoteError('Minimum de sortie de la vente absent')
+        return quote
 
     def status(self, signature):
         return self.rpc('getSignatureStatuses', [[signature], {'searchTransactionHistory': True}])['value'][0]
@@ -199,6 +242,16 @@ class Engine:
 
     def step(self, now):
         for job in self.journal.jobs():
+            if self.args.live and getattr(self.args, 'take_profit', None) is not None:
+                try:
+                    self.manage_exit(job, now)
+                except Exception as exc:
+                    detail = str(exc) if isinstance(exc, RemoteError) else type(exc).__name__
+                    print(f'TP {job["mint"]} différé : {detail}', flush=True)
+                    job['exit_retry_at'] = now + getattr(self.args, 'tp_interval', 5)
+                    self.journal.save(job)
+            if job.get('exit_state') in ('signed', 'sold', 'empty', 'review'):
+                continue
             if job['state'] in ('posted', 'simulated', 'failed', 'review') or job.get('retry_at', 0) > now:
                 continue
             try:
@@ -210,12 +263,65 @@ class Engine:
                 job['retry_at'] = now + 10
                 self.journal.save(job)
 
+    def manage_exit(self, job, now):
+        if job.get('exit_state') in ('sold', 'empty', 'review') or job.get('exit_retry_at', 0) > now:
+            return
+        if job.get('exit_state') == 'signed':
+            tx = job['exit_tx']
+            status = self.execution.status(tx['signature'])
+            if status and status.get('err') is not None:
+                # A conclusively failed sell can be prepared again; keep tracking the holding.
+                job.update(exit_state='watching', exit_retry_at=now + self.args.tp_interval)
+            elif status and status.get('confirmationStatus') in ('confirmed', 'finalized'):
+                job.update(exit_state='sold', sold_at=now)
+                print(f'TP CONFIRMÉ : 100 % de la position vendue, {job["mint"]}', flush=True)
+            elif status:
+                job['exit_retry_at'] = now + 1
+            elif self.execution.expired(tx['last_valid_height']):
+                job['exit_state'] = 'review'
+                print(f'Vente à vérifier : {tx["signature"]}. Aucune nouvelle vente automatique.', flush=True)
+            else:
+                self.execution.broadcast(tx['raw'])
+                job['exit_retry_at'] = now + 2
+            self.journal.save(job)
+            return
+        confirmed = job.get('buy_confirmed') or job['state'] in ('confirmed', 'publishing', 'uncertain', 'posted')
+        if not confirmed:
+            return
+        if not job.get('cost_usd'):
+            if not job.get('tp_missing_basis'):
+                print(f'TP non activé pour l’ancien achat {job["mint"]} : coût USD non enregistré.', flush=True)
+                job['tp_missing_basis'] = True
+                self.journal.save(job)
+            return
+        if not job.get('position_tokens'):
+            job['position_tokens'] = self.execution.acquired(job['signature'], job['mint'])
+            self.journal.save(job)
+            print(f'TP actif +{self.args.take_profit}% : {job["mint"]}', flush=True)
+        amount = min(job['position_tokens'], self.execution.token_amount(job['mint']))
+        if amount <= 0:
+            job['exit_state'] = 'empty'
+        else:
+            quote = self.execution.exit_quote(job['mint'], amount)
+            value = Decimal(quote['otherAmountThreshold']) / 10**9 * Decimal(str(self.execution.sol_price()))
+            cost = Decimal(job['cost_usd']) * Decimal(amount) / Decimal(job['position_tokens'])
+            target = cost * (1 + self.args.take_profit / 100)
+            if value >= target:
+                # Persist before broadcasting, just as for the buy; never sell twice after a timeout.
+                job['exit_tx'] = self.execution.sign_quote(quote)
+                job.update(exit_state='signed', exit_tokens=amount, exit_trigger_usd=str(value))
+                print(f'TP +{self.args.take_profit}% déclenché : vente totale de la position {job["mint"]}', flush=True)
+            else:
+                job['exit_state'] = 'watching'
+        job['exit_retry_at'] = now + (0 if job.get('exit_state') == 'signed' else self.args.tp_interval)
+        self.journal.save(job)
+
     def advance(self, job, now):
         if job['state'] == 'new':
             if now - job['created'] > self.args.max_age:
                 job['state'] = 'failed'
             elif not self.args.live:
-                print(f'SIMULATION : achat {self.args.usd} USD pour {job["caller"]}, publication au plus tôt à {job["due"]:.0f} : {job["text"]}', flush=True)
+                print(f'SIMULATION : achat {self.args.usd} USD pour {job["caller"]}, publication au plus tôt à {job["due"]:.0f} : {job["text"]} ; TP prévu +{getattr(self.args, "take_profit", 50)}%, vente totale', flush=True)
                 job['state'] = 'simulated'
             else:
                 # Preparation never broadcasts. Persist the signature BEFORE any send.
@@ -228,6 +334,7 @@ class Engine:
                 job['state'] = 'failed'
             elif status and status.get('confirmationStatus') in ('confirmed', 'finalized'):
                 job['state'] = 'confirmed'
+                job['buy_confirmed'] = True
                 print(f'Achat confirmé : {job["mint"]}', flush=True)
             elif status:
                 # Already processed: wait for confirmation, never replace this transaction.
@@ -312,6 +419,8 @@ def parse_args(argv=None, configure=None):
     parser.add_argument('--usd', type=Decimal, default=Decimal('2'))
     parser.add_argument('--delay', type=float, default=15)
     parser.add_argument('--max-age', type=float, default=60, help='Ne pas acheter un callout découvert trop tard')
+    parser.add_argument('--take-profit', type=Decimal, default=Decimal('50'), help='Gain en %% du coût USD déclenchant une vente totale (défaut : 50)')
+    parser.add_argument('--tp-interval', type=float, default=5, help='Intervalle de contrôle du TP par position, en secondes')
     parser.add_argument('--slippage-bps', type=int, default=100)
     parser.add_argument('--wallet', default=str(ROOT / 'data' / 'pump_wallet.txt'))
     parser.add_argument('--token', default=str(ROOT / 'data' / 'pump_token.txt'))
@@ -324,6 +433,8 @@ def parse_args(argv=None, configure=None):
     args = parser.parse_args(argv)
     if not args.usd.is_finite() or args.usd <= 0 or not math.isfinite(args.delay) or args.delay < 0 or not math.isfinite(args.max_age) or args.max_age <= 0 or not 1 <= args.slippage_bps <= 5000:
         parser.error('Montant/délais/slippage invalides')
+    if not args.take_profit.is_finite() or args.take_profit <= 0 or not math.isfinite(args.tp_interval) or args.tp_interval < 1:
+        parser.error('TP et intervalle de contrôle invalides')
     try:
         if args.text is not None:
             args.text.format(text='exemple', caller='exemple')

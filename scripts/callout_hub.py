@@ -263,7 +263,8 @@ def main():
         if repost:
             reader.seen_reposts.update(repost.known)
         mode = 'achats réels' if args.live else 'alertes seules' if args.alerts_only else 'achats simulés'
-        print(f'HUB : {label}, {mode}, flux unique toutes les {args.feed_interval}s minimum.', flush=True)
+        tp = '' if args.alerts_only else f'TP +{args.take_profit}%, vente totale, '
+        print(f'HUB : {label}, {mode}, {tp}flux unique toutes les {args.feed_interval}s minimum.', flush=True)
         while not stop.is_set():
             reader.step()
             stop.wait(.1)

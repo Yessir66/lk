@@ -5,7 +5,7 @@
 Un lecteur commun interroge le flux pump.fun, puis transmet chaque nouveau callout aux deux fonctions :
 
 - Telegram reçoit les callouts des comptes suivis par Lelouch_0x, au format existant, vers @callout44_bot.
-- Pour les 10 callers configurés, le second worker achète 2 USD et publie une des 10 phrases aléatoires, une fois l’achat confirmé et au plus tôt 15 secondes après l’original.
+- Pour les 10 callers configurés, le second worker achète 2 USD et publie une des 10 phrases aléatoires, une fois l’achat confirmé et au plus tôt 15 secondes après l’original. Le TP à +50 % vend ensuite la totalité de la position.
 
 Le worker d’achat, celui de Telegram et la lecture publique tournent séparément. Un envoi Telegram lent ne bloque pas un achat. Une attente de confirmation Solana ne bloque pas la détection ou les alertes.
 
@@ -45,6 +45,16 @@ py scripts\callout_hub.py --dry-run
 ```
 
 Utiliser une seule fenêtre pour le hub. Les anciens scripts restent disponibles, mais les faire tourner avec le hub rétablirait les lectures redondantes.
+
+## TP à +50 %
+
+Le mode réel active automatiquement le TP du moteur de republication. Pour une entrée de 2 USD, une valeur minimale de vente cotée à 3 USD déclenche la vente complète de la quantité achetée par le bot, hors frais réseau. Le contrôle est prévu toutes les 5 secondes ; il continue après redémarrage grâce au journal, sans diffusion d’une nouvelle transaction tant que le résultat de la précédente reste inconnu.
+
+```bat
+py scripts\callout_hub.py --live --take-profit 50
+```
+
+L’option est déjà à 50 par défaut. Conserver `data`, puis remplacer les fichiers de code à la mise à jour. Les positions de l’ancien journal dépourvues de coût USD sont signalées et restent hors suivi TP. Voir [CALLOUT_REPOST.md](CALLOUT_REPOST.md) pour le calcul, les ventes précédant éventuellement la publication, et la reprise après erreur.
 
 ## Session et historique existants
 

@@ -1,4 +1,5 @@
 from pathlib import Path
+from decimal import Decimal
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -46,6 +47,113 @@ class RepostTest(unittest.TestCase):
         self.engine.step(1001)
         self.execution.status.return_value = {'err': None, 'confirmationStatus': 'confirmed'}
         self.engine.step(1002)
+
+    def tp_position(self):
+        self.confirmed()
+        job = self.job()
+        job.update(state='posted', cost_usd='2')
+        self.journal.save(job)
+        self.args.take_profit, self.args.tp_interval = Decimal('50'), 5
+        self.execution.acquired.return_value = 1000
+        self.execution.token_amount.return_value = 1000
+        self.execution.sol_price.return_value = Decimal('100')
+        self.execution.exit_quote.return_value = {'otherAmountThreshold': '30000000'}
+        self.execution.sign_quote.return_value = dict(raw='signed-sell', signature='sell-sig', last_valid_height=200)
+        self.execution.status.return_value = None
+
+    def test_tp_waits_below_50_and_triggers_at_exact_boundary(self):
+        self.tp_position()
+        self.execution.exit_quote.return_value = {'otherAmountThreshold': '29999999'}
+        self.engine.step(1010)
+        self.execution.sign_quote.assert_not_called()
+        self.engine.step(1011)
+        self.assertEqual(self.execution.exit_quote.call_count, 1)
+        self.execution.exit_quote.return_value = {'otherAmountThreshold': '30000000'}
+        self.engine.step(1015)
+        self.assertEqual(self.job()['exit_state'], 'signed')
+        self.execution.sign_quote.assert_called_once()
+        self.execution.broadcast.assert_not_called()
+
+    def test_tp_sells_bought_quantity_not_preexisting_tokens(self):
+        self.tp_position()
+        self.execution.token_amount.return_value = 9000
+        self.engine.step(1010)
+        self.execution.exit_quote.assert_called_once_with(MINT, 1000)
+        self.assertEqual(self.job()['exit_tokens'], 1000)
+
+    def test_sell_restart_resends_same_bytes_and_stops_after_confirmation(self):
+        self.tp_position()
+        self.engine.step(1010)
+        self.journal.db.close()
+        self.journal = r.Journal(self.path, 1020, 'owner')
+        self.engine = r.Engine(self.journal, self.execution, self.args)
+        self.engine.step(1011)
+        self.engine.step(1014)
+        self.execution.sign_quote.assert_called_once()
+        self.assertEqual([c.args for c in self.execution.broadcast.call_args_list], [('signed-sell',), ('signed-sell',)])
+        self.execution.status.return_value = {'err': None, 'confirmationStatus': 'confirmed'}
+        self.engine.step(1017)
+        self.assertEqual(self.job()['exit_state'], 'sold')
+        self.engine.step(1100)
+        self.assertEqual(self.execution.exit_quote.call_count, 1)
+        self.execution.status.assert_called_with('sell-sig')
+
+    def test_failed_sell_can_retry_but_unknown_expiry_requires_review(self):
+        self.tp_position()
+        self.engine.step(1010)
+        self.execution.status.return_value = {'err': 'failed', 'confirmationStatus': 'confirmed'}
+        self.engine.step(1011)
+        self.assertEqual(self.job()['exit_state'], 'watching')
+        self.engine.step(1016)
+        self.assertEqual(self.execution.sign_quote.call_count, 2)
+        self.execution.status.return_value = None
+        self.execution.expired.return_value = True
+        self.engine.step(1017)
+        self.assertEqual(self.job()['exit_state'], 'review')
+        self.engine.step(1200)
+        self.assertEqual(self.execution.sign_quote.call_count, 2)
+
+    def test_tp_never_sells_in_simulation(self):
+        self.tp_position()
+        self.args.live = False
+        self.engine.step(1010)
+        self.execution.exit_quote.assert_not_called()
+        self.execution.broadcast.assert_not_called()
+
+    def test_tp_uses_usd_value_and_takes_priority_over_publication(self):
+        self.tp_position()
+        self.execution.sol_price.return_value = Decimal('50')
+        self.engine.step(1010)
+        self.execution.sign_quote.assert_not_called()  # 0.03 SOL is only $1.50 at this price.
+        job = self.job()
+        job['state'] = 'confirmed'
+        self.journal.save(job)
+        self.execution.sol_price.return_value = Decimal('100')
+        self.engine.step(1015)
+        self.execution.pump_call.assert_not_called()
+        self.assertEqual(self.job()['exit_state'], 'signed')
+
+    def test_acquired_reads_delta_and_excludes_other_wallet(self):
+        execution = object.__new__(r.Execution)
+        execution.owner = 'owner'
+        def balance(owner, amount, index):
+            return {'owner': owner, 'mint': MINT, 'accountIndex': index, 'uiTokenAmount': {'amount': str(amount)}}
+        execution.rpc = MagicMock(return_value={'meta': {'err': None,
+              'preTokenBalances': [balance('owner', 500, 1), balance('other', 100, 2)],
+              'postTokenBalances': [balance('owner', 1500, 1), balance('other', 9999, 2)]}})
+        self.assertEqual(execution.acquired('buy-sig', MINT), 1000)
+
+    def test_sol_price_cached_for_five_seconds(self):
+        execution = object.__new__(r.Execution)
+        execution.jupiter = MagicMock(return_value={MINT: {'usdPrice': 200}})
+        with patch.object(r.time, 'monotonic', return_value=10):
+            self.assertEqual(execution.sol_price(), 200)
+        with patch.object(r.time, 'monotonic', return_value=12):
+            self.assertEqual(execution.sol_price(), 200)
+        self.assertEqual(execution.jupiter.call_count, 1)
+        with patch.object(r.time, 'monotonic', return_value=16):
+            execution.sol_price()
+        self.assertEqual(execution.jupiter.call_count, 2)
 
     def test_random_phrase_persisted_through_restart_and_duplicates(self):
         self.assertEqual(len(r.CALLOUT_TEXTS), 10)
@@ -215,6 +323,7 @@ class RepostTest(unittest.TestCase):
         signed = VersionedTransaction.from_bytes(base64.b64decode(prepared['raw']))
         self.assertTrue(all(signed.verify_with_results()))
         self.assertEqual(prepared['lamports'], 10_000_000)
+        self.assertEqual(Decimal(prepared['cost_usd']), Decimal('2'))
         self.assertEqual(prepared['signature'], str(signed.signatures[0]))
         self.assertIn('amount=10000000', execution.jupiter.call_args_list[1].args[0])
         self.assertEqual(execution.jupiter.call_args_list[2].args[1]['quoteResponse'], quote)

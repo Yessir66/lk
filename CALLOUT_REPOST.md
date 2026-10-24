@@ -13,7 +13,7 @@ Pour un nouveau token signalé par l’un de ces callers :
 4. Vérifier la détention du token et la correspondance du compte pump.fun avec le wallet.
 5. Publier une phrase choisie aléatoirement parmi les 10 textes ci-dessous sur **Lelouch_0x**, au plus tôt **15 secondes après le callout source**.
 
-Le délai de 15 secondes est un minimum, pas une heure d’exécution garantie : détection, cotation, confirmation et indexation pump.fun peuvent retarder la publication. Les 2 USD représentent le montant converti à l’entrée du swap, hors frais réseau, frais de swap et création éventuelle du compte token. Les tokens achetés restent dans le wallet.
+Le délai de 15 secondes est un minimum, pas une heure d’exécution garantie : détection, cotation, confirmation et indexation pump.fun peuvent retarder la publication. Les 2 USD représentent le montant converti à l’entrée du swap, hors frais réseau, frais de swap et création éventuelle du compte token. Les positions sont ensuite surveillées avec un TP par défaut à +50 %, qui vend 100 % de la quantité achetée par le bot.
 
 Le script traite une seule fois un même mint : plusieurs callers signalant ce token déclenchent un achat et une publication uniques. Les callouts antérieurs au premier lancement ou découverts après 60 secondes sont ignorés par défaut. Les anciens callouts d’un premier lancement de simulation ne sont pas repris en mode réel : chaque mode a son état.
 
@@ -70,17 +70,37 @@ py scripts\callout_repost.py --live --text "Call de {caller} : {text}"
 
 Autres réglages : `--usd 2`, `--delay 15`, `--max-age 60`, `--slippage-bps 100` (1 %), `--wallet CHEMIN`, `--token CHEMIN`, `--profile NOM` et `--state CHEMIN`. Utiliser les deux fichiers Python `callout_repost.py` et `callout_alerts.py` du même dossier `scripts`.
 
+## TP +50 % : vente de 100 %
+
+Le TP est actif par défaut en mode réel, dans le script autonome comme dans le hub. À partir de la confirmation d’achat, le bot enregistre la quantité réellement reçue grâce aux soldes avant/après de cette transaction. Il suit cette quantité, sans ajouter les tokens du même mint déjà présents avant cet achat.
+
+Pour un achat d’environ 2 USD, il prépare la vente de toute la position lorsque la valeur minimale de la cotation Jupiter atteint 3 USD. La cotation porte sur la quantité entière à vendre, inclut le minimum après slippage, et son résultat en SOL est converti au prix SOL/USD courant. Les frais réseau de la vente restent en plus : le déclenchement n’est pas une garantie de 50 % de bénéfice net ni d’un prix de règlement exact.
+
+Le contrôle est prévu toutes les 5 secondes par position (`--tp-interval 5`). Le prix SOL/USD est partagé et mis en cache 5 secondes. Aucun nouvel achat n’est effectué pour financer ou compléter une sortie. Si une partie de la position a été retirée du wallet, la quantité disponible est plafonnée à la quantité acquise et son coût de référence est ajusté proportionnellement.
+
+La transaction de vente est signée puis enregistrée avant son premier envoi. Après une coupure ou un redémarrage, la même signature est contrôlée et les mêmes octets sont réutilisés. Seule une erreur de transaction confirmée permet une nouvelle préparation automatique. Une transaction expirée/non retrouvée est marquée à vérifier, pour éviter une vente répétée dont le résultat serait incertain.
+
+Si le TP se déclenche avant la publication du callout, la vente prend la priorité ; la republication n’est pas poursuivie sur une position vendue. Le TP reste actif même si la publication pump.fun échoue après un achat confirmé.
+
+Les achats créés par cette version mémorisent leur coût USD et reprennent leur TP au redémarrage. Les anciennes entrées sans coût USD enregistré sont signalées comme non suivies par le TP ; les positions extérieures au journal ne sont pas adoptées automatiquement. En mode simulation, le TP prévu est affiché mais aucune position ni vente réelle n’est créée.
+
+Réglage explicite :
+
+```bat
+py scripts\callout_repost.py --live --take-profit 50 --tp-interval 5
+```
+
 ## Reprise et erreurs
 
 Le journal SQLite `data/repost_live.sqlite3` conserve les mints, la transaction signée et chaque étape. Il est distinct du journal de simulation. Une transaction signée est enregistrée avant diffusion ; les retries réutilisent ses octets et sa signature. Une perte de connexion ou un redémarrage ne déclenche pas un second achat.
 
 En cas de réponse de publication perdue, le bot cherche le callout sur ton profil et ne reposte pas à l’aveugle. Après deux minutes sans résolution, il marque l’entrée `review` pour vérification manuelle. Une transaction expirée/non retrouvée est aussi laissée à vérifier, sans nouvel achat. Ne pas supprimer le journal ni lancer deux instances de republication simultanément.
 
-Une session expirée ou un refus explicite 403/429 de publication entraîne une nouvelle tentative sans racheter. Une erreur d’achat empêche la publication. Une publication refusée après achat laisse les tokens dans le wallet.
+Une session expirée ou un refus explicite 403/429 de publication entraîne une nouvelle tentative sans racheter. Une erreur d’achat empêche la publication. Une publication refusée après achat conserve le suivi TP de la position.
 
 ## Validation
 
-Les tests vérifient le calcul USD/SOL, le délai minimal, le dédoublonnage, la signature avec solders, la reprise sans rachat, l’absence de publication après un achat échoué et la réconciliation d’une publication dont la réponse est perdue.
+Les tests vérifient le calcul USD/SOL, le délai minimal, le dédoublonnage, la signature avec solders, la reprise sans rachat, l’absence de publication après un achat échoué et la réconciliation d’une publication dont la réponse est perdue, le seuil exact du TP, la vente de la quantité acquise et la reprise des ventes signées.
 
 ```bat
 py -m unittest discover -s tests -v
