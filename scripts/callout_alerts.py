@@ -22,7 +22,9 @@ WALLET = re.compile(r'[1-9A-HJ-NP-Za-km-z]{32,44}\Z')
 
 
 class RemoteError(RuntimeError):
-    pass
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
 
 
 def request(url, body=None):
@@ -35,20 +37,40 @@ def request(url, body=None):
             return json.load(response)
     except urllib.error.HTTPError as exc:
         retry = exc.headers.get('Retry-After', '?')
-        raise RemoteError(f'HTTP {exc.code} (Retry-After: {retry})') from None
+        raise RemoteError(f'HTTP {exc.code} (Retry-After: {retry})', status=exc.code) from None
     except (urllib.error.URLError, TimeoutError, ValueError, OSError):
         # Never log request URLs: Telegram URLs contain the bot token.
         raise RemoteError('Connexion impossible ou réponse JSON invalide') from None
 
 
 class Pump:
-    def __init__(self):
+    def __init__(self, http_client='auto'):
         self.next_request = 0
+        self.session = None
+        if http_client != 'urllib':
+            try:
+                from curl_cffi import requests
+                self.session = requests.Session(impersonate='chrome')
+            except ImportError:
+                if http_client == 'browser':
+                    raise RemoteError('Installer le client navigateur : py -m pip install curl_cffi') from None
+        self.http_client = 'browser' if self.session else 'urllib'
 
     def get(self, path):
         time.sleep(max(0, self.next_request - time.monotonic()))
         self.next_request = time.monotonic() + 1.1
-        return request(API + path)
+        try:
+            if self.session is None:
+                return request(API + path)
+            response = self.session.get(API + path, timeout=20, headers={
+                'Accept': 'application/json', 'Origin': 'https://pump.fun', 'Referer': 'https://pump.fun/'})
+            if response.status_code != 200:
+                raise RemoteError(f'HTTP {response.status_code}', status=response.status_code)
+            return response.json()
+        except RemoteError as exc:
+            raise RemoteError(f'pump.fun {path.split("?")[0]} : {exc}', status=exc.status) from None
+        except Exception:
+            raise RemoteError('pump.fun : connexion impossible ou réponse JSON invalide') from None
 
     def resolve(self, profile):
         name = profile.rstrip('/').split('/')[-1].lstrip('@')
@@ -93,6 +115,24 @@ class Pump:
         if not isinstance(result, dict) or not isinstance(result.get('callouts'), list):
             raise RemoteError('Format des callouts inattendu')
         return result['callouts']
+
+
+    def feed(self):
+        result = self.get('/home-feed/new')
+        if not isinstance(result, dict) or not isinstance(result.get('coins'), list):
+            raise RemoteError('Format du flux pump.fun inattendu')
+        calls = []
+        for row in result['coins']:
+            position = row.get('position') or {}
+            call = position.get('callout') or {}
+            if not call.get('calloutId') or not call.get('calloutTimestamp'):
+                continue
+            calls.append(dict(calloutId=call['calloutId'], createdAt=call['calloutTimestamp'],
+                              author=position.get('walletAddress'), coinMint=row.get('coinMint'),
+                              name=row.get('coinName'), symbol=row.get('symbol'),
+                              marketCap=call.get('calledOutAtMcap'), mcap_now=row.get('marketCap'),
+                              thesis=call.get('thesis')))
+        return calls
 
 
 def usd(value):
@@ -240,6 +280,7 @@ class Store:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--profile', default='Lelouch_0x', help='Nom, wallet ou URL du profil pump.fun')
+    parser.add_argument('--http-client', choices=['auto', 'browser', 'urllib'], default='auto')
     parser.add_argument('--transport', choices=['user', 'bot'], default='user')
     parser.add_argument('--send-to', default='@callout44_bot', help='Bot destinataire (défaut : @callout44_bot)')
     parser.add_argument('--session', default=str(Path(__file__).resolve().parents[1] / 'data' / 'callout_alerts_telegram'), help='Session Telethon persistante')
@@ -255,7 +296,8 @@ def main():
         parser.error('Indiquer --send-to @nom_du_bot')
     if not args.dry_run and args.transport == 'bot' and not (token and chat):
         parser.error('Définir TELEGRAM_BOT_TOKEN et TELEGRAM_CHAT_ID dans les variables d’environnement')
-    pump = Pump()
+    pump = Pump(args.http_client)
+    print(f'Client pump.fun : {pump.http_client}', flush=True)
     owner, label = pump.resolve(args.profile)
     # A default database belongs to one owner/mode/destination, avoiding cross-run suppression.
     import hashlib
@@ -275,34 +317,61 @@ def main():
             user_sender.close()
 
 
+def collect(store, pump, rows, targets):
+    for call in reversed(rows):
+        try:
+            author = call.get('author')
+            if author not in targets:
+                continue
+            if timestamp(call['createdAt']) >= store.since and not store.known(call):
+                if not WALLET.fullmatch(call.get('coinMint', '')):
+                    continue
+                enriched = dict(call, author_name=targets[author])
+                if not enriched.get('name') or enriched.get('mcap_now') is None:
+                    enriched = pump.enrich(enriched)
+                store.enqueue(enriched)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            print('Callout incomplet ignoré', flush=True)
+
+
 def monitor(pump, owner, label, store, sender, args):
-    targets, refresh_at = {}, 0
+    targets, refresh_at, index = {}, 0, 0
+    feed_after, lists_after = 0, 0
     print(f'Surveillance : {label} / {args.mode}. Aucun ancien callout au premier démarrage.', flush=True)
     while True:
-        try:
-            store.deliver(sender)
-            if time.monotonic() >= refresh_at:
+        now = time.monotonic()
+        if now >= refresh_at:
+            try:
                 targets = {owner: label} if args.mode == 'self' else pump.following(owner)
                 refresh_at = time.monotonic() + 600
                 print(f'{len(targets)} profil(s) surveillé(s)', flush=True)
-            for wallet, username in targets.items():
-                try:
-                    rows = pump.callouts(wallet)
-                    if len(rows) >= 100:
-                        print('Attention : fenêtre de 100 callouts atteinte ; des anciens peuvent manquer.', flush=True)
-                    for call in reversed(rows):
-                        try:
-                            if timestamp(call['createdAt']) >= store.since and not store.known(call):
-                                if not WALLET.fullmatch(call.get('coinMint', '')):
-                                    continue
-                                store.enqueue(pump.enrich(dict(call, author_name=username)))
-                        except (KeyError, TypeError, ValueError, OverflowError):
-                            print('Callout incomplet ignoré', flush=True)
-                    store.deliver(sender)
-                except RemoteError as exc:
-                    print(f'Lecture/envoi différé : {exc}', flush=True)
+            except RemoteError as exc:
+                print(f'Abonnements différés : {exc}', flush=True)
+                refresh_at = time.monotonic() + 60
+        if targets and now >= feed_after:
+            try:
+                collect(store, pump, pump.feed(), targets)
+            except RemoteError as exc:
+                wait = 120 if exc.status in (403, 429) else 30
+                print(f'Flux différé ({wait}s) : {exc}', flush=True)
+                feed_after = time.monotonic() + wait
+        if targets and now >= lists_after:
+            wallet = list(targets)[index % len(targets)]
+            index += 1
+            try:
+                rows = pump.callouts(wallet)
+                # A full page only indicates a gap if even its oldest callout is newer than our cursor.
+                if len(rows) >= 100 and all(timestamp(c['createdAt']) >= store.since for c in rows):
+                    print(f'{targets[wallet]} : plus de 100 callouts depuis le démarrage, rattrapage incomplet.', flush=True)
+                collect(store, pump, [dict(c, author=wallet) for c in rows], targets)
+            except RemoteError as exc:
+                wait = 120 if exc.status in (403, 429) else 30
+                print(f'Profils différés ({wait}s), le flux reste actif : {exc}', flush=True)
+                lists_after = time.monotonic() + wait
+        try:
+            store.deliver(sender)
         except RemoteError as exc:
-            print(f'Nouvelle tentative au prochain tour : {exc}', flush=True)
+            print(f'Envoi Telegram différé : {exc}', flush=True)
         time.sleep(args.interval)
 
 

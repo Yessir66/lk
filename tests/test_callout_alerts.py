@@ -2,7 +2,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 from types import SimpleNamespace
 
 spec = importlib.util.spec_from_file_location('alerts', Path(__file__).resolve().parents[1] / 'scripts/callout_alerts.py')
@@ -110,6 +110,46 @@ class AlertsTest(unittest.TestCase):
             finally:
                 store.db.close()
                 sender.close()
+
+    def test_feed_normalizes_api_response(self):
+        pump = a.Pump('urllib')
+        payload = {'coins': [{'coinMint': call()['coinMint'], 'coinName': 'Offline Runner', 'symbol': 'Dino',
+                              'marketCap': 20900, 'position': {'walletAddress': 'owner', 'callout': {
+                                  'calloutId': 'one', 'calloutTimestamp': '2024-07-03T09:46:40Z',
+                                  'calledOutAtMcap': 20800, 'thesis': 'hello'}}}, {'position': {}}]}
+        with patch.object(pump, 'get', return_value=payload):
+            rows = pump.feed()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['author'], 'owner')
+        self.assertEqual(rows[0]['marketCap'], 20800)
+        self.assertEqual(rows[0]['mcap_now'], 20900)
+
+    def test_feed_delivery_survives_profile_403(self):
+        pump = MagicMock()
+        pump.feed.return_value = [dict(call(), author='owner')]
+        pump.callouts.side_effect = a.RemoteError('Forbidden', status=403)
+        args = SimpleNamespace(mode='self', interval=5)
+        with tempfile.TemporaryDirectory() as tmp:
+            store = a.Store(str(Path(tmp) / 'state'), 1000)
+            sent = []
+            try:
+                with patch.object(a.time, 'monotonic', return_value=10), patch.object(a.time, 'sleep', side_effect=[None, KeyboardInterrupt]):
+                    with self.assertRaises(KeyboardInterrupt):
+                        a.monitor(pump, 'owner', 'owner', store, sent.append, args)
+                self.assertEqual(len(sent), 1)
+                self.assertEqual(pump.feed.call_count, 2)
+                self.assertEqual(pump.callouts.call_count, 1)
+            finally:
+                store.db.close()
+
+    def test_browser_client_preserves_http_status(self):
+        pump = a.Pump('urllib')
+        pump.session = MagicMock()
+        pump.session.get.return_value.status_code = 403
+        with self.assertRaises(a.RemoteError) as caught:
+            pump.get('/callout/list/owner')
+        self.assertEqual(caught.exception.status, 403)
+        self.assertIn('pump.fun /callout/list/owner', str(caught.exception))
 
     def test_invalid_link_rejected_and_metadata_optional(self):
         c = call()
