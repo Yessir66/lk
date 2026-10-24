@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""Un seul lecteur pump.fun pour les alertes Telegram et les achats/republications."""
+from collections import deque
+import hashlib
+from pathlib import Path
+import queue
+import threading
+import time
+
+from callout_alerts import Pump, RemoteError, Store, TelegramUserSender, WALLET, timestamp
+from callout_repost import CALLERS, ROOT, Execution, Journal, Engine, parse_args
+
+
+class SharedReader:
+    """Only this object polls the public feed and monitored profiles."""
+    def __init__(self, pump, owner, alert_since, repost_since, alerts_queue, repost_queue,
+                 repost=True, interval=2, backup_interval=4):
+        self.pump, self.owner = pump, owner
+        self.alert_since, self.repost_since = alert_since, repost_since
+        self.alerts_queue, self.repost_queue = alerts_queue, repost_queue
+        self.repost, self.interval, self.backup_interval = repost, interval, backup_interval
+        self.follows, self.targets = {}, {}
+        self.next_feed = self.next_backup = self.next_refresh = 0
+        self.feed_ok = False
+        self.priority, self.others = deque(), deque()
+        self.backup_count = 0
+        self.seen_alerts, self.seen_reposts = set(), set()
+        self.metadata = {}
+
+    def refresh(self, now):
+        try:
+            follows = self.pump.following(self.owner)
+            self.follows = follows
+            self.targets = dict(follows)
+            if self.repost:
+                self.targets.update(CALLERS)
+            high = CALLERS if self.repost else self.targets
+            self.priority = deque(w for w in high if w in self.targets)
+            self.others = deque(w for w in self.targets if w not in high)
+            self.next_refresh = now + 600
+            print(f'Lecture partagée : {len(follows)} abonnements Telegram, {len(CALLERS) if self.repost else 0} callers de republication.', flush=True)
+        except RemoteError as exc:
+            # Trading targets are independent of a temporarily unavailable following list.
+            if self.repost:
+                self.targets.update(CALLERS)
+                if not self.priority:
+                    self.priority = deque(CALLERS)
+            self.next_refresh = now + 60
+            print(f'Abonnements différés : {exc}', flush=True)
+
+    def route(self, rows):
+        for call in reversed(rows):
+            try:
+                identity = str(call['calloutId'])
+                author, mint = call.get('author'), call.get('coinMint', '')
+                if author not in self.targets or not WALLET.fullmatch(mint):
+                    continue
+                created = timestamp(call['createdAt'])
+                # Send to the trade worker first: metadata and Telegram cannot delay an order.
+                if self.repost and author in CALLERS and created >= self.repost_since and identity not in self.seen_reposts:
+                    self.repost_queue.put(dict(call))
+                    self.seen_reposts.add(identity)
+                if author not in self.follows or created < self.alert_since or identity in self.seen_alerts:
+                    continue
+                enriched = dict(call, author_name=self.follows[author])
+                cached = self.metadata.get(mint)
+                if cached and time.monotonic() - cached[0] < 30:
+                    for key in ('name', 'symbol', 'mcap_now'):
+                        if enriched.get(key) is None:
+                            enriched[key] = cached[1].get(key)
+                if not enriched.get('name') or enriched.get('mcap_now') is None:
+                    enriched = self.pump.enrich(enriched)
+                self.metadata[mint] = (time.monotonic(), enriched)
+                self.alerts_queue.put(enriched)
+                self.seen_alerts.add(identity)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                print('Callout incomplet ignoré', flush=True)
+        # Historical identifiers are also persisted by consumers; bound the session cache.
+        if len(self.seen_alerts) > 20000:
+            self.seen_alerts.clear()
+        if len(self.seen_reposts) > 20000:
+            self.seen_reposts.clear()
+        if len(self.metadata) > 1000:
+            cutoff = time.monotonic() - 30
+            self.metadata = {k: v for k, v in self.metadata.items() if v[0] >= cutoff}
+
+    def backup_wallet(self):
+        # One shared profile read, even when that caller belongs to both features.
+        self.backup_count += 1
+        cycle = self.others if self.others and self.backup_count % 6 == 0 else self.priority or self.others
+        if not cycle:
+            return None
+        wallet = cycle[0]
+        cycle.rotate(-1)
+        return wallet
+
+    def step(self, now=None):
+        now = time.monotonic() if now is None else now
+        if now >= self.next_refresh:
+            self.refresh(now)
+        if self.targets and now >= self.next_feed:
+            feed_started = time.monotonic()
+            try:
+                self.route(self.pump.feed())
+                self.feed_ok = True
+                self.next_feed = feed_started + self.interval
+            except RemoteError as exc:
+                self.feed_ok = False
+                self.next_feed = time.monotonic() + (120 if exc.status in (403, 429) else 30)
+                # Accelerate profile fallback as soon as the feed fails.
+                self.next_backup = min(self.next_backup, now)
+                print(f'Flux partagé différé : {exc}', flush=True)
+        if self.targets and now >= self.next_backup:
+            wallet = self.backup_wallet()
+            if wallet:
+                try:
+                    self.route([dict(c, author=wallet) for c in self.pump.callouts(wallet)])
+                    self.next_backup = time.monotonic() + (self.backup_interval if self.feed_ok else 2)
+                except RemoteError as exc:
+                    self.next_backup = time.monotonic() + (120 if exc.status in (403, 429) else 30)
+                    print(f'Profils partagés différés : {exc}', flush=True)
+
+
+class AlertWorker:
+    def __init__(self, events, path, sender, stop):
+        self.events, self.path, self.sender, self.stop = events, path, sender, stop
+        self.ready, self.since, self.error = threading.Event(), None, None
+        self.known = set()
+
+    def run(self):
+        store = None
+        try:
+            store = Store(self.path, time.time())
+            self.since = store.since
+            self.known = {row[0] for row in store.db.execute('SELECT id FROM alerts')}
+            self.ready.set()
+            retry_at = 0
+            while not self.stop.is_set():
+                try:
+                    call = self.events.get(timeout=.25)
+                    if not store.known(call):
+                        store.enqueue(call)
+                except queue.Empty:
+                    pass
+                except (KeyError, ValueError, TypeError, OverflowError):
+                    print('Alerte incomplète ignorée', flush=True)
+                if time.monotonic() >= retry_at:
+                    try:
+                        store.deliver(self.sender)
+                    except RemoteError as exc:
+                        retry_at = time.monotonic() + 5
+                        print(f'Telegram différé : {exc}', flush=True)
+        except Exception as exc:
+            self.error = type(exc).__name__
+            self.stop.set()
+        finally:
+            self.ready.set()
+            if store:
+                store.db.close()
+
+
+class RepostWorker:
+    def __init__(self, events, path, execution, args, stop):
+        self.events, self.path, self.execution, self.args, self.stop = events, path, execution, args, stop
+        self.ready, self.since, self.error = threading.Event(), None, None
+        self.known = set()
+
+    def run(self):
+        journal = None
+        try:
+            journal = Journal(self.path, time.time(), self.execution.owner)
+            self.since = journal.since
+            self.known = {job['call_id'] for job in journal.jobs()}
+            engine = Engine(journal, self.execution, self.args)
+            self.ready.set()
+            while not self.stop.is_set():
+                try:
+                    call = self.events.get(timeout=.25)
+                    journal.add(call, time.time(), self.args.max_age, self.args.delay, self.args.text)
+                except queue.Empty:
+                    pass
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    print('Signal de republication incomplet ignoré', flush=True)
+                engine.step(time.time())
+        except Exception as exc:
+            self.error = type(exc).__name__
+            self.stop.set()
+        finally:
+            self.ready.set()
+            if journal:
+                journal.db.close()
+
+
+def data_roots():
+    # The first standalone download stored its Telegram session in ~/data.
+    roots = [ROOT / 'data', Path.cwd() / 'data', Path.cwd().parent / 'data', Path.home() / 'data']
+    return list(dict.fromkeys(roots))
+
+
+def retained_path(filename):
+    for root in data_roots():
+        candidate = root / filename
+        if candidate.is_file():
+            return str(candidate)
+    return str(ROOT / 'data' / filename)
+
+
+def configure(parser):
+    parser.description = __doc__
+    parser.add_argument('--send-to', default='@callout44_bot')
+    parser.add_argument('--session', help='Session Telegram existante ; détectée automatiquement sinon')
+    parser.add_argument('--alerts-state', help='Journal SQLite des alertes existantes')
+    parser.add_argument('--alerts-only', action='store_true', help='Alertes seules, sans le worker de republication')
+    parser.add_argument('--dry-run', action='store_true', help='Aucun envoi Telegram, achat ni publication')
+    parser.add_argument('--feed-interval', type=float, default=2)
+    parser.add_argument('--backup-interval', type=float, default=4)
+
+
+def main():
+    args = parse_args(configure=configure)
+    if args.live and (args.dry_run or args.alerts_only):
+        raise RemoteError('--live ne peut pas être combiné avec --dry-run ou --alerts-only')
+    if not 1.1 <= args.feed_interval <= 60 or not 1.1 <= args.backup_interval <= 120:
+        raise RemoteError('Intervalles invalides (minimum 1,1 seconde)')
+    pump = Pump('browser')
+    owner, label = pump.resolve(args.profile)
+    sender, user = print, None
+    stop = threading.Event()
+    threads, workers = [], []
+    try:
+        if not args.dry_run:
+            session = args.session or retained_path('callout_alerts_telegram.session')
+            user = TelegramUserSender(args.send_to, session).connect()
+            sender = user
+            recipient = f'user:{user.identity}:{user.entity.id}'
+            destination = hashlib.sha256(recipient.encode()).hexdigest()[:16]
+        else:
+            destination = 'dry-run'
+        alert_path = args.alerts_state or retained_path(f'alerts_{owner}_following_{destination}.sqlite3')
+        alerts_queue, repost_queue = queue.Queue(), queue.Queue()
+        alerts = AlertWorker(alerts_queue, alert_path, sender, stop)
+        workers.append(alerts)
+        repost = None
+        if not args.alerts_only:
+            execution = Execution(args, owner=owner)
+            repost_path = args.state or str(ROOT / 'data' / ('repost_live.sqlite3' if args.live else 'repost_simulation.sqlite3'))
+            repost = RepostWorker(repost_queue, repost_path, execution, args, stop)
+            workers.append(repost)
+        for worker in workers:
+            thread = threading.Thread(target=worker.run, daemon=True)
+            threads.append(thread)
+            thread.start()
+        for worker in workers:
+            while not worker.ready.wait(.25):
+                if stop.is_set():
+                    break
+            if worker.error:
+                raise RemoteError(f'Initialisation impossible : {worker.error}')
+        reader = SharedReader(pump, owner, alerts.since, repost.since if repost else 0,
+                              alerts_queue, repost_queue, repost=bool(repost),
+                              interval=args.feed_interval, backup_interval=args.backup_interval)
+        reader.seen_alerts.update(alerts.known)
+        if repost:
+            reader.seen_reposts.update(repost.known)
+        mode = 'achats réels' if args.live else 'alertes seules' if args.alerts_only else 'achats simulés'
+        print(f'HUB : {label}, {mode}, flux unique toutes les {args.feed_interval}s minimum.', flush=True)
+        while not stop.is_set():
+            reader.step()
+            stop.wait(.1)
+        errors = [worker.error for worker in workers if worker.error]
+        if errors:
+            raise RemoteError(f'Un worker a été arrêté : {", ".join(errors)}')
+    finally:
+        stop.set()
+        for thread in threads:
+            thread.join(timeout=45)
+        if user:
+            user.close()
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        print('\nArrêt du hub. États conservés.')
+    except RemoteError as exc:
+        raise SystemExit(str(exc)) from None

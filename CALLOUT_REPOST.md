@@ -1,5 +1,8 @@
 # Achat et republication des callouts
 
+Pour utiliser les alertes et la republication ensemble avec un lecteur commun, voir [CALLOUT_HUB.md](CALLOUT_HUB.md).
+
+
 `callout_repost.py` surveille 0xEthan, chairman, schoen, Dior, trunoest, ely, HarryPaulDavies, sadcrissy, SossaDotKek et _logjam. Il utilise les adresses déjà présentes dans le dépôt, pour suivre les mêmes comptes même après un changement de pseudo.
 
 Pour un nouveau token signalé par l’un de ces callers :

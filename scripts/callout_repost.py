@@ -90,13 +90,13 @@ class Journal:
 
 
 class Execution:
-    def __init__(self, args):
+    def __init__(self, args, owner=None):
         from curl_cffi import requests
         self.args = args
         self.http = requests.Session(impersonate='chrome')
         self.pump = Pump('browser')
         self.keypair = None
-        self.owner, _ = self.pump.resolve(args.profile)
+        self.owner = owner or self.pump.resolve(args.profile)[0]
         if args.live:
             from solders.keypair import Keypair
             raw = Path(args.wallet).read_text().strip()
@@ -305,7 +305,7 @@ def detect(events, stop, since):
         stop.wait(2)
 
 
-def main():
+def parse_args(argv=None, configure=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--profile', default='Lelouch_0x')
     parser.add_argument('--live', action='store_true', help='Effectuer réellement les achats et publications')
@@ -319,7 +319,9 @@ def main():
     parser.add_argument('--jupiter', default='https://api.jup.ag')
     parser.add_argument('--text', default=None, help='Remplacer le choix aléatoire : {text} et {caller} sont remplacés')
     parser.add_argument('--state')
-    args = parser.parse_args()
+    if configure:
+        configure(parser)
+    args = parser.parse_args(argv)
     if not args.usd.is_finite() or args.usd <= 0 or not math.isfinite(args.delay) or args.delay < 0 or not math.isfinite(args.max_age) or args.max_age <= 0 or not 1 <= args.slippage_bps <= 5000:
         parser.error('Montant/délais/slippage invalides')
     try:
@@ -329,6 +331,11 @@ def main():
         parser.error('--text accepte seulement {text} et {caller}')
     if args.live and any(not Path(p).is_file() for p in (args.wallet, args.token)):
         parser.error('Créer les fichiers locaux --wallet et --token (voir CALLOUT_REPOST.md)')
+    return args
+
+
+def main():
+    args = parse_args()
     execution = Execution(args)
     path = args.state or str(ROOT / 'data' / ('repost_live.sqlite3' if args.live else 'repost_simulation.sqlite3'))
     journal = Journal(path, time.time(), execution.owner)

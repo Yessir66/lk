@@ -1,5 +1,8 @@
 # Alertes de callouts pump.fun vers Telegram
 
+Pour utiliser les alertes et la republication ensemble avec un lecteur commun, voir [CALLOUT_HUB.md](CALLOUT_HUB.md).
+
+
 `scripts/callout_alerts.py` surveille les callouts des comptes suivis par `Lelouch_0x` et transmet les alertes au bot Telegram destinataire depuis ton compte Telegram.
 
 ## Configuration avec ton compte Telegram
