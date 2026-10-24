@@ -13,10 +13,10 @@ Un CA n'est envoyé que si **toutes** ces conditions sont remplies :
 | C'est son **premier achat** du token (on ignore ses rachats) | Au démarrage, le bot lit ses 2 dernières heures de transactions. Un token qu'il a déjà touché ou qu'il détient déjà est ignoré. |
 | Token **créé 2 h ou moins** avant son achat | La date de création vient de l'API Jupiter. Sur 743 tokens de l'échantillon, elle a donné 100 % d'accord avec mon critère du backtest. |
 | Token lancé sur pump.fun ou stonkfun | C'est l'univers sur lequel les règles ont été testées. |
-| **MC à son prix d'achat ≥ 45 000 $** | Son prix d'exécution (ce qu'il a payé, en SOL ou dans un autre token, converti en $) × 1 milliard. |
+| **MC à son prix d'achat ≥ 37 000 $** (45 000 $ jusqu'au 24/10) | Son prix d'exécution (ce qu'il a payé, en SOL ou dans un autre token, converti en $) × 1 milliard. |
 | Pas plus de 50 % sous le plus haut du token | Bougies pump.fun. Si elles ne répondent pas, ce contrôle est sauté. |
 | Signal envoyé moins de 15 s après son achat | Sinon le signal est trop tardif : il est noté dans le journal mais pas envoyé. |
-| CA jamais envoyé auparavant, et moins de 40 signaux dans la journée | Garde-fous contre les doublons ou un emballement du bot. |
+| CA jamais envoyé auparavant, et moins de 60 signaux dans la journée | Garde-fous contre les doublons ou un emballement du bot. |
 
 Sorties de la règle :
 - moitié vendue à **x1,5**, puis le stop remonte au **prix d'entrée** ;
@@ -71,7 +71,9 @@ proposés par l'utilisateur, pas ajustés sur ces données ; ils améliorent cha
 
 ## Ce qu'il faut attendre
 
-- **Nombre de signaux :** environ 30 par jour (20, 36 et 32 du 19 au 21/10).
+- **Nombre de signaux :** environ 40 par jour avec le seuil de 37 k$ (29, 50 et 45 du 19 au 21/10). Les 36 tokens
+  entre 37 et 45 k$ donnaient +0,4 % par trade avec les sorties actuelles, comme ceux au-dessus de 45 k$
+  (+0,3 %) : plus de trades, même tendance.
 - **Résultat attendu :** autour de 0 % par trade d'après le backtest, avant les frais fixes. C'est un test pour
   mesurer la tendance réelle, pas une stratégie gagnante prouvée.
 - **Frais fixes :** à 5 $ la position, ils pèsent lourd. Les frais de priorité de Trojan et la location de

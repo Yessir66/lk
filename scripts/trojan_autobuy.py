@@ -10,9 +10,10 @@ with its Autobuy setting (5 $). Rules and setup: analyses/trojan_autobuy_guide.m
      the buy cannot have been bought earlier than that) and a token it already held is ignored;
    - token created <= 2 h before that buy (Jupiter token API: first pool time, checked equal to the backtest's
      pump.fun criterion on 743 tokens) and launched on pump.fun or stonkfun (the backtested universe);
-   - market cap at its price >= 45 000 $ (its fill in USD x 1e9 supply, as in the backtest);
+   - market cap at its price >= 37 000 $ (its fill in USD x 1e9 supply, as in the backtest; 45 000 $ until 24/10,
+     the 37-45 k$ tokens of 19-21/10 gave +0.4 % a trade with the current exits, the same as the others);
    - its price not more than 50 % below the token's high so far (pump.fun minute candles; skipped if unavailable);
-   - the signal is less than 15 s old, the CA was never sent before, and fewer than 40 signals today.
+   - the signal is less than 15 s old, the CA was never sent before, and fewer than 60 signals today.
 3. --live: sends the CA to Trojan with Telethon (the user's own Telegram account; api_id/api_hash and the
    session file stay on the user's PC, trojan_config.json and *.session are gitignored). Without --live: the
    same detection, journal only (dry run).
@@ -65,8 +66,8 @@ QUOTES = NOT_MEME | {
 DEFAULTS = {
     "api_id": 0, "api_hash": "", "trojan_bot": "solana_trojanbot",
     "wallet": "7BNaxx6KdUYrjACNQZ9He26NBFoFxujQMAfNLnArLGH5",
-    "mise_usd": 5, "mc_min_usd": 45000, "age_max_min": 120, "baisse_max_sous_ath": 0.5,
-    "launchpads": ["pump.fun", "stonkfun"], "max_signaux_par_jour": 40, "retard_max_s": 15,
+    "mise_usd": 5, "mc_min_usd": 37000, "age_max_min": 120, "baisse_max_sous_ath": 0.5,
+    "launchpads": ["pump.fun", "stonkfun"], "max_signaux_par_jour": 60, "retard_max_s": 15,
     "tp1": 1.5, "tp2": 2.0, "stop": 0.5, "sortie_min": 20,
     "stop_1re_minute": 0.3, "vente_totale_a": 1.8, "delai_vente_totale_s": 5, "plage_5min": 0.2,
     "vente_auto": False,
