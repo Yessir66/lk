@@ -95,3 +95,9 @@ Le mode `--dry-run` permet de vérifier le démarrage et les API publiques dans 
 `HTTP 429` signifie que pump.fun limite les requêtes sur la route indiquée. Le hub affiche désormais la durée de pause des profils, tandis que le flux global continue tant qu’il répond. La bibliothèque conserve les délais `Retry-After` en secondes ou en date HTTP et les applique à toute la famille de routes concernée, même pour un autre wallet. Elle ne refait pas de requête sur cette famille avant l’expiration de ce délai.
 
 La lecture des profils reste un secours : son ralentissement peut retarder la détection des callouts absents du flux. Les callouts découverts au-delà de la limite d’âge restent ignorés pour les achats. La disparition des 429 dépend de la limite appliquée par pump.fun ; le correctif réduit les sollicitations et respecte les attentes indiquées par le serveur.
+
+## Achat confirmé mais « TP différé : HTTP 429 »
+
+Cette erreur concerne les services d’exécution, distincts de la lecture pump.fun. La mise à jour affiche le nom précis du RPC ou de Jupiter, régule les requêtes de chaque fournisseur et partage les pauses entre positions. Les alertes Telegram et le lecteur public continuent indépendamment, mais un TP en attente de réponses de ces services ne peut pas être considéré comme exécuté.
+
+Le journal d’achat/vente doit être conservé à la mise à jour. Voir la section « Limites du RPC et de Jupiter » de [CALLOUT_REPOST.md](CALLOUT_REPOST.md) pour les nouveaux messages et la configuration d’un accès adapté.

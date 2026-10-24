@@ -155,6 +155,111 @@ class RepostTest(unittest.TestCase):
             execution.sol_price()
         self.assertEqual(execution.jupiter.call_count, 2)
 
+    def http_execution(self):
+        execution = object.__new__(r.Execution)
+        execution.args = SimpleNamespace(rpc='https://rpc.example/?api-key=PRIVATE', jupiter='https://api.jup.ag')
+        execution.owner = 'owner'
+        execution.http = MagicMock()
+        return execution
+
+    def test_rpc_429_labels_method_redacts_url_and_blocks_rpc_but_not_jupiter(self):
+        execution = self.http_execution()
+        execution.http.request.return_value = SimpleNamespace(status_code=429, headers={'Retry-After': '120'})
+        with patch.object(r.time, 'monotonic', return_value=10), patch.object(r.time, 'sleep'):
+            with self.assertRaises(r.RemoteError) as caught:
+                execution.rpc('getTokenAccountsByOwner', [])
+        self.assertIn('RPC Solana/getTokenAccountsByOwner', str(caught.exception))
+        self.assertNotIn('PRIVATE', str(caught.exception))
+        self.assertEqual(caught.exception.retry_after, 120)
+        with patch.object(r.time, 'monotonic', return_value=11):
+            with self.assertRaises(r.RemoteError): execution.rpc('getBalance', [])
+        self.assertEqual(execution.http.request.call_count, 1)
+        execution.http.request.return_value = SimpleNamespace(status_code=200, headers={}, json=lambda: {'result': 1})
+        with patch.object(r.time, 'monotonic', return_value=12), patch.object(r.time, 'sleep'):
+            execution.jupiter('/price/v3?ids=PUBLIC')
+        with patch.object(r.time, 'monotonic', return_value=131), patch.object(r.time, 'sleep'):
+            self.assertEqual(execution.rpc('getBalance', []), 1)
+        self.assertEqual(execution.http.request.call_count, 3)
+
+    def test_jupiter_rate_limit_progresses_and_does_not_expose_key(self):
+        execution = self.http_execution()
+        execution.http.request.return_value = SimpleNamespace(status_code=429, headers={})
+        with patch.dict(r.os.environ, {'JUP_API_KEY': 'SECRET'}), patch.object(r.time, 'sleep'):
+            for now, expected in [(10,15), (25,30), (55,60)]:
+                with patch.object(r.time, 'monotonic', return_value=now):
+                    with self.assertRaises(r.RemoteError) as caught:
+                        execution.jupiter('/swap/v1/quote?inputMint=TOKEN')
+                self.assertEqual(caught.exception.retry_after, expected)
+                self.assertIn('Jupiter/swap/v1/quote', str(caught.exception))
+                self.assertNotIn('SECRET', str(caught.exception))
+                self.assertNotIn('inputMint', str(caught.exception))
+
+    def test_json_rpc_rate_error_and_preflight_error_are_distinguished(self):
+        execution = self.http_execution()
+        response = SimpleNamespace(status_code=200, headers={}, json=lambda: {
+            'error': {'code': -32005, 'message': 'Too many requests SECRET'}})
+        execution.http.request.return_value = response
+        with patch.object(r.time, 'monotonic', return_value=10), patch.object(r.time, 'sleep'):
+            with self.assertRaises(r.RemoteError) as limited: execution.rpc('getTransaction', [])
+        self.assertEqual(limited.exception.status, 429)
+        self.assertNotIn('SECRET', str(limited.exception))
+        response.json = lambda: {'error': {'code': -32002, 'message': 'simulation failed'}}
+        with patch.object(r.time, 'monotonic', return_value=30), patch.object(r.time, 'sleep'):
+            with self.assertRaises(r.RemoteError) as preflight: execution.rpc('sendTransaction', [])
+        self.assertIsNone(preflight.exception.status)
+        self.assertIn('RPC Solana/sendTransaction', str(preflight.exception))
+        self.assertIn('-32002', str(preflight.exception))
+
+    def test_jupiter_request_pacing_is_shared_between_quote_and_price(self):
+        execution = self.http_execution()
+        execution.http.request.return_value = SimpleNamespace(status_code=200, headers={}, json=lambda: {})
+        with patch.object(r.time, 'monotonic', return_value=10), patch.object(r.time, 'sleep') as sleep:
+            execution.jupiter('/swap/v1/quote')
+            execution.jupiter('/price/v3')
+        self.assertEqual(sleep.call_args_list[-1].args, (1.0,))
+
+    def test_wallet_balance_cache_and_fresh_check_before_sell(self):
+        execution = self.http_execution()
+        data = {'account': {'data': {'parsed': {'info': {'tokenAmount': {'amount': '1000'}}}}}}
+        execution.rpc = MagicMock(return_value={'value': [data]})
+        with patch.object(r.time, 'monotonic', return_value=10): self.assertEqual(execution.token_amount(MINT), 1000)
+        with patch.object(r.time, 'monotonic', return_value=15): self.assertEqual(execution.token_amount(MINT), 1000)
+        self.assertEqual(execution.rpc.call_count, 1)
+        with patch.object(r.time, 'monotonic', return_value=15): execution.token_amount(MINT, fresh=True)
+        self.assertEqual(execution.rpc.call_count, 2)
+        with patch.object(r.time, 'monotonic', return_value=31): execution.token_amount(MINT)
+        self.assertEqual(execution.rpc.call_count, 3)
+
+    def test_tp_rate_limit_delays_job_without_rebuy_or_resign(self):
+        self.tp_position()
+        self.execution.exit_quote.side_effect = r.RemoteError('Jupiter 429', status=429, retry_after=120)
+        self.engine.step(1010)
+        self.engine.step(1015)
+        self.assertGreaterEqual(self.job()['exit_retry_at'], 1130)
+        self.execution.exit_quote.assert_called_once()
+        self.execution.sign_quote.assert_not_called()
+        self.execution.prepare.assert_called_once()  # Only the original purchase.
+
+    def test_tp_retry_delay_starts_after_slow_failed_request(self):
+        self.tp_position()
+        self.execution.exit_quote.side_effect = r.RemoteError('Jupiter 429', status=429, retry_after=120)
+        with patch.object(r.time, 'monotonic', side_effect=[10,40]):
+            self.engine.step(1010)
+        self.assertEqual(self.job()['exit_retry_at'], 1160)
+
+    def test_tp_rechecks_quantity_before_signing(self):
+        self.tp_position()
+        self.execution.token_amount.side_effect = [1000, 500]
+        self.engine.step(1010)
+        self.execution.sign_quote.assert_not_called()
+        self.execution.token_amount.assert_called_with(MINT, fresh=True)
+        self.execution.token_amount.side_effect = None
+        self.execution.token_amount.return_value = 500
+        self.execution.exit_quote.return_value = {'otherAmountThreshold': '15000000'}
+        self.engine.step(1015)
+        self.assertEqual(self.job()['exit_tokens'], 500)
+        self.execution.sign_quote.assert_called_once()
+
     def test_random_phrase_persisted_through_restart_and_duplicates(self):
         self.assertEqual(len(r.CALLOUT_TEXTS), 10)
         with patch.object(r.random, 'choice', return_value=r.CALLOUT_TEXTS[7]) as choose:

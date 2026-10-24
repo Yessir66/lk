@@ -14,7 +14,7 @@ import time
 import uuid
 from decimal import Decimal, ROUND_DOWN
 
-from callout_alerts import API, Pump, RemoteError, WALLET, timestamp
+from callout_alerts import API, Pump, RemoteError, WALLET, retry_seconds, timestamp
 
 SOL = 'So11111111111111111111111111111111111111112'
 CALLOUT_TEXTS = [
@@ -98,6 +98,8 @@ class Execution:
         self.keypair = None
         self._price = None
         self._price_at = 0
+        self._limits = {}
+        self._balances = {}
         self.owner = owner or self.pump.resolve(args.profile)[0]
         if args.live:
             from solders.keypair import Keypair
@@ -107,29 +109,57 @@ class Execution:
                 raise RemoteError('Le wallet fourni ne correspond pas au profil pump.fun demandé')
             self.check_auth()
 
-    def json(self, url, body=None, headers=None):
+    def json(self, url, body=None, headers=None, label='Service', bucket='service'):
+        # Only fixed service/method labels are logged: URLs may contain private RPC keys.
+        if not hasattr(self, '_limits'):
+            self._limits = {}
+        limit = self._limits.setdefault(bucket, {'until': 0, 'next': 0, 'failures': 0})
+        remaining = limit['until'] - time.monotonic()
+        if remaining > 0:
+            raise RemoteError(f'{label} : pause fournisseur ({remaining:.0f}s restantes)', status=429, retry_after=remaining)
+        interval = 1 / getattr(self.args, 'jupiter_rps', 1) if bucket == 'jupiter' else 1 / getattr(self.args, 'rpc_rps', 2)
+        time.sleep(max(0, limit['next'] - time.monotonic()))
+        limit['next'] = time.monotonic() + interval
         try:
             response = self.http.request('GET' if body is None else 'POST', url, json=body, headers=headers or {}, timeout=20)
+            retry = retry_seconds(response.headers.get('Retry-After'))
             if response.status_code != 200:
-                raise RemoteError(f'Service HTTP {response.status_code}', status=response.status_code)
+                raise RemoteError(f'{label} : HTTP {response.status_code}', status=response.status_code, retry_after=retry)
             data = response.json()
-            if 'error' in data:
-                raise RemoteError('Service : requête refusée')
+            if not isinstance(data, dict):
+                raise RemoteError(f'{label} : format de réponse inattendu')
+            if data.get('error') is not None:
+                error = data['error']
+                code = error.get('code') if isinstance(error, dict) else None
+                message = str(error.get('message', '')) if isinstance(error, dict) else str(error)
+                limited = code == 429 or any(term in message.lower() for term in ('rate limit', 'ratelimit', 'too many requests'))
+                safe_code = f' (code {code})' if isinstance(code, int) else ''
+                raise RemoteError(f'{label} : erreur de service{safe_code}', status=429 if limited else None, retry_after=retry)
+            limit['failures'] = 0
             return data
-        except RemoteError:
+        except RemoteError as exc:
+            if exc.status == 429:
+                wait = max(exc.retry_after or 0, min(300, 15 * 2 ** min(limit['failures'], 5)))
+                limit['failures'] += 1
+                limit['until'] = time.monotonic() + wait
+                raise RemoteError(f'{exc} ; reprise dans {wait:.0f}s', status=429, retry_after=wait) from None
+            if exc.retry_after:
+                limit['until'] = time.monotonic() + exc.retry_after
             raise
         except Exception:
-            raise RemoteError('Service inaccessible ou réponse invalide') from None
+            raise RemoteError(f'{label} : connexion impossible ou réponse invalide') from None
 
     def rpc(self, method, params):
-        data = self.json(self.args.rpc, {'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params})
+        data = self.json(self.args.rpc, {'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params},
+                         label=f'RPC Solana/{method}', bucket='rpc')
         if 'result' not in data:
             raise RemoteError(f'RPC {method} : résultat absent')
         return data['result']
 
     def jupiter(self, path, body=None):
         headers = {'x-api-key': os.getenv('JUP_API_KEY')} if os.getenv('JUP_API_KEY') else {}
-        return self.json(self.args.jupiter.rstrip('/') + path, body, headers)
+        return self.json(self.args.jupiter.rstrip('/') + path, body, headers,
+                         label=f'Jupiter{path.split("?")[0]}', bucket='jupiter')
 
     def pump_call(self, fields=None):
         # Re-read to allow session renewal without restarting or buying again.
@@ -202,12 +232,22 @@ class Execution:
         after = sum(int(b['uiTokenAmount']['amount']) for b in post)
         if after <= before:
             raise RemoteError('Quantité achetée non déterminée')
+        if not hasattr(self, '_balances'):
+            self._balances = {}
+        self._balances[mint] = (after, time.monotonic())
         return after - before
 
-    def token_amount(self, mint):
+    def token_amount(self, mint, fresh=False):
+        if not hasattr(self, '_balances'):
+            self._balances = {}
+        cached = self._balances.get(mint)
+        if not fresh and cached and time.monotonic() - cached[1] < 15:
+            return cached[0]
         result = self.rpc('getTokenAccountsByOwner', [self.owner, {'mint': mint},
                           {'encoding': 'jsonParsed', 'commitment': 'confirmed'}])
-        return sum(int(a['account']['data']['parsed']['info']['tokenAmount']['amount']) for a in result['value'])
+        amount = sum(int(a['account']['data']['parsed']['info']['tokenAmount']['amount']) for a in result['value'])
+        self._balances[mint] = (amount, time.monotonic())
+        return amount
 
     def exit_quote(self, mint, amount):
         quote = self.jupiter(f'/swap/v1/quote?inputMint={mint}&outputMint={SOL}&amount={amount}&slippageBps={self.args.slippage_bps}')
@@ -227,9 +267,7 @@ class Execution:
         return self.rpc('getBlockHeight', [{'commitment': 'confirmed'}]) > height
 
     def holds(self, mint):
-        result = self.rpc('getTokenAccountsByOwner', [self.owner, {'mint': mint},
-                          {'encoding': 'jsonParsed', 'commitment': 'confirmed'}])
-        return any(int(a['account']['data']['parsed']['info']['tokenAmount']['amount']) > 0 for a in result['value'])
+        return self.token_amount(mint, fresh=True) > 0
 
     def already_posted(self, job):
         return any(c.get('coinMint') == job['mint'] and c.get('thesis') == job['text']
@@ -241,6 +279,7 @@ class Engine:
         self.journal, self.execution, self.args = journal, execution, args
 
     def step(self, now):
+        tick_started = time.monotonic()
         for job in self.journal.jobs():
             if self.args.live and getattr(self.args, 'take_profit', None) is not None:
                 try:
@@ -248,7 +287,7 @@ class Engine:
                 except Exception as exc:
                     detail = str(exc) if isinstance(exc, RemoteError) else type(exc).__name__
                     print(f'TP {job["mint"]} différé : {detail}', flush=True)
-                    job['exit_retry_at'] = now + getattr(self.args, 'tp_interval', 5)
+                    job['exit_retry_at'] = now + (time.monotonic() - tick_started) + max(getattr(self.args, 'tp_interval', 5), (exc.retry_after or 0) if isinstance(exc, RemoteError) else 0)
                     self.journal.save(job)
             if job.get('exit_state') in ('signed', 'sold', 'empty', 'review'):
                 continue
@@ -260,7 +299,7 @@ class Engine:
                 # Never print responses, headers, private keys or arbitrary exception text.
                 detail = str(exc) if isinstance(exc, RemoteError) else type(exc).__name__
                 print(f'{job["caller"]} : étape {job["state"]} différée ({detail})', flush=True)
-                job['retry_at'] = now + 10
+                job['retry_at'] = now + (time.monotonic() - tick_started) + max(10, (exc.retry_after or 0) if isinstance(exc, RemoteError) else 0)
                 self.journal.save(job)
 
     def manage_exit(self, job, now):
@@ -307,6 +346,10 @@ class Engine:
             cost = Decimal(job['cost_usd']) * Decimal(amount) / Decimal(job['position_tokens'])
             target = cost * (1 + self.args.take_profit / 100)
             if value >= target:
+                if self.execution.token_amount(job['mint'], fresh=True) < amount:
+                    job['exit_retry_at'] = now + self.args.tp_interval
+                    self.journal.save(job)
+                    return
                 # Persist before broadcasting, just as for the buy; never sell twice after a timeout.
                 job['exit_tx'] = self.execution.sign_quote(quote)
                 job.update(exit_state='signed', exit_tokens=amount, exit_trigger_usd=str(value))
@@ -425,6 +468,8 @@ def parse_args(argv=None, configure=None):
     parser.add_argument('--wallet', default=str(ROOT / 'data' / 'pump_wallet.txt'))
     parser.add_argument('--token', default=str(ROOT / 'data' / 'pump_token.txt'))
     parser.add_argument('--rpc', default=os.getenv('SOLANA_RPC_URL', 'https://api.mainnet-beta.solana.com'))
+    parser.add_argument('--rpc-rps', type=float, default=2, help='Plafond local des requêtes RPC par seconde')
+    parser.add_argument('--jupiter-rps', type=float, default=1, help='Plafond local des requêtes Jupiter par seconde')
     parser.add_argument('--jupiter', default='https://api.jup.ag')
     parser.add_argument('--text', default=None, help='Remplacer le choix aléatoire : {text} et {caller} sont remplacés')
     parser.add_argument('--state')
@@ -433,6 +478,8 @@ def parse_args(argv=None, configure=None):
     args = parser.parse_args(argv)
     if not args.usd.is_finite() or args.usd <= 0 or not math.isfinite(args.delay) or args.delay < 0 or not math.isfinite(args.max_age) or args.max_age <= 0 or not 1 <= args.slippage_bps <= 5000:
         parser.error('Montant/délais/slippage invalides')
+    if any(not math.isfinite(rate) or rate <= 0 for rate in (args.rpc_rps, args.jupiter_rps)):
+        parser.error('Les plafonds RPC et Jupiter doivent être positifs')
     if not args.take_profit.is_finite() or args.take_profit <= 0 or not math.isfinite(args.tp_interval) or args.tp_interval < 1:
         parser.error('TP et intervalle de contrôle invalides')
     try:

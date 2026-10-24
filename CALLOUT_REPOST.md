@@ -76,7 +76,7 @@ Le TP est actif par défaut en mode réel, dans le script autonome comme dans le
 
 Pour un achat d’environ 2 USD, il prépare la vente de toute la position lorsque la valeur minimale de la cotation Jupiter atteint 3 USD. La cotation porte sur la quantité entière à vendre, inclut le minimum après slippage, et son résultat en SOL est converti au prix SOL/USD courant. Les frais réseau de la vente restent en plus : le déclenchement n’est pas une garantie de 50 % de bénéfice net ni d’un prix de règlement exact.
 
-Le contrôle est prévu toutes les 5 secondes par position (`--tp-interval 5`). Le prix SOL/USD est partagé et mis en cache 5 secondes. Aucun nouvel achat n’est effectué pour financer ou compléter une sortie. Si une partie de la position a été retirée du wallet, la quantité disponible est plafonnée à la quantité acquise et son coût de référence est ajusté proportionnellement.
+Le contrôle est prévu toutes les 5 secondes par position (`--tp-interval 5`). Le prix SOL/USD est partagé et mis en cache 5 secondes. Les soldes de tokens sont réutilisés pendant 15 secondes pour réduire les lectures RPC ; avant la signature d’une vente, une nouvelle lecture du solde est obligatoire. Aucun nouvel achat n’est effectué pour financer ou compléter une sortie. Si une partie de la position a été retirée du wallet, la quantité disponible est plafonnée à la quantité acquise et son coût de référence est ajusté proportionnellement.
 
 La transaction de vente est signée puis enregistrée avant son premier envoi. Après une coupure ou un redémarrage, la même signature est contrôlée et les mêmes octets sont réutilisés. Seule une erreur de transaction confirmée permet une nouvelle préparation automatique. Une transaction expirée/non retrouvée est marquée à vérifier, pour éviter une vente répétée dont le résultat serait incertain.
 
@@ -107,3 +107,18 @@ py -m unittest discover -s tests -v
 ```
 
 La lecture des callouts et les cotations publiques sont vérifiables sans fonds. L’achat réel et `/callout/create` restent à valider avec les fichiers de wallet/session sur le PC ; leur présence n’a pas été constatée dans l’environnement de développement. La disponibilité de ces API depuis le cloud ne garantit pas leur disponibilité depuis le PC.
+
+## Limites du RPC et de Jupiter
+
+Les erreurs d’exécution identifient le service et l’opération : par exemple `RPC Solana/getTokenAccountsByOwner : HTTP 429` ou `Jupiter/swap/v1/quote : HTTP 429`. Les URL RPC, clés API, en-têtes et réponses arbitraires ne sont pas affichés. Les erreurs JSON-RPC exposent seulement le code numérique et le nom de la méthode.
+
+Le client espace les requêtes d’exécution : plafond local par défaut de 2 requêtes RPC/s et 1 requête Jupiter/s. Chaque fournisseur possède une pause partagée en cas de 429, même lorsque plusieurs positions sont suivies. Le délai augmente de 15, 30, 60, 120, 240 puis 300 secondes ; un `Retry-After` plus long est toujours respecté. Les jobs attendent ce délai au lieu de relancer leur étape toutes les 5 ou 10 secondes. Un refus JSON-RPC signalant une limitation est traité comme un 429.
+
+Les paramètres `--rpc-rps` et `--jupiter-rps` doivent correspondre aux quotas de ton accès. Ce plafond local n’accorde pas de quota supplémentaire au serveur. Le délai de contrôle TP peut donc dépasser 5 secondes, notamment avec plusieurs positions ou pendant une pause fournisseur.
+
+Si les limites persistent après la mise à jour :
+
+- Pour un message `RPC Solana/...`, configurer un endpoint RPC personnel dans `SOLANA_RPC_URL` ou avec `--rpc`.
+- Pour un message `Jupiter/...`, vérifier le quota du service et configurer `JUP_API_KEY` dans les variables locales Windows si le fournisseur le demande.
+
+Renseigner les accès localement ; ne pas transmettre leurs valeurs dans le chat. Tant que les cotations ou les requêtes RPC nécessaires sont refusées, le bot ne peut pas confirmer le seuil ni garantir l’exécution du TP. Les transactions déjà signées et les positions restent dans le journal, pour reprendre sans achat ou vente supplémentaires créés à l’aveugle.
