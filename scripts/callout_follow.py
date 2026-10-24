@@ -56,6 +56,9 @@ seconds; without them the bot only buys. After a sale the empty token account is
 callout of an account that pump.fun user follows: who called, the text, the market cap at the call and now, the
 CA, links. It reuses the feed read for detection (no extra pump.fun request but the follows, re-read every 10
 min), and alerts are sent in the background so they never delay a buy.
+While pump.fun answers scripts with a Cloudflare challenge (HTTP 403, since October 2026), callouts cannot be
+read nor posted: the default mode then runs wallet_follow.py (to download next to this script), which sends
+to Trojan the coins the callers buy on-chain, and comes back to the callouts once pump.fun answers again.
 Output: data/callout_follow_<timestamp>.jsonl, one line per callout seen, buy and sale.
 """
 import asyncio
@@ -67,6 +70,7 @@ import os
 import random
 import ssl
 import statistics
+import subprocess
 import sys
 import threading
 import time
@@ -83,7 +87,7 @@ from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 
 DATA = os.path.join(os.path.dirname(__file__), "..", "data")
-arg = lambda k, d: sys.argv[sys.argv.index(k) + 1] if k in sys.argv else d
+arg = lambda k, d: sys.argv[sys.argv.index(k) + 1] if k in sys.argv[:-1] else d
 num = lambda k: float(arg(k, None)) if k in sys.argv else None
 API = "https://frontend-api-v3.pump.fun"
 JUP = "https://lite-api.jup.ag/swap/v1"
@@ -132,6 +136,8 @@ CALLOUT_TEXTS = ["let's run it, seems like a good narra",
 PUMP_WALLET = arg("--pump-wallet", os.path.join(DATA, "pump_wallet.txt"))
 PUMP_TOKEN = arg("--pump-token", os.path.join(DATA, "pump_token.txt"))
 ALERTS_USER = arg("--alerts", None)
+if "--alerts" in sys.argv and (ALERTS_USER or "--").startswith("--"):
+    ALERTS_USER = ""   # bare --alerts: the accounts the repost wallet's own pump.fun account follows
 LOG =os.path.normpath(os.path.join(DATA, f"callout_follow_{int(time.time())}.jsonl"))
 CA = "/root/.ccr/ca-bundle.crt"
 SSL = ssl.create_default_context(cafile=CA) if os.path.exists(CA) else ssl.create_default_context()
@@ -572,13 +578,15 @@ def setup_alerts(username):
     if not token or not chat:
         return print("alertes désactivées : définis TELEGRAM_BOT_TOKEN et TELEGRAM_CHAT_ID (ceux de ton bot d'alertes)")
     try:
+        if not username:
+            raise SystemExit("aucun compte donné après --alerts")
         wallet, _ = resolve(username)
     except SystemExit as e:   # an unknown name (a renamed profile) must not stop the bot
         if not pump.get("kp"):
             return print(f"alertes désactivées : {e} ; donne plutôt ton wallet, il ne change pas si tu renommes ton profil")
         wallet = str(pump["kp"].pubkey())   # the pump.fun account of the repost wallet: the user's own
-        print(f"{username} introuvable sur pump.fun (profil renommé ?) : alertes pour les comptes suivis par ton propre "
-              f"compte, wallet {wallet}")
+        print(f"{username + ' introuvable sur pump.fun (profil renommé ?) : ' if username else ''}alertes pour les "
+              f"comptes suivis par ton propre compte, wallet {wallet}")
         username = "ton compte"
     alerts.update(token=token, chat=chat, owner=wallet, follows={}, seen=set())
     refresh_follows()
@@ -768,6 +776,39 @@ def exit_loop(kp, book, tp, sl, hold, save=None):
                 print(f"  suivi {p['mint'][:8]} : {e}", flush=True)
 
 
+def pump_blocked():
+    """True while pump.fun answers scripts with Cloudflare's challenge (HTTP 403, since October 2026) instead of data."""
+    try:
+        http(API + "/home-feed/new")
+    except urllib.error.HTTPError as e:
+        return e.code == 403 and e.headers.get("cf-mitigated") == "challenge"
+    except Exception:
+        pass
+    return False
+
+
+def follow_wallets_meanwhile():
+    """pump.fun closed to scripts: run wallet_follow.py (next to this script) on the callers' wallets, which sends
+    the CA of each coin they buy to Trojan and exits with code 3 once pump.fun answers again; the callouts then
+    take over. --max-run is not passed on: there it is measured against the caller's own buy price."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wallet_follow.py")
+    if not os.path.exists(path):
+        sys.exit(f"pump.fun bloque les scripts (protection Cloudflare) : callouts illisibles. Télécharge "
+                 f"wallet_follow.py dans {os.path.dirname(path)} pour suivre les achats de tes callers en attendant")
+    opts = [o for o in ("--live", "--alerts") if o in sys.argv] + ["--until-pump-fun"]
+    opts += [x for o in ("--max-coin-age", "--send-to", "--rpc-http") if o in sys.argv[:-1] for x in (o, arg(o, ""))]
+    wallets = [n.strip() for n in arg("--callers", "").split(",") if is_solana(n.strip())]
+    if wallets:
+        opts += ["--wallets", ",".join(wallets)]
+    while pump_blocked():
+        print("pump.fun bloque les scripts (protection Cloudflare) : callouts, repost et alertes de callouts "
+              "impossibles. En attendant : suivi des achats de tes callers sur la blockchain (wallet_follow.py), "
+              "retour automatique aux callouts dès que pump.fun répond de nouveau\n", flush=True)
+        code = subprocess.call([sys.executable, path, *opts])
+        if code != 3:
+            sys.exit(code)
+
+
 def main():
     if "--new-wallet" in sys.argv:
         path, kp = arg("--new-wallet", "bot.json"), Keypair()
@@ -775,6 +816,8 @@ def main():
             sys.exit(f"{path} existe déjà")
         json.dump(list(bytes(kp)), open(path, "w"))
         return print(f"nouveau wallet {kp.pubkey()} écrit dans {path} : envoie-lui seulement ce que le bot peut dépenser")
+    if SEND_TO and not REPOST_ONLY and pump_blocked():
+        follow_wallets_meanwhile()
     names = [] if REPOST_ONLY else [n.strip() for n in arg("--callers", "").split(",") if n.strip()] or CALLERS
     kp_path = arg("--keypair", None)
     if LIVE and not kp_path and not SEND_TO:
@@ -807,7 +850,7 @@ def main():
     labels.update(copies)   # a copied caller is followed too
     if copies:
         setup_copy(copies)
-    if ALERTS_USER and not REPOST_ONLY:
+    if ALERTS_USER is not None and not REPOST_ONLY:
         setup_alerts(ALERTS_USER)
     if REPOST_ONLY and not pump.get("copy"):
         sys.exit("repost impossible (voir ci-dessus) : rien à faire en mode --repost-only")

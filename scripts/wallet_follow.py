@@ -28,6 +28,9 @@ data/telegram.session: close that script first, a Telegram session opens in one 
 --min-sol: who bought, how much, the coin, its market cap, whether the CA went to Trojan.
 While it runs, typing pause / reprise + Enter stops / resumes the sends to Trojan (detection and alerts go on);
 etat shows the counts.
+--until-pump-fun (set by callout_follow.py, which runs this script while pump.fun is closed to scripts): every
+5 min, look whether pump.fun's API answers again, and if so exit with code 3 so that callout_follow.py goes back to
+the callouts.
 --rpc-http / --rpc-ws: your own Solana RPC (e.g. a free Helius key) if the public one throttles.
 Output: data/wallet_follow_<timestamp>.jsonl, one line per buy seen.
 """
@@ -56,6 +59,7 @@ MAX_COIN_AGE = float(arg("--max-coin-age", "2"))   # days; 0: off
 MAX_RUN = float(arg("--max-run", "0"))             # 0: off
 SEND_TO = arg("--send-to", "@solana_trojanbot")
 ALERTS = "--alerts" in sys.argv
+UNTIL_PUMP = "--until-pump-fun" in sys.argv   # run by callout_follow.py: hand back once pump.fun answers again
 TG_API_ID, TG_API_HASH = 30461091, "1ba7f769c94596baaf675447c02bb478"   # my.telegram.org app "CALLOUT"
 CALLERS = {"6yVb4pxNwDfr6rovwNnBg3SyKSvDcHGD4WdFPN1JJBqm": "0xEthan",
            "Be24Gbf5KisDk1LcWWZsBn8dvB816By7YzYF5zWZnRR6": "chairman",
@@ -407,11 +411,20 @@ def main():
     threading.Thread(target=console, daemon=True).start()
     print("pendant que le script tourne, tape « pause » ou « reprise » puis Entrée pour arrêter / relancer les envois "
           "à Trojan, « etat » pour voir où il en est", flush=True)
+    k = 0
     while True:
         time.sleep(60)
+        k += 1
         with lock:   # forget the signatures too old for either source to bring back
             for sig in [s for s, t in seen.items() if time.time() - t > 600]:
                 del seen[sig]
+        if UNTIL_PUMP and k % 5 == 0:
+            try:
+                http("https://frontend-api-v3.pump.fun/home-feed/new")
+            except Exception:
+                continue
+            print(f"\n{now_str()} pump.fun répond de nouveau : retour aux callouts", flush=True)
+            sys.exit(3)
 
 
 if __name__ == "__main__":
