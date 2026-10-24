@@ -39,6 +39,39 @@ class HubTest(unittest.TestCase):
         self.assertEqual(reader.alerts_queue.get()['author_name'], 'caller')
         reader.pump.enrich.assert_not_called()
 
+    def test_profile_429_respects_server_delay_without_stopping_feed(self):
+        reader = self.reader()
+        reader.pump.callouts.side_effect = h.RemoteError('429', status=429, retry_after=900)
+        with patch.object(h.time, 'monotonic', return_value=10):
+            reader.step()
+        self.assertEqual(reader.next_backup, 910)
+        with patch.object(h.time, 'monotonic', return_value=13):
+            reader.step()
+        reader.pump.callouts.assert_called_once()
+        self.assertEqual(reader.pump.feed.call_count, 2)
+        self.assertEqual(reader.repost_queue.qsize(), 1)
+
+    def test_repeated_profile_429_extends_pause_and_recovers_on_success(self):
+        reader = self.reader()
+        reader.pump.callouts.side_effect = h.RemoteError('429', status=429)
+        with patch.object(h.time, 'monotonic', return_value=10): reader.step()
+        self.assertEqual(reader.next_backup, 130)
+        with patch.object(h.time, 'monotonic', return_value=130): reader.step()
+        self.assertEqual(reader.next_backup, 370)
+        reader.pump.callouts.side_effect = None
+        with patch.object(h.time, 'monotonic', return_value=370): reader.step()
+        self.assertEqual(reader.backup_backoff.failures, 0)
+        self.assertEqual(reader.next_backup, 385)
+
+    def test_subscription_refresh_keeps_existing_profile_pause(self):
+        reader = self.reader()
+        reader.pump.callouts.side_effect = h.RemoteError('429', status=429, retry_after=1800)
+        with patch.object(h.time, 'monotonic', return_value=10): reader.step()
+        with patch.object(h.time, 'monotonic', return_value=700): reader.step()
+        self.assertEqual(reader.pump.following.call_count, 2)
+        reader.pump.callouts.assert_called_once()
+        self.assertEqual(reader.next_backup, 1810)
+
     def test_filters_keep_alert_following_and_ten_traders_independent(self):
         reader = self.reader()
         reader.follows = {'other': 'other-user'}

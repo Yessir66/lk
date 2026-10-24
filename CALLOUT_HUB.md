@@ -70,15 +70,15 @@ Le hub recharge les identifiants déjà enregistrés afin d’éviter les enrich
 
 ## Requêtes et délais
 
-Le flux `/home-feed/new` est lu par une seule fonction, pour les deux usages. Son intervalle cible est de 2 secondes. Le minimum de 1,1 seconde entre les lectures publiques est conservé. Une lecture de profil de secours est prévue toutes les 4 secondes : priorité aux 10 callers, puis un autre abonnement toutes les six lectures de secours. Chaque réponse est partagée entre les deux usages, y compris pour un caller qui figure déjà dans les abonnements.
+Le flux `/home-feed/new` est lu par une seule fonction, pour les deux usages. Son intervalle cible est de 2 secondes. Le minimum de 1,1 seconde entre les lectures publiques est conservé. Une lecture de profil de secours est prévue toutes les 15 secondes : priorité aux 10 callers, puis un autre abonnement toutes les six lectures de secours. Chaque réponse est partagée entre les deux usages, y compris pour un caller qui figure déjà dans les abonnements.
 
-Quand le flux global est refusé ou indisponible, les profils sont interrogés plus souvent (intervalle de 2 secondes), et la source en erreur attend avant de réessayer. La durée réelle dépend des réponses de l’API et du nombre de profils ; le flux contient une fenêtre limitée et ne garantit pas d’inclure tous les callouts. Les lectures de secours peuvent détecter certains callouts plus tard, et la limite d’âge de 60 secondes pour les achats reste appliquée.
+Quand le flux global est refusé ou indisponible, les profils sont interrogés plus souvent (intervalle de 2 secondes), et la source en erreur attend avant de réessayer. Les 429 provoquent une pause progressive de 120, 240, 480, 960 puis 1800 secondes ; un délai `Retry-After` plus long est respecté. Un succès remet la progression à zéro. Les pauses sur les listes ne sont pas annulées par le rafraîchissement des abonnements. La durée réelle dépend des réponses de l’API et du nombre de profils ; le flux contient une fenêtre limitée et ne garantit pas d’inclure tous les callouts. Les lectures de secours peuvent détecter certains callouts plus tard, et la limite d’âge de 60 secondes pour les achats reste appliquée.
 
 Les métadonnées d’un même mint sont réutilisées pendant 30 secondes, tout en conservant celles présentes dans le nouveau callout lorsqu’elles sont disponibles. Les données du flux suffisent généralement pour produire l’alerte sans requête supplémentaire. Un signal d’achat est transmis avant un éventuel enrichissement de l’alerte.
 
-Les requêtes nécessaires à une opération réelle subsistent : prix/cotation, transaction, confirmation RPC, contrôle du solde et publication authentifiée. En cas de réponse de publication perdue, le contrôle du profil personnel reste nécessaire pour retrouver le callout et éviter une publication répétée. Le partage concerne les lectures des callers, pas ces étapes d’exécution.
+Les requêtes nécessaires à une opération réelle subsistent : prix/cotation, transaction, confirmation RPC, contrôle du solde et publication authentifiée. En cas de réponse de publication perdue, le contrôle du profil personnel reste nécessaire pour retrouver le callout et éviter une publication répétée. Le partage concerne les lectures des callers, pas ces étapes d’exécution. Une limitation des lectures de profils ne suspend donc pas le suivi TP ni les confirmations, qui utilisent leurs propres API.
 
-Réglages : `--feed-interval 2` et `--backup-interval 4`. La nouvelle architecture évite les lectures faites en double et utilise un seul programme pour répartir les requêtes. Aucun gain de latence mesuré sur le PC Windows n’est encore établi.
+Réglages : `--feed-interval 2` et `--backup-interval 15`. La nouvelle architecture évite les lectures faites en double et utilise un seul programme pour répartir les requêtes. Aucun gain de latence mesuré sur le PC Windows n’est encore établi.
 
 ## Vérification
 
@@ -89,3 +89,9 @@ py -m unittest discover -s tests -v
 Les tests vérifient la lecture unique et sa distribution, les filtres des abonnements et des 10 callers, le cache des métadonnées, le secours sur HTTP 403 et la poursuite de Telegram et du lecteur quand le moteur d’achat est bloqué. Les tests du moteur de transactions et des alertes restent exécutés.
 
 Le mode `--dry-run` permet de vérifier le démarrage et les API publiques dans le cloud. La session Telegram et le wallet étant sur le PC, les envois réels et la republication du hub doivent encore y être validés.
+
+## Messages HTTP 429
+
+`HTTP 429` signifie que pump.fun limite les requêtes sur la route indiquée. Le hub affiche désormais la durée de pause des profils, tandis que le flux global continue tant qu’il répond. La bibliothèque conserve les délais `Retry-After` en secondes ou en date HTTP et les applique à toute la famille de routes concernée, même pour un autre wallet. Elle ne refait pas de requête sur cette famille avant l’expiration de ce délai.
+
+La lecture des profils reste un secours : son ralentissement peut retarder la détection des callouts absents du flux. Les callouts découverts au-delà de la limite d’âge restent ignorés pour les achats. La disparition des 429 dépend de la limite appliquée par pump.fun ; le correctif réduit les sollicitations et respecte les attentes indiquées par le serveur.

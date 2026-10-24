@@ -2,6 +2,7 @@
 """Alertes pump.fun → Telegram, via Bot API ou compte Telegram (Telethon)."""
 import argparse
 import datetime as dt
+from email.utils import parsedate_to_datetime
 import html
 import json
 import math
@@ -22,9 +23,43 @@ WALLET = re.compile(r'[1-9A-HJ-NP-Za-km-z]{32,44}\Z')
 
 
 class RemoteError(RuntimeError):
-    def __init__(self, message, status=None):
+    def __init__(self, message, status=None, retry_after=None):
         super().__init__(message)
         self.status = status
+        self.retry_after = retry_after
+
+
+def retry_seconds(value, now=None):
+    """Retry-After may be seconds or an HTTP date. Never shorten the server's wait."""
+    if not isinstance(value, (str, int, float)):
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            when = parsedate_to_datetime(value)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=dt.timezone.utc)
+            seconds = when.timestamp() - (time.time() if now is None else now)
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return max(0.0, seconds) if math.isfinite(seconds) else None
+
+
+class RateBackoff:
+    def __init__(self):
+        self.failures = 0
+
+    def delay(self, error):
+        if error.status == 429:
+            delay = min(1800, 120 * 2 ** min(self.failures, 4))
+            self.failures += 1
+        else:
+            delay = 120 if error.status == 403 else 30
+        return max(delay, error.retry_after or 0)
+
+    def success(self):
+        self.failures = 0
 
 
 def request(url, body=None):
@@ -36,8 +71,8 @@ def request(url, body=None):
         with urllib.request.urlopen(req, timeout=20) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
-        retry = exc.headers.get('Retry-After', '?')
-        raise RemoteError(f'HTTP {exc.code} (Retry-After: {retry})', status=exc.code) from None
+        retry = retry_seconds(exc.headers.get('Retry-After'))
+        raise RemoteError(f'HTTP {exc.code}', status=exc.code, retry_after=retry) from None
     except (urllib.error.URLError, TimeoutError, ValueError, OSError):
         # Never log request URLs: Telegram URLs contain the bot token.
         raise RemoteError('Connexion impossible ou réponse JSON invalide') from None
@@ -46,6 +81,7 @@ def request(url, body=None):
 class Pump:
     def __init__(self, http_client='auto'):
         self.next_request = 0
+        self.cooldowns = {}
         self.session = None
         if http_client != 'urllib':
             try:
@@ -57,6 +93,13 @@ class Pump:
         self.http_client = 'browser' if self.session else 'urllib'
 
     def get(self, path):
+        route = path.split('?')[0]
+        family = next((prefix for prefix in ('/callout/list/', '/coins-v2/', '/following/v3/following/')
+                       if route.startswith(prefix)), route)
+        until, code = self.cooldowns.get(family, (0, None))
+        remaining = until - time.monotonic()
+        if remaining > 0:
+            raise RemoteError(f'pump.fun {family} : pause serveur ({remaining:.0f}s)', status=code, retry_after=remaining)
         time.sleep(max(0, self.next_request - time.monotonic()))
         self.next_request = time.monotonic() + 1.1
         try:
@@ -65,10 +108,13 @@ class Pump:
             response = self.session.get(API + path, timeout=20, headers={
                 'Accept': 'application/json', 'Origin': 'https://pump.fun', 'Referer': 'https://pump.fun/'})
             if response.status_code != 200:
-                raise RemoteError(f'HTTP {response.status_code}', status=response.status_code)
+                raise RemoteError(f'HTTP {response.status_code}', status=response.status_code,
+                                  retry_after=retry_seconds(response.headers.get('Retry-After')))
             return response.json()
         except RemoteError as exc:
-            raise RemoteError(f'pump.fun {path.split("?")[0]} : {exc}', status=exc.status) from None
+            if exc.retry_after is not None and exc.retry_after > 0:
+                self.cooldowns[family] = (time.monotonic() + exc.retry_after, exc.status)
+            raise RemoteError(f'pump.fun {route} : {exc}', status=exc.status, retry_after=exc.retry_after) from None
         except Exception:
             raise RemoteError('pump.fun : connexion impossible ou réponse JSON invalide') from None
 

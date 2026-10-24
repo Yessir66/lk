@@ -1,8 +1,11 @@
 import importlib.util
+import datetime as dt
+from email.utils import format_datetime
+from types import SimpleNamespace
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import patch, AsyncMock, MagicMock, MagicMock
 from types import SimpleNamespace
 
 spec = importlib.util.spec_from_file_location('alerts', Path(__file__).resolve().parents[1] / 'scripts/callout_alerts.py')
@@ -17,6 +20,43 @@ def call(identity='one', created=2000):
 
 
 class AlertsTest(unittest.TestCase):
+    def test_retry_after_accepts_seconds_dates_and_ignores_invalid_values(self):
+        self.assertEqual(a.retry_seconds('600'), 600)
+        header = format_datetime(dt.datetime.fromtimestamp(1000, dt.timezone.utc), usegmt=True)
+        self.assertEqual(a.retry_seconds(header, now=900), 100)
+        for value in ('?', 'nan', 'inf', None):
+            self.assertIsNone(a.retry_seconds(value))
+        self.assertEqual(a.retry_seconds('-1'), 0)
+
+    def test_retry_delay_grows_but_never_shortens_server_wait(self):
+        policy = a.RateBackoff()
+        error = a.RemoteError('429', status=429)
+        self.assertEqual([policy.delay(error) for _ in range(6)], [120, 240, 480, 960, 1800, 1800])
+        self.assertEqual(policy.delay(a.RemoteError('429', status=429, retry_after=7200)), 7200)
+        policy.success()
+        self.assertEqual(policy.delay(error), 120)
+
+    def test_browser_retry_after_is_preserved_and_blocks_whole_profile_family(self):
+        pump = a.Pump('urllib')
+        pump.session = MagicMock()
+        response = SimpleNamespace(status_code=429, headers={'Retry-After': '600'})
+        pump.session.get.return_value = response
+        with patch.object(a.time, 'monotonic', return_value=10), patch.object(a.time, 'sleep'):
+            with self.assertRaises(a.RemoteError) as caught:
+                pump.get('/callout/list/first')
+        self.assertEqual(caught.exception.retry_after, 600)
+        with patch.object(a.time, 'monotonic', return_value=11):
+            with self.assertRaises(a.RemoteError) as remaining:
+                pump.get('/callout/list/second')
+        self.assertEqual(remaining.exception.retry_after, 599)
+        self.assertEqual(pump.session.get.call_count, 1)
+        pump.session.get.return_value = SimpleNamespace(status_code=200, headers={}, json=lambda: {'coins': []})
+        with patch.object(a.time, 'monotonic', return_value=12), patch.object(a.time, 'sleep'):
+            self.assertEqual(pump.get('/home-feed/new'), {'coins': []})
+        with patch.object(a.time, 'monotonic', return_value=611), patch.object(a.time, 'sleep'):
+            pump.get('/callout/list/second')
+        self.assertEqual(pump.session.get.call_count, 3)
+
     def test_format_and_escaping(self):
         c = call()
         c['thesis'] = '<b>fake</b> & test'

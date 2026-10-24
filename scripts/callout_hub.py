@@ -7,14 +7,14 @@ import queue
 import threading
 import time
 
-from callout_alerts import Pump, RemoteError, Store, TelegramUserSender, WALLET, timestamp
+from callout_alerts import Pump, RemoteError, RateBackoff, Store, TelegramUserSender, WALLET, timestamp
 from callout_repost import CALLERS, ROOT, Execution, Journal, Engine, parse_args
 
 
 class SharedReader:
     """Only this object polls the public feed and monitored profiles."""
     def __init__(self, pump, owner, alert_since, repost_since, alerts_queue, repost_queue,
-                 repost=True, interval=2, backup_interval=4):
+                 repost=True, interval=2, backup_interval=15):
         self.pump, self.owner = pump, owner
         self.alert_since, self.repost_since = alert_since, repost_since
         self.alerts_queue, self.repost_queue = alerts_queue, repost_queue
@@ -22,6 +22,7 @@ class SharedReader:
         self.follows, self.targets = {}, {}
         self.next_feed = self.next_backup = self.next_refresh = 0
         self.feed_ok = False
+        self.feed_backoff, self.backup_backoff, self.refresh_backoff = RateBackoff(), RateBackoff(), RateBackoff()
         self.priority, self.others = deque(), deque()
         self.backup_count = 0
         self.seen_alerts, self.seen_reposts = set(), set()
@@ -38,6 +39,7 @@ class SharedReader:
             self.priority = deque(w for w in high if w in self.targets)
             self.others = deque(w for w in self.targets if w not in high)
             self.next_refresh = now + 600
+            self.refresh_backoff.success()
             print(f'Lecture partagée : {len(follows)} abonnements Telegram, {len(CALLERS) if self.repost else 0} callers de republication.', flush=True)
         except RemoteError as exc:
             # Trading targets are independent of a temporarily unavailable following list.
@@ -45,7 +47,7 @@ class SharedReader:
                 self.targets.update(CALLERS)
                 if not self.priority:
                     self.priority = deque(CALLERS)
-            self.next_refresh = now + 60
+            self.next_refresh = now + max(60, self.refresh_backoff.delay(exc))
             print(f'Abonnements différés : {exc}', flush=True)
 
     def route(self, rows):
@@ -103,22 +105,28 @@ class SharedReader:
             try:
                 self.route(self.pump.feed())
                 self.feed_ok = True
+                self.feed_backoff.success()
                 self.next_feed = feed_started + self.interval
             except RemoteError as exc:
                 self.feed_ok = False
-                self.next_feed = time.monotonic() + (120 if exc.status in (403, 429) else 30)
+                wait = self.feed_backoff.delay(exc)
+                self.next_feed = time.monotonic() + wait
                 # Accelerate profile fallback as soon as the feed fails.
                 self.next_backup = min(self.next_backup, now)
-                print(f'Flux partagé différé : {exc}', flush=True)
+                print(f'Flux partagé différé ({wait:.0f}s) : {exc}', flush=True)
         if self.targets and now >= self.next_backup:
             wallet = self.backup_wallet()
             if wallet:
                 try:
                     self.route([dict(c, author=wallet) for c in self.pump.callouts(wallet)])
+                    if self.backup_backoff.failures:
+                        print('Lectures des profils reprises.', flush=True)
+                    self.backup_backoff.success()
                     self.next_backup = time.monotonic() + (self.backup_interval if self.feed_ok else 2)
                 except RemoteError as exc:
-                    self.next_backup = time.monotonic() + (120 if exc.status in (403, 429) else 30)
-                    print(f'Profils partagés différés : {exc}', flush=True)
+                    wait = self.backup_backoff.delay(exc)
+                    self.next_backup = time.monotonic() + wait
+                    print(f'Profils partagés en pause ({wait:.0f}s), flux global conservé : {exc}', flush=True)
 
 
 class AlertWorker:
@@ -213,7 +221,7 @@ def configure(parser):
     parser.add_argument('--alerts-only', action='store_true', help='Alertes seules, sans le worker de republication')
     parser.add_argument('--dry-run', action='store_true', help='Aucun envoi Telegram, achat ni publication')
     parser.add_argument('--feed-interval', type=float, default=2)
-    parser.add_argument('--backup-interval', type=float, default=4)
+    parser.add_argument('--backup-interval', type=float, default=15)
 
 
 def main():
