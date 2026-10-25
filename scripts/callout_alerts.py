@@ -174,7 +174,7 @@ class Pump:
             if not call.get('calloutId') or not call.get('calloutTimestamp'):
                 continue
             calls.append(dict(calloutId=call['calloutId'], createdAt=call['calloutTimestamp'],
-                              author=position.get('walletAddress'), coinMint=row.get('coinMint'),
+                              author=position.get('walletAddress'), author_name=position.get('userName'), coinMint=row.get('coinMint'),
                               name=row.get('coinName'), symbol=row.get('symbol'),
                               marketCap=call.get('calledOutAtMcap'), mcap_now=row.get('marketCap'),
                               thesis=call.get('thesis')))

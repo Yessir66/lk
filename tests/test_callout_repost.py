@@ -343,6 +343,14 @@ class RepostTest(unittest.TestCase):
         self.assertIn('échec de simulation', str(error.exception))
         self.assertNotIn('secret', str(error.exception))
 
+    def test_successful_tp_quote_clears_active_error_for_dashboard(self):
+        self.tp_position()
+        job=self.job();job['tp_error']='Jupiter : HTTP 429';self.journal.save(job)
+        self.execution.exit_quote.return_value={'otherAmountThreshold':'29000000'}
+        self.engine.step(1010)
+        self.assertNotIn('tp_error',self.job())
+        self.assertEqual(self.job()['exit_state'],'watching')
+
     def test_random_phrase_persisted_through_restart_and_duplicates(self):
         self.assertEqual(len(r.CALLOUT_TEXTS), 10)
         with patch.object(r.random, 'choice', return_value=r.CALLOUT_TEXTS[7]) as choose:

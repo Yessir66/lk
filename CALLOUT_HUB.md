@@ -1,5 +1,8 @@
 # Un seul bot pour les alertes et la republication
 
+Une interface graphique locale est disponible : voir [INTERFACE.md](INTERFACE.md).
+
+
 `callout_hub.py` remplace le lancement simultané de `callout_alerts.py` et `callout_repost.py`.
 
 Un lecteur commun interroge le flux pump.fun, puis transmet chaque nouveau callout aux deux fonctions :

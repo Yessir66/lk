@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="app-token" content="__DESK_TOKEN__" />
+    <title>Callout Desk — Centre de contrôle</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Callout Desk accueil"
+        ><span class="brand-icon"
+          ><svg class="icon" viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M5 15 15 5M5 5h10v10" /></svg></span
+        ><span>CALLOUT<span class="brand-light"> DESK</span></span
+        ><span class="version">LOCAL</span></a
+      >
+      <div class="top-actions">
+        <span id="connection" class="connection"><i></i> Connexion locale</span
+        ><span class="separator"></span><span class="profile-avatar">L</span
+        ><span id="profile-label">Lelouch_0x</span>
+      </div>
+    </header>
+    <main>
+      <section class="page-heading">
+        <div>
+          <div class="eyebrow">
+            <span class="tiny-line"></span> CENTRE DE CONTRÔLE
+          </div>
+          <h1>Vue d’ensemble</h1>
+          <p>Tes callouts, tes positions et leur exécution, au même endroit.</p>
+        </div>
+        <div class="run-controls">
+          <span id="mode-badge" class="badge blue">SIMULATION</span
+          ><span id="status-badge" class="badge muted"><i></i> À L’ARRÊT</span
+          ><button id="stop" class="button stop" disabled>
+            <span>■</span> Arrêter</button
+          ><button id="start" class="button primary">
+            <span>▶</span> Démarrer
+          </button>
+        </div>
+      </section>
+      <section class="metrics" aria-label="Indicateurs">
+        <article class="metric">
+          <div class="metric-top">
+            Callouts reçus <span class="metric-icon">⌁</span>
+          </div>
+          <div class="metric-value" id="metric-calls">0</div>
+          <div class="metric-note">
+            <span class="dot lime"></span> Dans ce tableau de bord
+          </div>
+        </article>
+        <article class="metric">
+          <div class="metric-top">
+            Positions suivies
+            <span class="metric-icon"
+              ><svg class="icon" viewBox="0 0 20 20" aria-hidden="true">
+                <rect x="3" y="4" width="14" height="12" rx="2" />
+                <path d="M9 4v12" /></svg
+            ></span>
+          </div>
+          <div class="metric-value" id="metric-positions">
+            0<span>positions</span>
+          </div>
+          <div class="metric-note" id="position-note">
+            Aucune position ouverte
+          </div>
+        </article>
+        <article class="metric">
+          <div class="metric-top">
+            Coût des positions <span class="metric-icon">＄</span>
+          </div>
+          <div class="metric-value" id="metric-cost">$0.00</div>
+          <div class="metric-note">Coût d’entrée des positions ouvertes</div>
+        </article>
+        <article class="metric pnl">
+          <div class="metric-top">
+            PnL estimé
+            <span class="metric-icon"
+              ><svg class="icon" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M3 16V4M3 16h14M5 12l4-4 3 2 5-6" /></svg
+            ></span>
+          </div>
+          <div class="metric-value" id="metric-pnl">—</div>
+          <div class="metric-note">Dernières cotations · hors frais réseau</div>
+        </article>
+      </section>
+      <div class="workspace">
+        <aside class="panel settings-panel">
+          <div class="panel-heading">
+            <div>
+              <span class="section-number">01</span>
+              <h2>Configuration</h2>
+            </div>
+            <span class="small-icon">☷</span>
+          </div>
+          <form id="settings">
+            <label class="field-label" for="mode">Mode d’exécution</label>
+            <div class="mode-switch" id="mode-switch">
+              <button type="button" data-mode="simulation" class="selected">
+                ◉ Simulation</button
+              ><button type="button" data-mode="live">Réel</button>
+            </div>
+            <input type="hidden" id="mode" value="simulation" />
+            <p class="mode-help" id="mode-help">
+              Lecture réelle du flux. Aucun envoi ni achat.
+            </p>
+            <label class="field-label" for="profile">Profil pump.fun</label>
+            <div class="input-prefix">
+              <span>@</span
+              ><input
+                id="profile"
+                value="Lelouch_0x"
+                required
+                maxlength="180"
+                autocomplete="off"
+              />
+            </div>
+            <div class="field-grid">
+              <label
+                >Montant / achat
+                <div class="input-unit">
+                  <input
+                    id="usd"
+                    type="number"
+                    value="2"
+                    min="0.01"
+                    max="10000"
+                    step="0.01"
+                    required
+                  /><span>USD</span>
+                </div></label
+              ><label
+                >Délai de publication
+                <div class="input-unit">
+                  <input
+                    id="delay"
+                    type="number"
+                    value="15"
+                    min="0"
+                    max="300"
+                    step="1"
+                    required
+                  /><span>sec</span>
+                </div></label
+              >
+            </div>
+            <div class="divider"></div>
+            <div class="section-label">
+              STRATÉGIE DE SORTIE <span class="micro-badge">VENTE TOTALE</span>
+            </div>
+            <div class="field-grid">
+              <label
+                >Take profit
+                <div class="input-unit">
+                  <input
+                    id="take_profit"
+                    type="number"
+                    value="50"
+                    min="0.01"
+                    max="10000"
+                    step="0.01"
+                    required
+                  /><span>%</span>
+                </div></label
+              ><label
+                >Slippage
+                <div class="input-unit">
+                  <input
+                    id="slippage"
+                    type="number"
+                    value="1"
+                    min="0.01"
+                    max="50"
+                    step="0.01"
+                    required
+                  /><span>%</span>
+                </div></label
+              >
+            </div>
+            <label class="field-label" for="max_age"
+              >Âge maximal du callout</label
+            >
+            <div class="input-unit">
+              <input
+                id="max_age"
+                type="number"
+                min="1"
+                max="600"
+                value="60"
+                required
+              /><span>secondes</span>
+            </div>
+            <div class="strategy-note">
+              <span
+                ><svg class="icon" viewBox="0 0 20 20" aria-hidden="true">
+                  <path d="M5 15 15 5M5 5h10v10" /></svg
+              ></span>
+              <p id="strategy-note">À +50 %, vente de 100 % de la position.</p>
+            </div>
+            <div class="divider"></div>
+            <div class="section-label">
+              CALLERS DE REPUBLICATION <span id="selected-count">10 / 10</span>
+            </div>
+            <div id="callers" class="caller-list"></div>
+            <div class="settings-hint">
+              Les alertes Telegram suivent les abonnements du profil. La
+              sélection ci-dessus concerne les achats et republications.
+            </div>
+          </form>
+          <div class="config-footer">
+            <span class="dot lime"></span> Paramètres appliqués au prochain
+            démarrage
+          </div>
+        </aside>
+        <section class="center-column">
+          <article class="panel positions-panel">
+            <div class="panel-heading">
+              <div>
+                <span class="section-number">02</span>
+                <h2>Positions</h2>
+                <span id="position-count" class="count">0</span>
+              </div>
+              <div class="tabs" id="position-tabs">
+                <button class="active" data-view="open">En cours</button
+                ><button data-view="all">Historique</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Token / caller</th>
+                    <th>Entrée</th>
+                    <th>Valeur cotée</th>
+                    <th>Statut</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="positions"></tbody>
+              </table>
+            </div>
+            <div id="positions-empty" class="empty-state">
+              <div class="empty-icon">
+                <svg class="icon" viewBox="0 0 20 20" aria-hidden="true">
+                  <rect x="3" y="4" width="14" height="12" rx="2" />
+                  <path d="M9 4v12" />
+                </svg>
+              </div>
+              <h3>La prochaine position commence par un signal.</h3>
+              <p>
+                Les achats confirmés apparaîtront ici.<br />Le TP et les
+                confirmations restent suivis par le hub.
+              </p>
+              <span class="empty-chip"
+                >TP <b id="empty-tp">+50 %</b> <span>·</span> Vente à 100
+                %</span
+              >
+            </div>
+            <div class="panel-foot">
+              <span id="journal-mode">Journal de simulation</span
+              ><span>Lecture locale · aucun appel supplémentaire</span>
+            </div>
+          </article>
+          <article class="panel journal-panel">
+            <div class="panel-heading">
+              <div>
+                <span class="section-number">03</span>
+                <h2>Journal d’activité</h2>
+              </div>
+              <div class="journal-actions">
+                <button id="errors-toggle" class="text-button">
+                  Toutes les lignes</button
+                ><button id="clear-logs" class="text-button">
+                  Vider l’affichage
+                </button>
+              </div>
+            </div>
+            <div id="logs" class="logs" role="log" aria-live="polite">
+              <div class="log-placeholder">
+                Le journal s’affichera au démarrage du hub.
+              </div>
+            </div>
+            <div class="panel-foot">
+              <span
+                ><span class="dot" id="journal-dot"></span>
+                <span id="journal-status">En attente de démarrage</span></span
+              ><span id="log-count">0 événement</span>
+            </div>
+          </article>
+          <article class="panel connections-panel">
+            <div class="connections-title">
+              <span class="small-icon">⌘</span>
+              <h2>Connexions locales</h2>
+              <button id="help-button" class="text-button">
+                Comment configurer ?
+                <svg class="icon" viewBox="0 0 20 20" aria-hidden="true">
+                  <path d="M5 15 15 5M5 5h10v10" />
+                </svg>
+              </button>
+            </div>
+            <div id="credentials" class="credentials"></div>
+          </article>
+        </section>
+        <aside class="panel feed-panel">
+          <div class="panel-heading">
+            <div>
+              <span class="section-number">04</span>
+              <h2>Callouts en direct</h2>
+            </div>
+            <span id="feed-live" class="live-label"><i></i> EN ATTENTE</span>
+          </div>
+          <div class="feed-tools">
+            <label class="search"
+              ><span>⌕</span
+              ><input
+                id="search"
+                placeholder="Caller, token ou adresse…"
+                aria-label="Rechercher dans le flux"
+            /></label>
+            <div class="feed-filters">
+              <button data-filter="all" class="active">
+                Tout le flux <span id="feed-total">0</span></button
+              ><button data-filter="selected">Mes callers</button
+              ><button
+                id="pause-feed"
+                title="Mettre l’affichage en pause"
+                aria-label="Mettre l’affichage en pause"
+              >
+                Ⅱ
+              </button>
+            </div>
+          </div>
+          <div id="feed" class="feed">
+            <div class="feed-empty">
+              <div class="radar"><span></span><i></i></div>
+              <h3>À l’écoute du marché</h3>
+              <p>
+                Démarre le hub pour voir les callouts reçus depuis pump.fun.
+              </p>
+              <div class="feed-example">
+                <span class="dot lime"></span> Un flux commun. Deux usages.
+              </div>
+            </div>
+          </div>
+          <div class="panel-foot">
+            <span id="feed-foot">Source : pump.fun</span
+            ><span>Copie du CA en un clic</span>
+          </div>
+        </aside>
+      </div>
+      <footer class="bottom-bar">
+        <span><span class="dot lime"></span> CALLOUT DESK <b>LOCAL</b></span
+        ><span
+          >Flux partagé <i>·</i> Transactions signées sur ton PC <i>·</i>
+          <span id="clock">—</span></span
+        >
+      </footer>
+    </main>
+    <div id="toast" class="toast" role="status" hidden></div>
+    <dialog id="help-dialog">
+      <div class="dialog-top">
+        <span class="eyebrow">CONNEXIONS</span
+        ><button id="close-help" aria-label="Fermer">×</button>
+      </div>
+      <h2>Ton bot, sur ton ordinateur.</h2>
+      <p>
+        La simulation lit les callouts sans achat, publication ou envoi
+        Telegram.
+      </p>
+      <p>
+        Pour le mode réel, conserve dans <code>data</code> les fichiers
+        <code>pump_wallet.txt</code> et <code>pump_token.txt</code>. Initialise
+        Telegram une première fois depuis le terminal. La variable
+        <code>JUP_API_KEY</code> doit être définie dans la fenêtre qui lance
+        cette interface.
+      </p>
+      <p>
+        Le tableau de bord reprend les journaux du hub. Arrête l’ancien hub
+        avant de démarrer ici. Le bouton Arrêter suspend le suivi ; les
+        positions restent dans le wallet et le journal.
+      </p>
+      <p class="dialog-note">
+        Les états « disponible » vérifient la présence locale des accès, pas
+        leur validité auprès du fournisseur.
+      </p>
+    </dialog>
+  </body>
+</html>

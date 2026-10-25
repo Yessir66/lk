@@ -2,19 +2,20 @@
 """Un seul lecteur pump.fun pour les alertes Telegram et les achats/republications."""
 from collections import deque
 import hashlib
+import json
 from pathlib import Path
 import queue
 import threading
 import time
 
 from callout_alerts import Pump, RemoteError, RateBackoff, Store, TelegramUserSender, WALLET, timestamp
-from callout_repost import CALLERS, ROOT, Execution, Journal, Engine, parse_args, show_status, check_swap
+from callout_repost import CALLERS, ROOT, Execution, Journal, Engine, parse_args, show_status, check_swap, RunnerLock
 
 
 class SharedReader:
     """Only this object polls the public feed and monitored profiles."""
     def __init__(self, pump, owner, alert_since, repost_since, alerts_queue, repost_queue,
-                 repost=True, interval=2, backup_interval=15):
+                 repost=True, interval=2, backup_interval=15, event_sink=None):
         self.pump, self.owner = pump, owner
         self.alert_since, self.repost_since = alert_since, repost_since
         self.alerts_queue, self.repost_queue = alerts_queue, repost_queue
@@ -27,6 +28,8 @@ class SharedReader:
         self.backup_count = 0
         self.seen_alerts, self.seen_reposts = set(), set()
         self.metadata = {}
+        self.event_sink, self.seen_ui = event_sink, set()
+        self.last_health = 0
 
     def refresh(self, now):
         try:
@@ -55,7 +58,15 @@ class SharedReader:
             try:
                 identity = str(call['calloutId'])
                 author, mint = call.get('author'), call.get('coinMint', '')
-                if author not in self.targets or not WALLET.fullmatch(mint):
+                if not WALLET.fullmatch(mint):
+                    continue
+                if self.event_sink and identity not in self.seen_ui:
+                    public = {key: call.get(key) for key in ('calloutId', 'coinMint', 'createdAt', 'name', 'symbol', 'thesis', 'marketCap', 'mcap_now', 'author')}
+                    public['author_name'] = self.targets.get(author) or call.get('author_name') or (author or '?')[:8]
+                    public['selected'] = author in CALLERS and self.repost
+                    self.event_sink('callout', public)
+                    self.seen_ui.add(identity)
+                if author not in self.targets:
                     continue
                 created = timestamp(call['createdAt'])
                 # Send to the trade worker first: metadata and Telegram cannot delay an order.
@@ -82,6 +93,8 @@ class SharedReader:
             self.seen_alerts.clear()
         if len(self.seen_reposts) > 20000:
             self.seen_reposts.clear()
+        if len(self.seen_ui) > 20000:
+            self.seen_ui.clear()
         if len(self.metadata) > 1000:
             cutoff = time.monotonic() - 30
             self.metadata = {k: v for k, v in self.metadata.items() if v[0] >= cutoff}
@@ -127,6 +140,30 @@ class SharedReader:
                     wait = self.backup_backoff.delay(exc)
                     self.next_backup = time.monotonic() + wait
                     print(f'Profils partagés en pause ({wait:.0f}s), flux global conservé : {exc}', flush=True)
+
+        if self.event_sink and time.monotonic() - self.last_health >= 5:
+            self.event_sink('health', {'feed_ok': self.feed_ok, 'follows': len(self.follows),
+                                      'callers': len(CALLERS) if self.repost else 0,
+                                      'feed_retry_in': max(0, self.next_feed - time.monotonic()),
+                                      'profiles_retry_in': max(0, self.next_backup - time.monotonic())})
+            self.last_health = time.monotonic()
+
+
+class EventSink:
+    """Local, bounded UI telemetry; failure must never interrupt trading."""
+    def __init__(self, path):
+        self.path, self.warned = Path(path), False
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def __call__(self, kind, data):
+        try:
+            mode = 'w' if self.path.exists() and self.path.stat().st_size > 5_000_000 else 'a'
+            with self.path.open(mode, encoding='utf-8') as stream:
+                stream.write(json.dumps({'type': kind, 'at': time.time(), 'data': data}, ensure_ascii=False) + '\n')
+        except OSError:
+            if not self.warned:
+                print('Interface : événement local non enregistré.', flush=True)
+                self.warned = True
 
 
 class AlertWorker:
@@ -215,6 +252,8 @@ def retained_path(filename):
 
 def configure(parser):
     parser.description = __doc__
+    parser.add_argument('--events-file', help='Fichier local d’événements pour le tableau de bord')
+    parser.add_argument('--stop-file', help='Arrêter proprement quand ce fichier local existe')
     parser.add_argument('--send-to', default='@callout44_bot')
     parser.add_argument('--session', help='Session Telegram existante ; détectée automatiquement sinon')
     parser.add_argument('--alerts-state', help='Journal SQLite des alertes existantes')
@@ -232,6 +271,11 @@ def main():
     if args.check_swap:
         check_swap(args)
         return
+    with RunnerLock(ROOT / 'data' / '.callout-runner.lock'):
+        run_hub(args)
+
+
+def run_hub(args):
     if args.live and (args.dry_run or args.alerts_only):
         raise RemoteError('--live ne peut pas être combiné avec --dry-run ou --alerts-only')
     if not 1.1 <= args.feed_interval <= 60 or not 1.1 <= args.backup_interval <= 120:
@@ -272,14 +316,15 @@ def main():
                 raise RemoteError(f'Initialisation impossible : {worker.error}')
         reader = SharedReader(pump, owner, alerts.since, repost.since if repost else 0,
                               alerts_queue, repost_queue, repost=bool(repost),
-                              interval=args.feed_interval, backup_interval=args.backup_interval)
+                              interval=args.feed_interval, backup_interval=args.backup_interval,
+                              event_sink=EventSink(args.events_file) if args.events_file else None)
         reader.seen_alerts.update(alerts.known)
         if repost:
             reader.seen_reposts.update(repost.known)
         mode = 'achats réels' if args.live else 'alertes seules' if args.alerts_only else 'achats simulés'
         tp = '' if args.alerts_only else f'TP +{args.take_profit}%, vente totale, '
         print(f'HUB : {label}, {mode}, {tp}flux unique toutes les {args.feed_interval}s minimum.', flush=True)
-        while not stop.is_set():
+        while not stop.is_set() and not (args.stop_file and Path(args.stop_file).exists()):
             reader.step()
             stop.wait(.1)
         errors = [worker.error for worker in workers if worker.error]

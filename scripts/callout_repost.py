@@ -53,6 +53,44 @@ def lamports_for(usd, sol_price):
     return int((Decimal(str(usd)) / price * 10**9).to_integral_value(rounding=ROUND_DOWN))
 
 
+class RunnerLock:
+    """One trading runner per installation, released by the OS even after a crash."""
+    def __init__(self, path):
+        self.path, self.stream = Path(path), None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.stream = self.path.open('a+b')
+        if self.path.stat().st_size == 0:
+            self.stream.write(b'0')
+            self.stream.flush()
+        self.stream.seek(0)
+        try:
+            if os.name == 'nt':
+                import msvcrt
+                msvcrt.locking(self.stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self.stream.close()
+            self.stream = None
+            raise RemoteError('Un hub ou bot de republication tourne déjà dans cette installation. Arrête-le avant de démarrer ici.') from None
+        return self
+
+    def __exit__(self, *_):
+        if self.stream:
+            if os.name == 'nt':
+                import msvcrt
+                self.stream.seek(0)
+                msvcrt.locking(self.stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.stream.fileno(), fcntl.LOCK_UN)
+            self.stream.close()
+            self.stream = None
+
+
 class Journal:
     def __init__(self, path, since, owner):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -85,7 +123,8 @@ class Journal:
             return False
         text = random.choice(CALLOUT_TEXTS) if template is None else template.format(caller=CALLERS[author], text=call.get('thesis') or f'Call de {CALLERS[author]}')
         self.save(dict(mint=mint, call_id=str(call['calloutId']), caller=CALLERS[author], text=text,
-                       created=created, due=created + delay, state='new', retry_at=0))
+                       created=created, due=created + delay, state='new', retry_at=0,
+                       name=call.get('name'), symbol=call.get('symbol'), entry_mc=call.get('marketCap')))
         return True
 
 
@@ -375,8 +414,9 @@ class Engine:
                 except Exception as exc:
                     detail = str(exc) if isinstance(exc, RemoteError) else type(exc).__name__
                     job['tp_error'] = detail
+                    job['tp_error_at'] = now + time.monotonic() - tick_started
                     print(f'TP {job["mint"]} différé : {detail}', flush=True)
-                    job['exit_retry_at'] = now + (time.monotonic() - tick_started) + max(getattr(self.args, 'tp_interval', 5), (exc.retry_after or 0) if isinstance(exc, RemoteError) else 0)
+                    job['exit_retry_at'] = job['tp_error_at'] + max(getattr(self.args, 'tp_interval', 5), (exc.retry_after or 0) if isinstance(exc, RemoteError) else 0)
                     self.journal.save(job)
             if job.get('exit_state') in ('signed', 'sold', 'empty', 'review'):
                 continue
@@ -402,6 +442,7 @@ class Engine:
         if job.get('exit_state') == 'signed':
             tx = job['exit_tx']
             status = self.execution.status(tx['signature'])
+            job.pop('tp_error', None)
             if status and status.get('err') is not None:
                 # A conclusively failed sell can be prepared again; keep tracking the holding.
                 job.update(exit_state='watching', exit_retry_at=now + self.args.tp_interval)
@@ -433,11 +474,15 @@ class Engine:
             print(f'TP actif +{self.args.take_profit}% : {job["mint"]}', flush=True)
         amount = min(job['position_tokens'], self.execution.token_amount(job['mint']))
         if amount <= 0:
+            job.pop('tp_error', None)
             job['exit_state'] = 'empty'
         else:
             quote = self.execution.exit_quote(job['mint'], amount)
             value = Decimal(quote['otherAmountThreshold']) / 10**9 * Decimal(str(self.execution.sol_price()))
             cost = Decimal(job['cost_usd']) * Decimal(amount) / Decimal(job['position_tokens'])
+            job['mark_cost_usd'] = str(cost)
+            job.pop('tp_error', None)
+            job.update(mark_usd=str(value), mark_checked_at=now)
             target = cost * (1 + self.args.take_profit / 100)
             if value >= target:
                 if self.execution.token_amount(job['mint'], fresh=True) < amount:
@@ -561,6 +606,7 @@ def detect(events, stop, since):
 
 def parse_args(argv=None, configure=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--callers', help='Noms ou wallets des callers configurés à activer, séparés par des virgules')
     parser.add_argument('--check-swap', metavar='MINT', help='Tester une cotation et une construction non signée, sans achat')
     parser.add_argument('--status', action='store_true', help='Afficher le journal réel en lecture seule, sans connexion ni achat')
     parser.add_argument('--profile', default='Lelouch_0x')
@@ -595,6 +641,13 @@ def parse_args(argv=None, configure=None):
         parser.error('--text accepte seulement {text} et {caller}')
     if args.live and not (args.status or args.check_swap) and any(not Path(p).is_file() for p in (args.wallet, args.token)):
         parser.error('Créer les fichiers locaux --wallet et --token (voir CALLOUT_REPOST.md)')
+    if args.callers is not None:
+        requested = {name.strip().lower() for name in args.callers.split(',') if name.strip()}
+        selected = {wallet: name for wallet, name in CALLERS.items() if name.lower() in requested or wallet.lower() in requested}
+        if not selected or len(selected) != len(requested):
+            parser.error('--callers doit sélectionner des noms ou wallets configurés, sans entrée inconnue')
+        CALLERS.clear()
+        CALLERS.update(selected)
     return args
 
 
@@ -606,6 +659,11 @@ def main():
     if args.check_swap:
         check_swap(args)
         return
+    with RunnerLock(ROOT / 'data' / '.callout-runner.lock'):
+        run_repost(args)
+
+
+def run_repost(args):
     execution = Execution(args)
     path = args.state or str(ROOT / 'data' / ('repost_live.sqlite3' if args.live else 'repost_simulation.sqlite3'))
     journal = Journal(path, time.time(), execution.owner)
