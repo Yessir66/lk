@@ -40,7 +40,9 @@ Le **suivi** reprend les sorties F1R (`flow_bot.py`), avec le nombre de holders 
 
 ## Installation (Windows)
 
-1. **Python 3.10 ou plus**, puis dans un terminal :
+0. **Le code.** Sur https://github.com/Yessir66/lk, choisis la branche `claude/quirky-archimedes-6j2dkq`, puis *Code* → *Download ZIP*, et décompresse (par exemple dans `C:\lk`). Avec git : `git clone -b claude/quirky-archimedes-6j2dkq https://github.com/Yessir66/lk.git`.
+
+1. **Python 3.10 ou plus** (python.org, coche « Add Python to PATH » à l'installation), puis dans un terminal :
 
    ```
    pip install -U anthropic
@@ -55,7 +57,7 @@ Le **suivi** reprend les sorties F1R (`flow_bot.py`), avec le nombre de holders 
    | `helius_api_key` | Compte sur helius.dev, tableau de bord, *API Keys*. Avec l'offre gratuite, garde `"rps": 10`. Avec une offre payante, monte `rps` (50 pour Developer) : la minute sera lue entièrement plus souvent. |
    | `telegram_bot_token` | Sur Telegram, écris à **@BotFather**, `/newbot`, et copie le token. |
    | `telegram_chat_id` | Envoie un message à ton nouveau bot, ouvre `https://api.telegram.org/bot<TOKEN>/getUpdates` dans le navigateur et copie le nombre après `"chat":{"id":`. |
-   | `anthropic_api_key` | Sur console.anthropic.com, *API Keys*. Le récit est noté par Claude Opus 5.5, en effort bas pour aller vite. Compte environ 2 à 5 centimes par alerte (estimation). Si le modèle refuse d'analyser un token, l'API passe automatiquement sur un autre modèle (option `fallbacks`). |
+   | `anthropic_api_key` | Sur console.anthropic.com, *API Keys*. Le récit est noté par Claude Opus 5.5, en effort bas pour aller vite. Compte environ 3 à 6 centimes par alerte, soit 5 à 10 $ par jour à ~170 alertes par jour (estimation ; le coût réel est sur la page *Usage* de la console). 10 $ de crédit suffisent pour tester. Si le modèle refuse d'analyser un token, l'API passe automatiquement sur un autre modèle (option `fallbacks`). |
 
    `scout_config.json` contient tes clés : il n'est jamais envoyé sur GitHub (il est dans `.gitignore`).
 
