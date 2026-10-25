@@ -179,6 +179,15 @@ class HubTest(unittest.TestCase):
         telegram.assert_not_called()
         execution.assert_not_called()
 
+    def test_check_swap_command_does_not_start_hub_or_telegram(self):
+        args = SimpleNamespace(status=False, check_swap=MINT, live=True)
+        with patch.object(h, 'parse_args', return_value=args), patch.object(h, 'check_swap') as check, \
+             patch.object(h, 'TelegramUserSender') as telegram, patch.object(h, 'SharedReader') as reader:
+            h.main()
+        check.assert_called_once_with(args)
+        telegram.assert_not_called()
+        reader.assert_not_called()
+
     def test_finds_retained_telegram_session(self):
         with tempfile.TemporaryDirectory() as tmp:
             first, old = Path(tmp)/'new', Path(tmp)/'old'

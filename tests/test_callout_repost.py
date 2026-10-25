@@ -318,6 +318,31 @@ class RepostTest(unittest.TestCase):
         self.assertNotIn('SECRET', str(caught.exception))
         self.assertEqual(caught.exception.status, 500)
 
+    def test_check_swap_ignores_live_flag_and_never_signs_or_broadcasts(self):
+        args = SimpleNamespace(live=True, check_swap=MINT, usd=Decimal('2'), slippage_bps=100)
+        execution = MagicMock()
+        execution.sol_price.return_value = Decimal('100')
+        execution.jupiter.return_value = {'inputMint': r.SOL, 'outputMint': MINT, 'inAmount': '20000000'}
+        with patch.object(r, 'Execution', return_value=execution) as factory, patch('sys.stdout', new_callable=io.StringIO):
+            r.check_swap(args)
+        self.assertFalse(factory.call_args.args[0].live)
+        self.assertTrue(args.live)
+        execution.build_swap.assert_called_once()
+        execution.sign_quote.assert_not_called()
+        execution.prepare.assert_not_called()
+        execution.broadcast.assert_not_called()
+        execution.pump_call.assert_not_called()
+
+    def test_simulation_error_in_200_builder_response_prevents_signing(self):
+        execution = object.__new__(r.Execution)
+        execution.owner = 'owner'
+        execution.jupiter = MagicMock(return_value={'swapTransaction': 'not-a-tx',
+                     'lastValidBlockHeight': 123, 'simulationError': {'error': 'secret'}})
+        with self.assertRaises(r.RemoteError) as error:
+            execution.sign_quote({})
+        self.assertIn('échec de simulation', str(error.exception))
+        self.assertNotIn('secret', str(error.exception))
+
     def test_random_phrase_persisted_through_restart_and_duplicates(self):
         self.assertEqual(len(r.CALLOUT_TEXTS), 10)
         with patch.object(r.random, 'choice', return_value=r.CALLOUT_TEXTS[7]) as choose:

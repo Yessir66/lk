@@ -128,3 +128,5 @@ Renseigner les accès localement ; ne pas transmettre leurs valeurs dans le chat
 `py scripts\callout_repost.py --status` lit le journal réel sans lancer de processus de trading. Le hub accepte la même option. La préparation, la transaction signée, la confirmation et l’abandon pour dépassement de la limite d’âge sont distingués. Lorsqu’un prochain réessai tomberait après cette limite, l’entrée est marquée abandonnée explicitement. La limite reste inchangée par défaut.
 
 Les réponses d’erreur HTTP sont classées en catégories connues (simulation, route, fonds, frais, blockhash, délai). Le corps brut de réponse n’est pas affiché ; les secrets et en-têtes restent exclus des messages. Ces catégories aident à diagnostiquer un nouveau refus mais ne reconstituent pas le contenu d’une ancienne réponse déjà perdue.
+
+`--check-swap ADRESSE_DU_TOKEN` permet aussi un test de construction non signée depuis le script autonome. Il ne charge pas de clé privée et ne diffuse pas de transaction, même si `--live` figure par erreur dans la commande. Les réponses HTTP 200 ayant une erreur de simulation Jupiter ne sont pas signées.

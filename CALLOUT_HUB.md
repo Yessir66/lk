@@ -115,3 +115,15 @@ py scripts\callout_hub.py --status
 Cette commande est en lecture seule. Elle ne se connecte ni à Telegram, ni au wallet, ni aux API, et n’affiche pas le contenu des transactions signées. Elle indique notamment si une signature d’achat est enregistrée, si la confirmation est connue et si la limite d’âge a provoqué l’abandon. Pour un ancien journal sans cause enregistrée, seul l’état disponible est affiché ; la cause historique n’est pas inventée.
 
 Si le journal se trouve ailleurs, utiliser `--state CHEMIN`. Le mode `--status` ne crée pas de nouveau journal. Les entrées abandonnées restent dédoublonnées : ce diagnostic ne relance pas un ancien achat.
+
+## Tester la construction pour un token sans achat
+
+Après une erreur `/swap/v1/swap`, il est possible de comparer le comportement des API depuis le PC sans relancer le callout :
+
+```bat
+py scripts\callout_hub.py --check-swap ADRESSE_DU_TOKEN
+```
+
+Ce test lit le prix SOL, calcule le montant configuré (2 USD par défaut), demande une cotation puis une transaction non signée à Jupiter. Il utilise le même profil public et la variable `JUP_API_KEY` de la fenêtre terminal. Aucune clé privée n’est chargée, aucune signature n’est produite et aucune transaction n’est envoyée. Le journal n’est pas modifié. Le test de construction ne valide pas à lui seul une exécution ni un résultat financier.
+
+Les réponses de construction contenant un `simulationError`, même en HTTP 200, sont désormais refusées avant signature. Un succès du test sur un ancien mint n’entraîne pas son achat et ne réactive pas une entrée `failed`.

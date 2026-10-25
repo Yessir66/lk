@@ -8,7 +8,7 @@ import threading
 import time
 
 from callout_alerts import Pump, RemoteError, RateBackoff, Store, TelegramUserSender, WALLET, timestamp
-from callout_repost import CALLERS, ROOT, Execution, Journal, Engine, parse_args, show_status
+from callout_repost import CALLERS, ROOT, Execution, Journal, Engine, parse_args, show_status, check_swap
 
 
 class SharedReader:
@@ -228,6 +228,9 @@ def main():
     args = parse_args(configure=configure)
     if args.status:
         show_status(args.state or str(ROOT / 'data' / 'repost_live.sqlite3'))
+        return
+    if args.check_swap:
+        check_swap(args)
         return
     if args.live and (args.dry_run or args.alerts_only):
         raise RemoteError('--live ne peut pas être combiné avec --dry-run ou --alerts-only')

@@ -146,6 +146,27 @@ def show_status(path):
         db.close()
 
 
+def check_swap(args):
+    """Exercise the local API access and unsigned builder without loading signing keys."""
+    import copy
+    options = copy.copy(args)
+    options.live = False
+    mint = options.check_swap
+    if not WALLET.fullmatch(mint):
+        raise RemoteError('Adresse du token invalide')
+    execution = Execution(options)
+    print('TEST EN LECTURE SEULE : prix, cotation et construction non signée.', flush=True)
+    price = execution.sol_price()
+    amount = lamports_for(options.usd, price)
+    quote = execution.jupiter(f'/swap/v1/quote?inputMint={SOL}&outputMint={mint}&amount={amount}&slippageBps={options.slippage_bps}')
+    if quote.get('inputMint') != SOL or quote.get('outputMint') != mint or int(quote.get('inAmount', 0)) != amount:
+        raise RemoteError('Cotation incohérente pour ce test')
+    print('Cotation Jupiter : OK.', flush=True)
+    execution.build_swap(quote)
+    print('Construction de la transaction non signée : OK.', flush=True)
+    print('Le test n’a signé ni envoyé de transaction. Il ne relance pas l’ancien achat.', flush=True)
+
+
 class Execution:
     def __init__(self, args, owner=None):
         from curl_cffi import requests
@@ -259,12 +280,20 @@ class Execution:
         signed.update(lamports=amount, cost_usd=str(Decimal(amount) / 10**9 * Decimal(str(price))))
         return signed
 
-    def sign_quote(self, quote):
-        from solders.transaction import VersionedTransaction
+    def build_swap(self, quote):
         swap = self.jupiter('/swap/v1/swap', {'quoteResponse': quote, 'userPublicKey': self.owner,
                            'wrapAndUnwrapSol': True, 'dynamicComputeUnitLimit': True,
                            'prioritizationFeeLamports': {'priorityLevelWithMaxLamports': {
                                'maxLamports': 100_000, 'priorityLevel': 'high'}}})
+        if swap.get('simulationError') is not None:
+            raise RemoteError('Jupiter/swap/v1/swap : échec de simulation signalé')
+        if not swap.get('swapTransaction') or 'lastValidBlockHeight' not in swap:
+            raise RemoteError('Jupiter/swap/v1/swap : transaction ou validité absente')
+        return swap
+
+    def sign_quote(self, quote):
+        from solders.transaction import VersionedTransaction
+        swap = self.build_swap(quote)
         unsigned = VersionedTransaction.from_bytes(base64.b64decode(swap['swapTransaction']))
         tx = VersionedTransaction(unsigned.message, [self.keypair])
         return {'raw': base64.b64encode(bytes(tx)).decode(), 'signature': str(tx.signatures[0]),
@@ -532,6 +561,7 @@ def detect(events, stop, since):
 
 def parse_args(argv=None, configure=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--check-swap', metavar='MINT', help='Tester une cotation et une construction non signée, sans achat')
     parser.add_argument('--status', action='store_true', help='Afficher le journal réel en lecture seule, sans connexion ni achat')
     parser.add_argument('--profile', default='Lelouch_0x')
     parser.add_argument('--live', action='store_true', help='Effectuer réellement les achats et publications')
@@ -563,7 +593,7 @@ def parse_args(argv=None, configure=None):
             args.text.format(text='exemple', caller='exemple')
     except (KeyError, ValueError, AttributeError, IndexError):
         parser.error('--text accepte seulement {text} et {caller}')
-    if args.live and not args.status and any(not Path(p).is_file() for p in (args.wallet, args.token)):
+    if args.live and not (args.status or args.check_swap) and any(not Path(p).is_file() for p in (args.wallet, args.token)):
         parser.error('Créer les fichiers locaux --wallet et --token (voir CALLOUT_REPOST.md)')
     return args
 
@@ -572,6 +602,9 @@ def main():
     args = parse_args()
     if args.status:
         show_status(args.state or str(ROOT / 'data' / 'repost_live.sqlite3'))
+        return
+    if args.check_swap:
+        check_swap(args)
         return
     execution = Execution(args)
     path = args.state or str(ROOT / 'data' / ('repost_live.sqlite3' if args.live else 'repost_simulation.sqlite3'))
