@@ -36,6 +36,10 @@ ANTHROPIC_API_KEY override it). Setup guide: analyses/alert_scout_guide.md.
 
 Usage: alert_scout.py [--config scout_config.json] [--console]   server + Telegram bot, until Ctrl+C
        alert_scout.py --mint <CA> [--console]                   one token, alert time = now
+       alert_scout.py --mint <CA> --at "23:02" [--console]       replay of a past alert (HH:MM[:SS] today,
+                                                                 or "DD/MM HH:MM"): the verdict is exact (on-chain),
+                                                                 the card shows the token as it is now, and the
+                                                                 follow-up is replayed on the price history
        alert_scout.py --report                                  alerts, verdicts, scores and outcomes so far
        alert_scout.py --test-telegram
   --console: also print every message in the window (always on when Telegram is not configured).
@@ -430,6 +434,8 @@ def narrative(d, t_alert):
         import anthropic
     except ImportError:
         return None, "récit : lancer « pip install anthropic » pour la note du récit"
+    if not (cfg["anthropic_api_key"] or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+        return None, "récit : pas de clé API Anthropic (anthropic_api_key dans scout_config.json)"
     with concurrent.futures.ThreadPoolExecutor(4) as ex:
         f_desc = ex.submit(description, d["mint"])
         f_x = ex.submit(x_context, d["x"])
@@ -456,6 +462,8 @@ def narrative(d, t_alert):
         return None, f"récit : erreur API Anthropic {e.status_code}"
     except anthropic.APIConnectionError:
         return None, "récit : API Anthropic injoignable"
+    except Exception as e:                          # never let the card wait on a crashed thread
+        return None, f"récit : erreur {type(e).__name__}"
     if resp.stop_reason == "refusal":
         return None, "récit : analyse refusée par le modèle"
     text = next((b.text for b in resp.content if b.type == "text"), "")
@@ -478,7 +486,7 @@ def narrative_text(n):
 
 # ---------- 3. the minute after the alert, on-chain
 
-def collect(addrs, t0, t1):
+def collect(addrs, t0, t1, patience=10, retries=2):
     """Successful transactions touching any of addrs with a block time in [t0, t1), read while the minute goes on,
     in random order so that a partial read is a fair sample; returns (transactions read, signatures seen)."""
     sigs, newest, txs, pending = set(), {}, {}, []
@@ -494,7 +502,7 @@ def collect(addrs, t0, t1):
                 stop.wait(0.2)
                 continue
             tx = rpc.call("getTransaction", [sig, {"encoding": "json", "maxSupportedTransactionVersion": 1,
-                                                   "commitment": "confirmed"}], retries=2)
+                                                   "commitment": "confirmed"}], retries=retries)
             with mutex:
                 busy[0] -= 1
                 if tx:
@@ -529,7 +537,7 @@ def collect(addrs, t0, t1):
         if time.time() >= t1 + 4:         # confirmed signatures of the window's last second are in by now
             break
         time.sleep(max(0.0, min(3.0, t1 + 4 - time.time())))
-    deadline = time.time() + 10
+    deadline = time.time() + patience
     while time.time() < deadline:
         with mutex:
             if not pending and not busy[0]:
@@ -550,9 +558,9 @@ def owner_deltas(meta, mint):
     return out
 
 
-def minute_flow(mint, d, t0):
+def minute_flow(mint, d, t0, replay=False):
     # the token's own pools (the mint's signatures would also hold every trade of coins paired with it)
-    txs, n_sigs = collect(d["scan"] or [mint], t0, t0 + WINDOW)
+    txs, n_sigs = collect(d["scan"] or [mint], t0, t0 + WINDOW, *((240, 6) if replay else (10, 2)))
     rows = sorted(((tx.get("blockTime") or 0, tx.get("slot") or 0, owner_deltas(tx.get("meta") or {}, mint))
                    for tx in txs.values()), key=lambda r: (r[1], r[0]))
     signers = {(tx.get("transaction") or {}).get("message", {}).get("accountKeys", [None])[0] for tx in txs.values()}
@@ -705,15 +713,72 @@ def follow(d, t0, reply_to, notify):
 
 # ---------- outcomes, for calibration
 
-def outcome(mint, pool, t0, label):
-    """Highest and lowest multiple between the entry (t0 + 119 s) and now, from GeckoTerminal minute candles."""
-    pool = pool or card(mint, time.time())["main_pool"]          # token not yet listed at the alert
-    if not pool:
-        return journal({"type": "outcome", "mint": mint, "label": label, "error": "pas de pool"})
+def candles(mint, pool):
+    """GeckoTerminal minute candles of the token on a pool, oldest first: [t, open, high, low, close, volume]"""
     url = (f"https://api.geckoterminal.com/api/v2/networks/solana/pools/{pool}/ohlcv/minute?aggregate=1&limit=1000"
            f"&currency=usd&token={mint}")
     d = get_json(url, timeout=15, retries=3)
-    rows = sorted(((d or {}).get("data") or {}).get("attributes", {}).get("ohlcv_list") or [])
+    return sorted(((d or {}).get("data") or {}).get("attributes", {}).get("ohlcv_list") or [])
+
+
+def price_rows(mint, pools):
+    """Minute candles over the token's pools (pump.fun curve, then PumpSwap after graduation...), the busier
+    pool's candle for each minute."""
+    merged = {}
+    for i, pool in enumerate(p for p in pools[:3] if p):
+        if i:
+            time.sleep(2)                               # GeckoTerminal: about 30 requests a minute
+        for r in candles(mint, pool):
+            if r[0] not in merged or r[5] > merged[r[0]][5]:
+                merged[r[0]] = r
+    return [merged[t] for t in sorted(merged)]
+
+
+def replay_path(d, t0, reply_to):
+    """For a past alert: MC at the alert, and what the price-based follow-up exits would have said since the entry
+    (the holder-inflow exits need live holder counts and are left out)."""
+    rows = price_rows(d["mint"], d["pools"])
+    m_entry = (t0 + ENTRY_DELAY) // 60 * 60
+    before = [r for r in rows if r[0] <= m_entry]
+    after = [r for r in rows if r[0] > m_entry]
+    if not before or not after:
+        return send("ℹ️ rejeu : pas assez de bougies pour rejouer le suivi", reply_to)
+    mc_per_usd = d["mc"] / d["price"] if d["mc"] and d["price"] else None
+    at_alert = next((r[4] for r in reversed(rows) if r[0] < t0), before[0][1])
+    p0, high, half, events = before[-1][4], 1.0, False, []
+    for t, o, h, lo, c, v in after:
+        el = (t + 60 - m_entry - 59) / 60            # minutes since the entry at the candle's close
+        if h / p0 >= 1.5 and not half:
+            half = True
+            events.append(f"🟡 {hm(t)} x1.5 atteint : sécuriser la moitié")
+        high = max(high, h / p0)
+        x = c / p0
+        if el >= 5 and x < 0.85:
+            events.append(f"🔴 {hm(t + 60)} x{x:.2f} après 5 min : sortir")
+            break
+        if high >= 3 and x <= 0.5 * high:
+            events.append(f"🔴 {hm(t + 60)} x{x:.2f}, -50 % sous le plus haut x{high:.2f} : sortir le reste")
+            break
+        if el >= cfg["follow_minutes"]:
+            events.append(f"⏹ {hm(t + 60)} fin du suivi ({cfg['follow_minutes']} min) à x{x:.2f}")
+            break
+    mx = max(r[2] for r in after) / p0
+    lines = [f"⏪ <b>Rejeu ${esc(d['symbol'])}</b> · MC à l'alerte {usd(at_alert * mc_per_usd) if mc_per_usd else '?'}"
+             f" · à l'entrée ({hm(m_entry + 59)}) {usd(p0 * mc_per_usd) if mc_per_usd else '?'}",
+             f"Depuis l'entrée : plus haut x{mx:.2f} · plus bas x{min(r[3] for r in after) / p0:.2f} · "
+             f"maintenant x{rows[-1][4] / p0:.2f}"]
+    lines += events or ["aucun signal de sortie sur le prix pendant le suivi"]
+    lines.append("ℹ️ signaux rejoués sur les bougies du prix ; ceux du flux de holders ne sont pas rejouables")
+    journal({"type": "replay", "mint": d["mint"], "entry_price": p0, "max_x": round(mx, 3), "events": events})
+    send("\n".join(lines), reply_to)
+
+
+def outcome(mint, pools, t0, label):
+    """Highest and lowest multiple between the entry (t0 + 119 s) and now, from GeckoTerminal minute candles."""
+    pools = pools or card(mint, time.time())["pools"]            # token not yet listed at the alert
+    if not pools:
+        return journal({"type": "outcome", "mint": mint, "label": label, "error": "pas de pool"})
+    rows = price_rows(mint, pools)
     m_entry = (t0 + ENTRY_DELAY) // 60 * 60            # the entry's minute: its close is the entry price
     before = [r for r in rows if r[0] <= m_entry]
     after = [r for r in rows if r[0] > m_entry]
@@ -730,9 +795,9 @@ def later(delay, fn, *args):
     t.start()
 
 
-def schedule_outcomes(mint, pool, t0):
+def schedule_outcomes(mint, pools, t0):
     for label, delay in (("1h", 3600), ("6h", 21600)):
-        later(t0 + delay - time.time(), outcome, mint, pool, t0, label)
+        later(t0 + delay - time.time(), outcome, mint, pools, t0, label)
 
 
 def resume_journal():
@@ -748,7 +813,7 @@ def resume_journal():
         if r.get("type") == "alert":
             alerts[r["mint"]] = r["t0"]
         elif r.get("type") == "card":
-            pools[r["mint"]] = r.get("main_pool")
+            pools[r["mint"]] = r.get("all_pools") or [r.get("main_pool")]
         elif r.get("type") == "outcome":
             done[r["mint"]].add(r["label"])
     now, late = time.time(), 0
@@ -763,7 +828,7 @@ def resume_journal():
 
 # ---------- one alert
 
-def scout(mint, t_alert, source, text=""):
+def scout(mint, t_alert, source, text="", replay=False):
     t0 = t_alert - t_alert % 60                     # start of the alert's minute, as in the tested rule
     journal({"type": "alert", "mint": mint, "t_alert": t_alert, "t0": t0, "source": source, "text": text[:500]})
     try:
@@ -771,7 +836,9 @@ def scout(mint, t_alert, source, text=""):
     except Exception as e:
         send(f"⚠️ fiche impossible pour <code>{mint}</code> : {esc(type(e).__name__)}")
         return
-    journal({"type": "card", **{k: v for k, v in d.items() if k != "pools"}})
+    journal({"type": "card", **{k: v for k, v in d.items() if k != "pools"}, "all_pools": d["pools"][:3]})
+    if replay:
+        print(f"rejeu de l'alerte de {hm(t_alert)} : la fiche montre le token tel qu'il est maintenant", flush=True)
     msg = send(card_text(d, note="récit en cours d'analyse…" if cfg["narrative"] else None))
     box = {}
 
@@ -784,7 +851,7 @@ def scout(mint, t_alert, source, text=""):
     th = threading.Thread(target=run_narrative, daemon=True)
     th.start()
     try:
-        f = minute_flow(mint, d, t0)
+        f = minute_flow(mint, d, t0, replay)
     except Exception as e:
         f = None
         send(f"⚠️ lecture de la minute impossible : {esc(type(e).__name__)}: {esc(e)}", msg)
@@ -794,7 +861,9 @@ def scout(mint, t_alert, source, text=""):
     if f:
         journal({"type": "verdict", "mint": mint, "enter": decision(f) == "enter", "decision": decision(f), "score": sc, **f})
         send(verdict_text(d, f, sc, t0), msg)
-    schedule_outcomes(mint, d["main_pool"], t0)
+    if replay:
+        return replay_path(d, t0, msg)
+    schedule_outcomes(mint, d["pools"][:3], t0)
     if f:
         if decision(f) != "pass" or cfg["follow_all"]:
             follow(d, t0, msg, notify=True)
@@ -949,11 +1018,23 @@ def load_config(path):
     return url
 
 
+def parse_at(s):
+    """'23:02', '23:02:30' (today, else yesterday if still to come) or '25/10 23:02' -> unix time, local time"""
+    m = re.fullmatch(r"\s*(?:(\d{1,2})/(\d{1,2})(?:/(\d{4}))?\s+)?(\d{1,2})[:h](\d{2})(?::(\d{2}))?\s*", s)
+    if not m:
+        raise SystemExit("--at : format HH:MM, HH:MM:SS ou JJ/MM HH:MM")
+    now = time.localtime()
+    dd, mm, yy, h, mi, se = m.groups()
+    t = time.mktime((int(yy or now.tm_year), int(mm or now.tm_mon), int(dd or now.tm_mday), int(h), int(mi), int(se or 0), 0, 0, -1))
+    return t - 86400 if not dd and t > time.time() else t
+
+
 def main():
     global rpc, console
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=os.path.join(ROOT, "scout_config.json"))
     ap.add_argument("--mint")
+    ap.add_argument("--at", help="past alert time, HH:MM[:SS] today or DD/MM HH:MM[:SS]")
     ap.add_argument("--console", action="store_true")
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--test-telegram", action="store_true")
@@ -972,6 +1053,8 @@ def main():
         mint = find_mints(a.mint)
         if not mint:
             raise SystemExit("adresse invalide")
+        if a.at:
+            return scout(mint[0], parse_at(a.at), "rejeu", replay=True)
         scout(mint[0], time.time(), "manuel")
         return
     resume_journal()

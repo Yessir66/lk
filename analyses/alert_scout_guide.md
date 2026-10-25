@@ -80,6 +80,9 @@ Avec le script lancé, `http://127.0.0.1:8765/` dans le navigateur doit afficher
 * **Fiche à la demande** : envoie une adresse de contrat à ton bot Telegram. L'heure de ton message fait office d'heure d'alerte.
 * **Arrêter les suivis en cours** : envoie `stop` au bot.
 * **Un token tout de suite**, sans serveur : `python scripts\alert_scout.py --mint <CA> --console`.
+* **Rejouer une alerte passée** : `python scripts\alert_scout.py --mint <CA> --at 23:02 --console` (ou `--at "25/10 23:02"`).
+  Le verdict est exact (la minute est relue sur la blockchain), la fiche montre le token tel qu'il est maintenant,
+  et le suivi est rejoué sur l'historique du prix (sans les signaux du flux de holders).
 
 Chaque token n'est traité qu'une fois. Les messages suivants du bot sur ce même token (notifications x2, x3…) sont seulement notés dans le journal.
 
