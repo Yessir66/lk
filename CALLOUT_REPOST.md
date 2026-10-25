@@ -122,3 +122,9 @@ Si les limites persistent après la mise à jour :
 - Pour un message `Jupiter/...`, vérifier le quota du service et configurer `JUP_API_KEY` dans les variables locales Windows si le fournisseur le demande.
 
 Renseigner les accès localement ; ne pas transmettre leurs valeurs dans le chat. Tant que les cotations ou les requêtes RPC nécessaires sont refusées, le bot ne peut pas confirmer le seuil ni garantir l’exécution du TP. Les transactions déjà signées et les positions restent dans le journal, pour reprendre sans achat ou vente supplémentaires créés à l’aveugle.
+
+## État des achats et erreurs de préparation
+
+`py scripts\callout_repost.py --status` lit le journal réel sans lancer de processus de trading. Le hub accepte la même option. La préparation, la transaction signée, la confirmation et l’abandon pour dépassement de la limite d’âge sont distingués. Lorsqu’un prochain réessai tomberait après cette limite, l’entrée est marquée abandonnée explicitement. La limite reste inchangée par défaut.
+
+Les réponses d’erreur HTTP sont classées en catégories connues (simulation, route, fonds, frais, blockhash, délai). Le corps brut de réponse n’est pas affiché ; les secrets et en-têtes restent exclus des messages. Ces catégories aident à diagnostiquer un nouveau refus mais ne reconstituent pas le contenu d’une ancienne réponse déjà perdue.

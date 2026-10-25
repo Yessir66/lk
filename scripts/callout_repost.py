@@ -89,6 +89,63 @@ class Journal:
         return True
 
 
+def response_detail(response):
+    """Classify known provider errors without logging raw bodies or echoed credentials."""
+    try:
+        data = response.json()
+    except Exception:
+        return 'réponse non JSON'
+    if not isinstance(data, dict):
+        return 'réponse inattendue'
+    parts = [data.get('errorCode', ''), data.get('message', ''), data.get('error', '')]
+    text = ' '.join(str(p) for p in parts).lower()
+    for terms, detail in [
+        (('insufficient funds', 'insufficient_funds'), 'solde insuffisant signalé'),
+        (('not tradable', 'not_tradable'), 'token non échangeable signalé'),
+        (('simulate', 'simulation'), 'échec de simulation signalé'),
+        (('prioritization fee', 'priority fee'), 'calcul des frais prioritaires en échec'),
+        (('blockhash',), 'blockhash indisponible'),
+        (('route',), 'échec de route de swap signalé'),
+        (('compute',), 'budget de calcul en échec'),
+        (('timeout', 'timed out'), 'délai du fournisseur dépassé'),
+    ]:
+        if any(term in text for term in terms):
+            return detail
+    return 'aucun détail reconnu'
+
+
+def show_status(path):
+    """Read an existing journal without connecting to a wallet or any remote service."""
+    path = Path(path).resolve()
+    if not path.is_file():
+        print(f'Journal introuvable : {path}', flush=True)
+        return
+    db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
+    try:
+        rows = db.execute('SELECT data FROM jobs ORDER BY rowid DESC LIMIT 20').fetchall()
+        if not rows:
+            print('Journal vide.', flush=True)
+        for row in rows:
+            job = json.loads(row[0])
+            print(f'{job.get("caller", "?")} | {job["mint"]} | état : {job["state"]}', flush=True)
+            if job.get('buy_confirmed') or job['state'] in ('confirmed', 'publishing', 'uncertain', 'posted'):
+                print('  Achat confirmé ; TP : ' + job.get('exit_state', 'en attente de contrôle'), flush=True)
+            elif job.get('signature'):
+                print('  Transaction signée ; confirmation non établie par cet état.', flush=True)
+            else:
+                print('  Aucune transaction d’achat signée enregistrée.', flush=True)
+            if job.get('failure_reason') == 'entry_expired':
+                print('  Achat abandonné : limite d’âge du callout dépassée avant préparation.', flush=True)
+            if job.get('last_error'):
+                print('  Dernière erreur : ' + job['last_error'], flush=True)
+            if job.get('tp_error'):
+                print('  Dernière erreur TP : ' + job['tp_error'], flush=True)
+            if job.get('attempts'):
+                print(f'  Tentatives de préparation : {job["attempts"]}', flush=True)
+    finally:
+        db.close()
+
+
 class Execution:
     def __init__(self, args, owner=None):
         from curl_cffi import requests
@@ -124,7 +181,9 @@ class Execution:
             response = self.http.request('GET' if body is None else 'POST', url, json=body, headers=headers or {}, timeout=20)
             retry = retry_seconds(response.headers.get('Retry-After'))
             if response.status_code != 200:
-                raise RemoteError(f'{label} : HTTP {response.status_code}', status=response.status_code, retry_after=retry)
+                detail = response_detail(response) if response.status_code >= 400 and response.status_code != 429 else ''
+                suffix = f' ({detail})' if detail else ''
+                raise RemoteError(f'{label} : HTTP {response.status_code}{suffix}', status=response.status_code, retry_after=retry)
             data = response.json()
             if not isinstance(data, dict):
                 raise RemoteError(f'{label} : format de réponse inattendu')
@@ -286,6 +345,7 @@ class Engine:
                     self.manage_exit(job, now)
                 except Exception as exc:
                     detail = str(exc) if isinstance(exc, RemoteError) else type(exc).__name__
+                    job['tp_error'] = detail
                     print(f'TP {job["mint"]} différé : {detail}', flush=True)
                     job['exit_retry_at'] = now + (time.monotonic() - tick_started) + max(getattr(self.args, 'tp_interval', 5), (exc.retry_after or 0) if isinstance(exc, RemoteError) else 0)
                     self.journal.save(job)
@@ -298,8 +358,13 @@ class Engine:
             except Exception as exc:
                 # Never print responses, headers, private keys or arbitrary exception text.
                 detail = str(exc) if isinstance(exc, RemoteError) else type(exc).__name__
-                print(f'{job["caller"]} : étape {job["state"]} différée ({detail})', flush=True)
+                job['last_error'] = detail
                 job['retry_at'] = now + (time.monotonic() - tick_started) + max(10, (exc.retry_after or 0) if isinstance(exc, RemoteError) else 0)
+                if job['state'] == 'new' and job['retry_at'] > job['created'] + self.args.max_age:
+                    self.expire_entry(job)
+                else:
+                    wait = max(0, job['retry_at'] - (now + time.monotonic() - tick_started))
+                    print(f'{job["caller"]} : étape {job["state"]} différée ({detail}) ; nouvelle tentative planifiée dans {wait:.0f}s', flush=True)
                 self.journal.save(job)
 
     def manage_exit(self, job, now):
@@ -359,16 +424,26 @@ class Engine:
         job['exit_retry_at'] = now + (0 if job.get('exit_state') == 'signed' else self.args.tp_interval)
         self.journal.save(job)
 
+    def expire_entry(self, job):
+        job.update(state='failed', failure_reason='entry_expired')
+        print(f'ACHAT ABANDONNÉ : {job["caller"]} → {job["mint"]} ; limite de {self.args.max_age:g}s dépassée avant préparation.', flush=True)
+        if job.get('last_error'):
+            print(f'  Dernière erreur : {job["last_error"]}', flush=True)
+
     def advance(self, job, now):
         if job['state'] == 'new':
             if now - job['created'] > self.args.max_age:
-                job['state'] = 'failed'
+                self.expire_entry(job)
             elif not self.args.live:
                 print(f'SIMULATION : achat {self.args.usd} USD pour {job["caller"]}, publication au plus tôt à {job["due"]:.0f} : {job["text"]} ; TP prévu +{getattr(self.args, "take_profit", 50)}%, vente totale', flush=True)
                 job['state'] = 'simulated'
             else:
                 # Preparation never broadcasts. Persist the signature BEFORE any send.
+                job['attempts'] = job.get('attempts', 0) + 1
+                self.journal.save(job)
+                print(f'PRÉPARATION ACHAT : {job["caller"]}, tentative {job["attempts"]}', flush=True)
                 job.update(self.execution.prepare(job['mint']), state='signed')
+                print(f'ACHAT SIGNÉ : {job["mint"]}, en attente de diffusion/confirmation.', flush=True)
             self.journal.save(job)
             return
         if job['state'] == 'signed':
@@ -457,6 +532,7 @@ def detect(events, stop, since):
 
 def parse_args(argv=None, configure=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--status', action='store_true', help='Afficher le journal réel en lecture seule, sans connexion ni achat')
     parser.add_argument('--profile', default='Lelouch_0x')
     parser.add_argument('--live', action='store_true', help='Effectuer réellement les achats et publications')
     parser.add_argument('--usd', type=Decimal, default=Decimal('2'))
@@ -487,13 +563,16 @@ def parse_args(argv=None, configure=None):
             args.text.format(text='exemple', caller='exemple')
     except (KeyError, ValueError, AttributeError, IndexError):
         parser.error('--text accepte seulement {text} et {caller}')
-    if args.live and any(not Path(p).is_file() for p in (args.wallet, args.token)):
+    if args.live and not args.status and any(not Path(p).is_file() for p in (args.wallet, args.token)):
         parser.error('Créer les fichiers locaux --wallet et --token (voir CALLOUT_REPOST.md)')
     return args
 
 
 def main():
     args = parse_args()
+    if args.status:
+        show_status(args.state or str(ROOT / 'data' / 'repost_live.sqlite3'))
+        return
     execution = Execution(args)
     path = args.state or str(ROOT / 'data' / ('repost_live.sqlite3' if args.live else 'repost_simulation.sqlite3'))
     journal = Journal(path, time.time(), execution.owner)

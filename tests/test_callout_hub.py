@@ -169,6 +169,16 @@ class HubTest(unittest.TestCase):
             self.assertIsNone(trade.error)
             self.assertIsNone(alerts.error)
 
+    def test_status_command_never_starts_telegram_wallet_or_poller(self):
+        with patch.object(h, 'parse_args', return_value=SimpleNamespace(status=True, state='journal.sqlite3')), \
+             patch.object(h, 'show_status') as status, patch.object(h, 'Pump') as pump, \
+             patch.object(h, 'TelegramUserSender') as telegram, patch.object(h, 'Execution') as execution:
+            h.main()
+        status.assert_called_once_with('journal.sqlite3')
+        pump.assert_not_called()
+        telegram.assert_not_called()
+        execution.assert_not_called()
+
     def test_finds_retained_telegram_session(self):
         with tempfile.TemporaryDirectory() as tmp:
             first, old = Path(tmp)/'new', Path(tmp)/'old'

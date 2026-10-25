@@ -101,3 +101,17 @@ La lecture des profils reste un secours : son ralentissement peut retarder la d�
 Cette erreur concerne les services d’exécution, distincts de la lecture pump.fun. La mise à jour affiche le nom précis du RPC ou de Jupiter, régule les requêtes de chaque fournisseur et partage les pauses entre positions. Les alertes Telegram et le lecteur public continuent indépendamment, mais un TP en attente de réponses de ces services ne peut pas être considéré comme exécuté.
 
 Le journal d’achat/vente doit être conservé à la mise à jour. Voir la section « Limites du RPC et de Jupiter » de [CALLOUT_REPOST.md](CALLOUT_REPOST.md) pour les nouveaux messages et la configuration d’un accès adapté.
+
+## Un achat n’a pas eu lieu après une erreur 500
+
+Le délai annoncé est un minimum avant une nouvelle tentative, et non une garantie d’exécution. Tant que Jupiter ne fournit pas de transaction, il n’existe rien à diffuser. La limite d’âge de 60 secondes peut aussi conduire à abandonner le callout. Le hub affiche désormais `PRÉPARATION ACHAT`, `ACHAT SIGNÉ` et `ACHAT ABANDONNÉ` pour distinguer ces situations ; le nombre de préparations et la dernière erreur sont enregistrés.
+
+Pour lire les 20 dernières entrées du journal réel, dans une seconde fenêtre terminal :
+
+```bat
+py scripts\callout_hub.py --status
+```
+
+Cette commande est en lecture seule. Elle ne se connecte ni à Telegram, ni au wallet, ni aux API, et n’affiche pas le contenu des transactions signées. Elle indique notamment si une signature d’achat est enregistrée, si la confirmation est connue et si la limite d’âge a provoqué l’abandon. Pour un ancien journal sans cause enregistrée, seul l’état disponible est affiché ; la cause historique n’est pas inventée.
+
+Si le journal se trouve ailleurs, utiliser `--state CHEMIN`. Le mode `--status` ne crée pas de nouveau journal. Les entrées abandonnées restent dédoublonnées : ce diagnostic ne relance pas un ancien achat.

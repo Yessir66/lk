@@ -1,4 +1,5 @@
 from pathlib import Path
+import io
 from decimal import Decimal
 import sys
 import tempfile
@@ -259,6 +260,63 @@ class RepostTest(unittest.TestCase):
         self.engine.step(1015)
         self.assertEqual(self.job()['exit_tokens'], 500)
         self.execution.sign_quote.assert_called_once()
+
+    def test_500_retries_only_before_age_limit_and_preserves_failure_reason(self):
+        self.add()
+        self.execution.prepare.side_effect = r.RemoteError('Jupiter/swap/v1/swap : HTTP 500', status=500)
+        with patch('sys.stdout', new_callable=io.StringIO) as output:
+            self.engine.step(1010)
+            self.engine.step(1015)
+            self.assertEqual(self.execution.prepare.call_count, 1)
+            self.engine.step(1021)
+            self.assertEqual(self.execution.prepare.call_count, 2)
+            self.engine.step(1055)
+            self.assertEqual(self.job()['state'], 'failed')
+            self.assertEqual(self.job()['failure_reason'], 'entry_expired')
+            self.assertIn('HTTP 500', self.job()['last_error'])
+            self.assertIn('ACHAT ABANDONNÉ', output.getvalue())
+            self.assertIn('nouvelle tentative planifiée', output.getvalue())
+            count = self.execution.prepare.call_count
+            self.engine.step(1200)
+            self.assertEqual(self.execution.prepare.call_count, count)
+        self.execution.broadcast.assert_not_called()
+
+    def test_expired_entry_is_reported_before_any_preparation(self):
+        self.add()
+        with patch('sys.stdout', new_callable=io.StringIO) as output:
+            self.engine.step(1061)
+        self.assertIn('ACHAT ABANDONNÉ', output.getvalue())
+        self.execution.prepare.assert_not_called()
+        self.assertEqual(self.job()['failure_reason'], 'entry_expired')
+
+    def test_status_is_read_only_and_hides_transaction_payloads(self):
+        self.add()
+        job = self.job()
+        job.update(state='failed', failure_reason='entry_expired', raw='NEVER_PRINT_RAW', text='NEVER_PRINT_TEXT',
+                   last_error='Jupiter/swap/v1/swap : HTTP 500', attempts=2)
+        self.journal.save(job)
+        with patch('sys.stdout', new_callable=io.StringIO) as output:
+            r.show_status(self.path)
+        text = output.getvalue()
+        self.assertIn('Aucune transaction d’achat signée enregistrée', text)
+        self.assertIn('limite d’âge', text)
+        self.assertIn('HTTP 500', text)
+        self.assertNotIn('NEVER_PRINT', text)
+        self.assertEqual(self.job(), job)
+        missing = str(Path(self.tmp.name) / 'absent')
+        with patch('sys.stdout', new_callable=io.StringIO): r.show_status(missing)
+        self.assertFalse(Path(missing).exists())
+
+    def test_swap_error_details_are_classified_without_printing_raw_body(self):
+        execution = self.http_execution()
+        response = SimpleNamespace(status_code=500, headers={}, json=lambda: {'error': 'Failed to simulate transaction SECRET'})
+        execution.http.request.return_value = response
+        with patch.object(r.time, 'sleep'):
+            with self.assertRaises(r.RemoteError) as caught:
+                execution.jupiter('/swap/v1/swap', {'quoteResponse': {}})
+        self.assertIn('échec de simulation signalé', str(caught.exception))
+        self.assertNotIn('SECRET', str(caught.exception))
+        self.assertEqual(caught.exception.status, 500)
 
     def test_random_phrase_persisted_through_restart_and_duplicates(self):
         self.assertEqual(len(r.CALLOUT_TEXTS), 10)
