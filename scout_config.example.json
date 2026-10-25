@@ -1,0 +1,13 @@
+{
+  "helius_api_key": "ta-cle-helius",
+  "telegram_bot_token": "123456789:token-donne-par-BotFather",
+  "telegram_chat_id": "ton-chat-id",
+  "anthropic_api_key": "sk-ant-...",
+  "port": 8765,
+  "rps": 10,
+  "new_min": 131,
+  "follow_minutes": 30,
+  "interval_s": 60,
+  "follow_all": false,
+  "narrative": true
+}

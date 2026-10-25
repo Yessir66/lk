@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Scout alertes Discord",
+  "version": "1.0",
+  "description": "Transmet les nouveaux messages du salon d'alertes Discord à alert_scout.py, sur ce PC. Lecture seule.",
+  "content_scripts": [
+    {
+      "matches": ["https://discord.com/channels/*"],
+      "js": ["config.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {"service_worker": "background.js"},
+  "host_permissions": ["http://127.0.0.1/*"]
+}
