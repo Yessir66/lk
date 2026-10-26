@@ -224,8 +224,11 @@ def tg(method, body):
 
 
 def show(text):
+    plain = html.unescape(re.sub(r"<[^>]+>", "", text))
     if console or not cfg["telegram_bot_token"]:
-        print("\n" + html.unescape(re.sub(r"<[^>]+>", "", text)) + "\n", flush=True)
+        print("\n" + plain + "\n", flush=True)
+    else:                                           # one line per message, to see what went to Telegram
+        print(f"{hm(time.time())} → Telegram : {plain.splitlines()[0][:150]}", flush=True)
 
 
 def send(text, reply_to=None):
@@ -844,6 +847,9 @@ def scout(mint, t_alert, source, text="", replay=False):
 
     def run_narrative():
         n, why = narrative(d, t_alert)
+        if not console and cfg["telegram_bot_token"]:
+            print(f"{hm(time.time())} → Telegram : fiche complétée, "
+                  + (f"récit {n['note']}/10 — {n['resume'][:110]}" if n else why), flush=True)
         box["n"] = n
         journal({"type": "narrative", "mint": mint, **(n or {"error": why})})
         edit(msg, card_text(d, n, why))
@@ -1047,8 +1053,11 @@ def main():
     if "helius" not in url and not cfg["rpc_url"]:
         print("⚠️ pas de clé Helius : RPC public, la minute après l'alerte sera lue en partie seulement", flush=True)
     if a.test_telegram:
+        if not cfg["telegram_bot_token"] or not cfg["telegram_chat_id"]:
+            raise SystemExit("telegram_bot_token ou telegram_chat_id vide dans scout_config.json")
         ok = send("✅ alert_scout : Telegram fonctionne")
-        raise SystemExit(0 if ok else "échec : vérifier telegram_bot_token et telegram_chat_id")
+        raise SystemExit("✅ message envoyé : regarde ton Telegram" if ok else
+                         "échec : vérifier telegram_bot_token et telegram_chat_id (et appuyer sur Démarrer dans ton bot)")
     if a.mint:
         mint = find_mints(a.mint)
         if not mint:
