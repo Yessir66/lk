@@ -74,6 +74,7 @@ Le **suivi** reprend les sorties F1R (`flow_bot.py`), avec le nombre de holders 
 
 ```
 python scripts\alert_scout.py --test-telegram      (vérifie que le bot Telegram t'écrit)
+python scripts\alert_scout.py --test-claude        (vérifie la clé et la connexion à l'API Claude)
 python scripts\alert_scout.py                      (démarre ; Ctrl+C pour arrêter)
 ```
 

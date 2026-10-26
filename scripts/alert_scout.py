@@ -41,7 +41,7 @@ Usage: alert_scout.py [--config scout_config.json] [--console]   server + Telegr
                                                                  the card shows the token as it is now, and the
                                                                  follow-up is replayed on the price history
        alert_scout.py --report                                  alerts, verdicts, scores and outcomes so far
-       alert_scout.py --test-telegram
+       alert_scout.py --test-telegram | --test-claude
   --console: also print every message in the window (always on when Telegram is not configured).
 """
 import argparse
@@ -223,12 +223,17 @@ def tg(method, body):
     return r
 
 
+def plain_line(s):
+    """without emoji, which the Windows console shows as ?"""
+    return re.sub(r"[\U00010000-\U0010FFFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]", "", s).strip()
+
+
 def show(text):
     plain = html.unescape(re.sub(r"<[^>]+>", "", text))
     if console or not cfg["telegram_bot_token"]:
         print("\n" + plain + "\n", flush=True)
     else:                                           # one line per message, to see what went to Telegram
-        print(f"{hm(time.time())} → Telegram : {plain.splitlines()[0][:150]}", flush=True)
+        print(f"{hm(time.time())} → Telegram : {plain_line(plain.splitlines()[0])[:150]}", flush=True)
 
 
 def send(text, reply_to=None):
@@ -451,8 +456,7 @@ def narrative(d, t_alert):
            f"Liens déclarés : X {d['x'] or 'aucun'} · site {d['site'] or 'aucun'} · Telegram {d['telegram'] or 'aucun'}\n\n"
            + "\n\n".join(f"<{k}>\n{v or '(vide)'}\n</{k}>" for k, v in parts.items()))
     try:
-        client = anthropic.Anthropic(api_key=cfg["anthropic_api_key"] or None, timeout=45.0, max_retries=1)
-        resp = client.beta.messages.create(
+        resp = claude_client(anthropic).beta.messages.create(
             model=MODEL, max_tokens=4000, system=NARRATIVE_SYSTEM,
             betas=["server-side-fallback-2026-07-01"], fallbacks="default",
             output_config={"effort": "low", "format": {"type": "json_schema", "schema": NARRATIVE_SCHEMA}},
@@ -463,8 +467,8 @@ def narrative(d, t_alert):
         return None, "récit : limite de l'API Anthropic atteinte"
     except anthropic.APIStatusError as e:
         return None, f"récit : erreur API Anthropic {e.status_code}"
-    except anthropic.APIConnectionError:
-        return None, "récit : API Anthropic injoignable"
+    except anthropic.APIConnectionError as e:
+        return None, f"récit : API Anthropic injoignable ({connection_cause(e)})"
     except Exception as e:                          # never let the card wait on a crashed thread
         return None, f"récit : erreur {type(e).__name__}"
     if resp.stop_reason == "refusal":
@@ -478,6 +482,41 @@ def narrative(d, t_alert):
         n[k] = max(0, min(10, int(n.get(k) or 0)))
     n["sources"] = {k: bool(v) for k, v in parts.items()}
     return n, None
+
+
+def claude_client(anthropic):
+    # the system's certificate store, as for every other request of this script (an antivirus that inspects HTTPS
+    # adds its own certificate there, not to the bundle the SDK uses by default)
+    return anthropic.Anthropic(api_key=cfg["anthropic_api_key"] or None, timeout=45.0, max_retries=1,
+                               http_client=anthropic.DefaultHttpxClient(verify=SSL))
+
+
+def connection_cause(e):
+    c = e.__cause__ or e.__context__
+    return f"{type(c).__name__}: {c}"[:160] if c else type(e).__name__
+
+
+def test_claude():
+    """One short request with the narrative's settings; prints the answer or the whole error."""
+    try:
+        import anthropic
+    except ImportError:
+        raise SystemExit("lancer « pip install -U anthropic »")
+    print(f"anthropic {anthropic.__version__}, clé {'présente' if cfg['anthropic_api_key'] else 'ABSENTE'}", flush=True)
+    t = time.time()
+    try:
+        resp = claude_client(anthropic).beta.messages.create(
+            model=MODEL, max_tokens=2000, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": {
+                "type": "object", "additionalProperties": False, "required": ["ok"],
+                "properties": {"ok": {"type": "string"}}}}},
+            messages=[{"role": "user", "content": "Réponds ok."}])
+    except anthropic.APIConnectionError as e:
+        raise SystemExit(f"injoignable : {connection_cause(e)}")
+    except anthropic.APIStatusError as e:
+        raise SystemExit(f"erreur {e.status_code} : {e.message}")
+    text = next((b.text for b in resp.content if b.type == "text"), "")
+    print(f"OK en {time.time() - t:.1f} s : {resp.model}, stop {resp.stop_reason}, réponse {text}", flush=True)
 
 
 def narrative_text(n):
@@ -572,7 +611,8 @@ def minute_flow(mint, d, t0, replay=False):
     big = {o for _, _, od in rows for o, (a, b) in od.items() if b >= 0.02 * supply}
     pools = set(d["pools"]) | POOL_AUTHORITIES | {o for o, c in freq.items()       # frequent and never a signer, or
                                                   if c >= max(8, 0.10 * len(rows)) and (o in big or o not in signers)}
-    price = (get_json(f"https://lite-api.jup.ag/price/v3?ids={mint}") or {}).get(mint, {}).get("usdPrice") or d["price"] or 0
+    past = [r[4] for r in d.get("rows") or [] if r[0] <= t0] if replay else []
+    price = past[-1] if past else (get_json(f"https://lite-api.jup.ag/price/v3?ids={mint}") or {}).get(mint, {}).get("usdPrice") or d["price"] or 0
     first, bought, sold, buy_trades = {}, collections.Counter(), collections.Counter(), []
     for _, _, od in rows:
         if not any(abs(b - a) > 1e-9 for o, (a, b) in od.items() if o in pools):
@@ -740,7 +780,7 @@ def price_rows(mint, pools):
 def replay_path(d, t0, reply_to):
     """For a past alert: MC at the alert, and what the price-based follow-up exits would have said since the entry
     (the holder-inflow exits need live holder counts and are left out)."""
-    rows = price_rows(d["mint"], d["pools"])
+    rows = d.get("rows") or price_rows(d["mint"], d["pools"])
     m_entry = (t0 + ENTRY_DELAY) // 60 * 60
     before = [r for r in rows if r[0] <= m_entry]
     after = [r for r in rows if r[0] > m_entry]
@@ -839,9 +879,10 @@ def scout(mint, t_alert, source, text="", replay=False):
     except Exception as e:
         send(f"⚠️ fiche impossible pour <code>{mint}</code> : {esc(type(e).__name__)}")
         return
-    journal({"type": "card", **{k: v for k, v in d.items() if k != "pools"}, "all_pools": d["pools"][:3]})
+    journal({"type": "card", **{k: v for k, v in d.items() if k not in ("pools", "rows")}, "all_pools": d["pools"][:3]})
     if replay:
         print(f"rejeu de l'alerte de {hm(t_alert)} : la fiche montre le token tel qu'il est maintenant", flush=True)
+        d["rows"] = price_rows(mint, d["pools"])      # the alert's price for the minute's dollar amounts
     msg = send(card_text(d, note="récit en cours d'analyse…" if cfg["narrative"] else None))
     box = {}
 
@@ -849,7 +890,7 @@ def scout(mint, t_alert, source, text="", replay=False):
         n, why = narrative(d, t_alert)
         if not console and cfg["telegram_bot_token"]:
             print(f"{hm(time.time())} → Telegram : fiche complétée, "
-                  + (f"récit {n['note']}/10 — {n['resume'][:110]}" if n else why), flush=True)
+                  + plain_line(f"récit {n['note']}/10 — {n['resume'][:110]}" if n else why), flush=True)
         box["n"] = n
         journal({"type": "narrative", "mint": mint, **(n or {"error": why})})
         edit(msg, card_text(d, n, why))
@@ -1044,6 +1085,7 @@ def main():
     ap.add_argument("--console", action="store_true")
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--test-telegram", action="store_true")
+    ap.add_argument("--test-claude", action="store_true")
     a = ap.parse_args()
     if a.report:
         return report()
@@ -1056,8 +1098,11 @@ def main():
         if not cfg["telegram_bot_token"] or not cfg["telegram_chat_id"]:
             raise SystemExit("telegram_bot_token ou telegram_chat_id vide dans scout_config.json")
         ok = send("✅ alert_scout : Telegram fonctionne")
-        raise SystemExit("✅ message envoyé : regarde ton Telegram" if ok else
-                         "échec : vérifier telegram_bot_token et telegram_chat_id (et appuyer sur Démarrer dans ton bot)")
+        if not ok:
+            raise SystemExit("échec : vérifier telegram_bot_token et telegram_chat_id (et appuyer sur Démarrer dans ton bot)")
+        return print("message envoyé : regarde ton Telegram")
+    if a.test_claude:
+        return test_claude()
     if a.mint:
         mint = find_mints(a.mint)
         if not mint:
