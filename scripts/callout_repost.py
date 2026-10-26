@@ -359,8 +359,7 @@ class Execution:
         return self._price
 
     def acquired(self, signature, mint):
-        tx = self.rpc('getTransaction', [signature, {'encoding': 'jsonParsed',
-                      'commitment': 'confirmed', 'maxSupportedTransactionVersion': 0}])
+        tx = self.transaction(signature)
         if not tx or not tx.get('meta') or tx['meta'].get('err'):
             raise RemoteError('Métadonnées de l’achat indisponibles')
         meta = tx['meta']
@@ -375,6 +374,83 @@ class Execution:
             self._balances = {}
         self._balances[mint] = (after, time.monotonic())
         return after - before
+
+    def transaction(self, signature):
+        if not hasattr(self, '_transactions'):
+            self._transactions = {}
+        tx = self._transactions.get(signature)
+        if tx is None:
+            tx = self.rpc('getTransaction', [signature, {'encoding': 'jsonParsed',
+                          'commitment': 'confirmed', 'maxSupportedTransactionVersion': 0}])
+            if tx and tx.get('meta') and tx['meta'].get('err') is None:
+                if len(self._transactions) >= 256:
+                    self._transactions.pop(next(iter(self._transactions)))
+                self._transactions[signature] = tx
+        return tx
+
+    def trade_details(self, job, side):
+        """Read confirmed fills only. Market caps are estimates, never spot snapshots.
+
+        Supply is observed after confirmation, not reconstructed at the historic slot.
+        USD conversion uses the recorded SOL reference at buy preparation / TP trigger.
+        """
+        signature = job.get('signature') if side == 'buy' else job.get('exit_tx', {}).get('signature')
+        if not signature:
+            raise RemoteError('Transaction non enregistrée')
+        tx = self.transaction(signature)
+        if not tx or not tx.get('meta') or tx['meta'].get('err') is not None:
+            raise RemoteError('Détails de transaction confirmée indisponibles')
+        meta = tx['meta']
+        pre, post = meta.get('preTokenBalances', []), meta.get('postTokenBalances', [])
+        owned = {b['accountIndex'] for b in pre + post if b.get('owner') == self.owner}
+        def balances(rows):
+            return [b for b in rows if b.get('mint') == job['mint'] and b['accountIndex'] in owned]
+        before, after = balances(pre), balances(post)
+        change = sum(int(b['uiTokenAmount']['amount']) for b in after) - sum(int(b['uiTokenAmount']['amount']) for b in before)
+        quantity = change if side == 'buy' else -change
+        if quantity <= 0:
+            raise RemoteError('Quantité exécutée non déterminée')
+        decimals = {int(b['uiTokenAmount']['decimals']) for b in before + after}
+        if len(decimals) != 1:
+            raise RemoteError('Décimales du token incohérentes')
+        if side == 'buy':
+            usd = Decimal(str(job['cost_usd'])) if job.get('cost_usd') else None
+            sol = Decimal(job['lamports']) / 10**9 if job.get('lamports') else None
+        else:
+            keys = [key.get('pubkey') if isinstance(key, dict) else key for key in tx['transaction']['message']['accountKeys']]
+            owner_indexes = {i for i, key in enumerate(keys) if key == self.owner}
+            if not owner_indexes:
+                raise RemoteError('Solde SOL de la vente non déterminé')
+            # Include retained/closed owned token-account rent so a rent refund is
+            # not incorrectly counted as swap proceeds. Network fee is separated.
+            indexes = owner_indexes | owned
+            received = sum(int(meta['postBalances'][i]) - int(meta['preBalances'][i]) for i in indexes)
+            if keys[0] == self.owner:
+                received += int(meta['fee'])
+            if received <= 0:
+                raise RemoteError('Produit SOL de la vente non déterminé')
+            sol = Decimal(received) / 10**9
+            usd = sol * Decimal(str(job['exit_sol_usd'])) if job.get('exit_sol_usd') else None
+        if not hasattr(self, '_supplies'):
+            self._supplies = {}
+        cached = self._supplies.get(job['mint'])
+        if not cached or time.monotonic() - cached[0] >= 3600:
+            supply = self.rpc('getTokenSupply', [job['mint'], {'commitment': 'confirmed'}])
+            cached = (time.monotonic(), supply, time.time())
+            self._supplies[job['mint']] = cached
+        supply = cached[1]
+        supply_amount = int(supply['value']['amount'])
+        if int(supply['value']['decimals']) != next(iter(decimals)) or supply_amount <= 0:
+            raise RemoteError('Offre du token invalide')
+        if usd is not None and (not usd.is_finite() or usd <= 0):
+            raise RemoteError('Référence USD indisponible')
+        return dict(mc_estimate=str(usd * supply_amount / quantity) if usd is not None else None,
+                    usd_estimate=str(usd) if usd is not None else None,
+                    sol_amount=str(sol) if sol is not None else None,
+                    token_raw=str(quantity), token_decimals=next(iter(decimals)),
+                    block_time=tx.get('blockTime'), slot=tx.get('slot'),
+                    supply_raw=str(supply_amount), supply_slot=supply.get('context', {}).get('slot'),
+                    supply_observed_at=cached[2])
 
     def token_amount(self, mint, fresh=False):
         if not hasattr(self, '_balances'):
@@ -416,6 +492,34 @@ class Execution:
 class Engine:
     def __init__(self, journal, execution, args):
         self.journal, self.execution, self.args = journal, execution, args
+
+    def collect_details(self, now, entry_pending=None):
+        # One read-only enrichment per turn, after orders/TPs; never on entry's
+        # critical path. The existing provider pacer and 429 cooldown still apply.
+        if not self.args.live or now < getattr(self, 'details_next_at', 0) or (entry_pending and entry_pending()):
+            return
+        jobs = self.journal.jobs()
+        if any(j['state'] in ('new', 'signed') or j.get('exit_state') == 'signed' for j in jobs):
+            return  # Never put reporting requests between sending and confirmation.
+        for job in sorted(jobs, key=lambda j: j.get('created', 0), reverse=True):
+            confirmed = job.get('buy_confirmed') or job['state'] in ('confirmed', 'publishing', 'uncertain', 'posted')
+            if not confirmed:
+                continue
+            for side in ('buy', 'sell'):
+                if side == 'sell' and job.get('exit_state') != 'sold':
+                    continue
+                key = side + '_details'
+                if key in job or job.get(key + '_retry_at', 0) > now:
+                    continue
+                self.details_next_at = now + 5
+                try:
+                    job[key] = self.execution.trade_details(job, side)
+                    job.pop(key + '_error', None)
+                except Exception as exc:
+                    job[key + '_error'] = str(exc) if isinstance(exc, RemoteError) else 'Détails indisponibles'
+                    job[key + '_retry_at'] = time.time() + max(300, (exc.retry_after or 0) if isinstance(exc, RemoteError) else 0)
+                self.journal.save(job)
+                return
 
     def step(self, now, entry_pending=None):
         tick_started = time.monotonic()
@@ -500,7 +604,8 @@ class Engine:
             job['exit_state'] = 'empty'
         else:
             quote = self.execution.exit_quote(job['mint'], amount)
-            value = Decimal(quote['otherAmountThreshold']) / 10**9 * Decimal(str(self.execution.sol_price()))
+            sol_usd = Decimal(str(self.execution.sol_price()))
+            value = Decimal(quote['otherAmountThreshold']) / 10**9 * sol_usd
             cost = Decimal(job['cost_usd']) * Decimal(amount) / Decimal(job['position_tokens'])
             job['mark_cost_usd'] = str(cost)
             job.pop('tp_error', None)
@@ -513,7 +618,7 @@ class Engine:
                     return
                 # Persist before broadcasting, just as for the buy; never sell twice after a timeout.
                 job['exit_tx'] = self.execution.sign_quote(quote)
-                job.update(exit_state='signed', exit_tokens=amount, exit_trigger_usd=str(value))
+                job.update(exit_state='signed', exit_tokens=amount, exit_trigger_usd=str(value), exit_sol_usd=str(sol_usd))
                 print(f'TP +{self.args.take_profit}% déclenché : vente totale de la position {job["mint"]}', flush=True)
             else:
                 job['exit_state'] = 'watching'
@@ -734,6 +839,7 @@ def run_repost(args):
             except queue.Empty:
                 pass
             engine.step(time.time(), entry_pending=lambda: not events.empty())
+            engine.collect_details(time.time(), entry_pending=lambda: not events.empty())
     finally:
         stop.set()
         journal.db.close()

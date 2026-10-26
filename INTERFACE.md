@@ -42,6 +42,21 @@ Le PnL est **une estimation** basée sur la dernière cotation minimale et le co
 
 « Vider l’affichage » masque les lignes de journal de l’écran, sans effacer les positions ni les journaux d’exécution. La fermeture d’un onglet navigateur ne ferme pas le serveur ni le bot : utiliser Arrêter, puis Ctrl+C dans le terminal pour fermer l’interface.
 
+## Détails d’une position : MC, heures et transactions
+
+Dans Positions → En cours ou Historique, cliquer sur **Détails** à droite de la ligne. La fiche se met à jour pendant le fonctionnement du hub et affiche :
+
+- Le **MC du callout**, rapporté par pump.fun et enregistré à la détection. Le champ historique du journal `entry_mc` désigne ce MC du caller, pas le prix d’exécution de l’achat.
+- Le **MC d’entrée estimé**, calculé avec le coût USD enregistré, la quantité réellement reçue dans la transaction et l’offre du token relevée après confirmation.
+- Le **MC de sortie estimé**, calculé après une vente confirmée par le bot avec les quantités réellement vendues et les SOL reçus. Les changements de solde SOL sont corrigés des frais réseau et des mouvements de réserve de loyer des comptes de tokens appartenant au wallet. La conversion USD utilise la référence SOL/USD enregistrée au déclenchement du TP, pas un prix historique récupéré après coup.
+- Les heures de bloc lorsque disponibles, l’écart estimé entrée/callout, le montant investi, les SOL reçus, le produit de vente estimé en USD, la latence et les liens publics d’achat/vente sur Solscan.
+
+Ces MC effectifs incluent l’impact de la taille du swap et peuvent différer du MC spot affiché par pump.fun. L’offre est observée après la confirmation, pas reconstituée au bloc historique ; un changement d’offre peut modifier l’estimation. Le relevé de l’offre est daté dans la fiche. La dernière cotation du tableau reste une cotation : elle n’est pas présentée comme un montant de vente exécuté.
+
+Le hub récupère ces informations en lecture seule, après les opérations de trading, au plus une transaction par passe espacée de 5 secondes, avec priorité aux positions récentes. Aucun appel de détail n’est ajouté avant le premier envoi d’achat. Le même plafond RPC et les pauses 429 s’appliquent. Une récupération déjà en cours peut retarder un signal arrivant pendant cet appel, comme les autres requêtes du worker. Une erreur diffère l’enrichissement d’au moins 5 minutes et ne change pas l’état du trade.
+
+Les anciens achats peuvent être enrichis lorsque leurs signatures, coûts et métadonnées on-chain sont disponibles. Les ventes anciennes sans référence SOL/USD enregistrée peuvent afficher les SOL reçus mais aucun MC USD de sortie. Le MC historique du callout ne peut pas être inventé s’il manque. « Solde nul » ne prouve pas une vente au TP : aucune sortie n’est reconstituée à partir d’un simple solde nul. La simulation ne collecte pas de faux prix d’exécution. Les fiches restent consultables après arrêt depuis les données conservées dans `data`.
+
 ## Validation et limites
 
 Le démarrage/arrêt du hub en simulation, le vrai flux public, la recherche, le presse-papiers et l’aide ont été vérifiés dans Chromium. L’affichage desktop et mobile a été inspecté sans débordement horizontal. Les tests Python couvrent les contrôles locaux, les modes, la sélection des callers, la lecture des positions, la confidentialité des réponses et la distribution du flux sans élargir les filtres de trading.

@@ -84,6 +84,22 @@ class DashboardTest(unittest.TestCase):
         with sqlite3.connect(self.root/'data/repost_simulation.sqlite3') as db:
             self.assertEqual(json.loads(db.execute('SELECT data FROM jobs').fetchone()[0])['raw'],'NEVER_EXPOSE_RAW')
 
+    def test_details_export_only_numeric_allowlist_and_validated_explorer_links(self):
+        journal = r.Journal(str(self.root/'data/repost_simulation.sqlite3'), 0, 'owner')
+        journal.save(dict(mint=r.SOL, caller='Dior', state='posted', created=1, entry_mc=18000,
+                          signature='1' * 88, raw='PRIVATE_BUY_BYTES',
+                          exit_tx={'signature': '2' * 88, 'raw': 'PRIVATE_SELL_BYTES'},
+                          buy_details={'mc_estimate': '20000', 'slot': 123, 'raw': 'PRIVATE_DETAIL_BYTES'},
+                          sell_details={'mc_estimate': {'raw': 'PRIVATE_NESTED_BYTES'}, 'usd_estimate': '3'}))
+        journal.db.close()
+        job = self.control.snapshot()['jobs'][0]
+        self.assertEqual(job['entry_mc'], 18000)
+        self.assertEqual(job['buy_details']['mc_estimate'], '20000')
+        self.assertNotIn('mc_estimate', job['sell_details'])
+        self.assertEqual(job['buy_tx_url'], 'https://solscan.io/tx/' + '1' * 88)
+        self.assertEqual(job['sell_tx_url'], 'https://solscan.io/tx/' + '2' * 88)
+        self.assertNotIn('PRIVATE_', json.dumps(job))
+
     def test_old_open_position_is_not_hidden_by_history_limit(self):
         journal=r.Journal(str(self.root/'data/repost_simulation.sqlite3'),0,'owner')
         journal.save({'mint':'open-old','state':'posted','caller':'Dior','cost_usd':'2','exit_state':'watching'})

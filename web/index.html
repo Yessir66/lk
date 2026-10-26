@@ -234,7 +234,7 @@
                 <thead>
                   <tr>
                     <th>Token / caller</th>
-                    <th>Entrée</th>
+                    <th>Entrée / MC estimé</th>
                     <th>Valeur cotée</th>
                     <th>Statut</th>
                     <th></th>
@@ -361,6 +361,14 @@
       </footer>
     </main>
     <div id="toast" class="toast" role="status" hidden></div>
+    <dialog id="position-dialog" aria-labelledby="detail-title">
+      <div class="dialog-top">
+        <span class="eyebrow">DÉTAILS DE LA POSITION</span>
+        <button id="close-position" aria-label="Fermer les détails">×</button>
+      </div>
+      <h2 id="detail-title">Position</h2>
+      <div id="position-details"></div>
+    </dialog>
     <dialog id="help-dialog">
       <div class="dialog-top">
         <span class="eyebrow">CONNEXIONS</span

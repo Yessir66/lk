@@ -169,6 +169,97 @@ class RepostTest(unittest.TestCase):
         execution.jupiter.assert_called_once()
         execution.sign_quote.assert_called_once()
 
+    def details_execution(self, side='buy'):
+        execution = self.http_execution()
+        def token(index, amount, mint=MINT):
+            return dict(accountIndex=index, mint=mint, owner='owner',
+                        uiTokenAmount=dict(amount=str(amount), decimals=6))
+        tx = dict(blockTime=1002, slot=123, transaction={'message': {'accountKeys': [
+            {'pubkey': 'owner'}, {'pubkey': 'token-account'}, {'pubkey': 'other'}, {'pubkey': 'rent-refund-account'}]}},
+            meta=dict(err=None, fee=5000,
+                      preBalances=[1_000_000_000, 2039280, 0, 2039280],
+                      postBalances=[1_032_034_280, 2039280, 0, 0],
+                      preTokenBalances=[token(1, 1_050_000 if side == 'sell' else 50_000), token(3, 0, 'other-token')],
+                      postTokenBalances=[token(1, 50_000 if side == 'sell' else 1_050_000)]))
+        supply = {'context': {'slot': 200}, 'value': {'amount': '1000000000000', 'decimals': 6}}
+        execution.rpc = MagicMock(side_effect=lambda method, params: tx if method == 'getTransaction' else supply)
+        job = dict(mint=MINT, signature='sig', lamports=20_000_000, cost_usd='2',
+                   exit_tx={'signature': 'sell'}, exit_sol_usd='100')
+        return execution, job
+
+    def test_entry_mc_uses_actual_received_delta_and_observed_supply(self):
+        execution, job = self.details_execution()
+        detail = execution.trade_details(job, 'buy')
+        self.assertEqual(detail['token_raw'], '1000000')
+        self.assertEqual(Decimal(detail['mc_estimate']), Decimal('2000000'))
+        self.assertEqual(detail['block_time'], 1002)
+        self.assertEqual(detail['supply_slot'], 200)
+        execution.trade_details(job, 'buy')
+        self.assertEqual(execution.rpc.call_count, 2)  # Confirmed transaction and supply reused.
+
+    def test_sold_mc_uses_actual_proceeds_excluding_fee_and_rent_refund(self):
+        execution, job = self.details_execution('sell')
+        detail = execution.trade_details(job, 'sell')
+        self.assertEqual(detail['token_raw'], '1000000')
+        self.assertEqual(Decimal(detail['sol_amount']), Decimal('.03'))
+        self.assertEqual(Decimal(detail['usd_estimate']), Decimal('3'))
+        self.assertEqual(Decimal(detail['mc_estimate']), Decimal('3000000'))
+
+    def test_historic_sale_without_usd_reference_does_not_invent_usd_or_mc(self):
+        execution, job = self.details_execution('sell')
+        job.pop('exit_sol_usd')
+        detail = execution.trade_details(job, 'sell')
+        self.assertIsNone(detail['mc_estimate'])
+        self.assertIsNone(detail['usd_estimate'])
+        self.assertEqual(Decimal(detail['sol_amount']), Decimal('.03'))
+
+    def test_failed_or_wrong_direction_transaction_has_no_execution_mc(self):
+        execution, job = self.details_execution('sell')
+        with self.assertRaises(r.RemoteError):
+            execution.trade_details(job, 'buy')
+        execution, job = self.details_execution()
+        tx = execution.rpc('getTransaction', [])
+        tx['meta']['err'] = {'InstructionError': [1, 'failed']}
+        with self.assertRaises(r.RemoteError):
+            execution.trade_details(job, 'buy')
+
+    def test_details_wait_for_confirmed_trade_and_yield_to_new_entries(self):
+        self.add()
+        self.engine.collect_details(1001)
+        self.execution.trade_details.assert_not_called()
+        self.engine.step(1001)
+        self.engine.collect_details(1002)
+        self.execution.trade_details.assert_not_called()
+        self.execution.status.return_value = {'err': None, 'confirmationStatus': 'confirmed'}
+        self.engine.step(1002)
+        self.engine.collect_details(1003, entry_pending=lambda: True)
+        self.execution.trade_details.assert_not_called()
+        self.execution.trade_details.return_value = {'mc_estimate': '20000'}
+        self.engine.collect_details(1003)
+        self.assertEqual(self.job()['buy_details']['mc_estimate'], '20000')
+        self.engine.collect_details(1004)
+        self.execution.trade_details.assert_called_once()
+        self.assertEqual(self.execution.prepare.call_count, 1)
+
+    def test_details_provider_failure_preserves_trade_and_sets_retry(self):
+        self.confirmed()
+        self.execution.trade_details.side_effect = r.RemoteError('RPC Solana/getTokenSupply : HTTP 429', status=429, retry_after=600)
+        with patch.object(r.time, 'time', return_value=1003):
+            self.engine.collect_details(1003)
+        self.assertEqual(self.job()['state'], 'confirmed')
+        self.assertEqual(self.job()['buy_details_retry_at'], 1603)
+        self.engine.collect_details(1004)
+        self.execution.trade_details.assert_called_once()
+        self.args.live = False
+        self.engine.collect_details(1700)
+        self.execution.trade_details.assert_called_once()
+
+    def test_reporting_never_delays_another_pending_transaction_confirmation(self):
+        self.confirmed()
+        self.journal.save(dict(mint='another-mint', created=1002, state='signed'))
+        self.engine.collect_details(1003)
+        self.execution.trade_details.assert_not_called()
+
     def test_tp_waits_below_50_and_triggers_at_exact_boundary(self):
         self.tp_position()
         self.execution.exit_quote.return_value = {'otherAmountThreshold': '29999999'}

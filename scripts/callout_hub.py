@@ -243,6 +243,7 @@ class RepostWorker:
                 except (KeyError, TypeError, ValueError, OverflowError):
                     print('Signal de republication incomplet ignoré', flush=True)
                 engine.step(time.time(), entry_pending=lambda: not self.events.empty())
+                engine.collect_details(time.time(), entry_pending=lambda: not self.events.empty())
         except Exception as exc:
             self.error = type(exc).__name__
             self.stop.set()

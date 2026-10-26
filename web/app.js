@@ -13,6 +13,7 @@ let state = null,
   positionView = "open",
   paused = false;
 let frozenFeed = [],
+  detailMint = null,
   errorsOnly = false,
   logCutoff = 0,
   toastTimer;
@@ -242,9 +243,65 @@ function renderPositions(s) {
             ? "wait"
             : "";
       const mint = String(j.mint);
-      return `<tr><td><div class="token-main"><span class="token-avatar">${esc((j.symbol || j.name || mint)[0])}</span><div><div class="token-name" title="${esc(j.name || mint)}">${esc(j.symbol ? "$" + j.symbol : j.name || mint.slice(0, 7) + "…")}</div><div class="token-caller">${esc(j.caller)}</div></div></div></td><td><span class="money">${money(j.cost_usd)}</span><div class="money-sub">${age(j.created)}</div></td><td><span class="money">${money(j.mark_usd)}</span><div class="money-sub">${j.mark_checked_at ? "cotée il y a " + age(j.mark_checked_at) : "cotation indisponible"}</div></td><td><span class="state-tag ${kind}" title="${esc(status === "tp_paused" ? j.tp_error : j.failure_reason === "entry_expired" ? "Callout trop ancien pour préparer l’achat" : status === "empty" ? "Solde nul ; ne confirme pas une vente au TP" : status === "simulated" ? "Décision simulée, aucun achat" : names[status] || status)}">${esc(names[status] || status)}</span></td><td><a class="row-link" href="https://pump.fun/coin/${encodeURIComponent(mint)}" target="_blank" rel="noopener noreferrer" aria-label="Ouvrir le token sur pump.fun">${arrowIcon}</a></td></tr>`;
+      return `<tr><td><div class="token-main"><span class="token-avatar">${esc((j.symbol || j.name || mint)[0])}</span><div><div class="token-name" title="${esc(j.name || mint)}">${esc(j.symbol ? "$" + j.symbol : j.name || mint.slice(0, 7) + "…")}</div><div class="token-caller">${esc(j.caller)}</div><div class="money-sub">MC call : ${esc(compact(j.entry_mc))}</div></div></div></td><td><span class="money">${money(j.cost_usd)}</span><div class="money-sub">≈ ${esc(compact(j.buy_details?.mc_estimate))}</div><div class="money-sub">${age(j.created)}</div></td><td><span class="money">${money(j.mark_usd)}</span><div class="money-sub">${j.mark_checked_at ? "cotée il y a " + age(j.mark_checked_at) : "cotation indisponible"}</div></td><td><span class="state-tag ${kind}" title="${esc(status === "tp_paused" ? j.tp_error : j.failure_reason === "entry_expired" ? "Callout trop ancien pour préparer l’achat" : status === "empty" ? "Solde nul ; ne confirme pas une vente au TP" : status === "simulated" ? "Décision simulée, aucun achat" : names[status] || status)}">${esc(names[status] || status)}</span></td><td><button class="details-button" data-mint="${esc(mint)}" aria-label="Détails de ${esc(j.symbol || j.name || mint)}">Détails ${arrowIcon}</button></td></tr>`;
     })
     .join("");
+}
+function exactTime(value) {
+  const seconds = epoch(value);
+  return Number.isFinite(seconds)
+    ? new Date(seconds * 1000).toLocaleString("fr-FR", {
+        dateStyle: "short",
+        timeStyle: "medium",
+      })
+    : "Heure indisponible";
+}
+function renderDetails() {
+  if (!detailMint || !state) return;
+  const j = state.jobs.find((job) => job.mint === detailMint);
+  if (!j) {
+    $("position-details").textContent =
+      "Cette position n’est plus dans la fenêtre d’historique affichée.";
+    return;
+  }
+  $("detail-title").textContent =
+    (j.symbol ? "$" + j.symbol : j.name || j.mint.slice(0, 8) + "…") +
+    " · " +
+    j.caller;
+  const buy = j.buy_details,
+    sell = j.sell_details;
+  const entry = Number(buy?.mc_estimate),
+    called = Number(j.entry_mc);
+  const gap =
+    buy?.mc_estimate != null && j.entry_mc != null && entry > 0 && called > 0
+      ? (entry / called - 1) * 100
+      : null;
+  const txLink = (url, label) => {
+    // Only canonical explorer URLs may become clickable, even in an old journal.
+    return typeof url === "string" &&
+      /^https:\/\/solscan\.io\/tx\/[1-9A-HJ-NP-Za-km-z]{64,88}$/.test(url)
+      ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${label} ${arrowIcon}</a>`
+      : "";
+  };
+  const supplyInfo = buy || sell;
+  $("position-details").innerHTML = `
+    <p class="detail-address">${esc(j.mint)}</p>
+    <div class="detail-mc-grid">
+      <section><span>MC DU CALLOUT</span><strong>${esc(compact(j.entry_mc))}</strong><small>Rapporté par pump.fun</small><time>${esc(exactTime(j.created))}</time></section>
+      <section><span>TON MC D’ENTRÉE · ESTIMÉ</span><strong>${esc(compact(buy?.mc_estimate))}</strong><small>${buy ? "Montant investi / tokens réellement reçus × offre" : "Données non enregistrées ou récupération en attente"}</small><time>${esc(exactTime(buy?.block_time || j.confirmed_at))}</time></section>
+      <section><span>TON MC DE SORTIE · ESTIMÉ</span><strong>${esc(compact(sell?.mc_estimate))}</strong><small>${j.exit_state === "sold" ? "Calcul après la vente confirmée" : j.exit_state === "empty" ? "Solde nul : aucune vente attestée par le bot" : "Aucune vente confirmée par le bot"}</small><time>${esc(j.exit_state === "sold" ? exactTime(sell?.block_time || j.sold_at) : "—")}</time></section>
+    </div>
+    <dl class="detail-facts">
+      <div><dt>Écart estimé entrée / callout</dt><dd>${gap == null ? "Indisponible" : (gap >= 0 ? "+" : "") + gap.toFixed(2) + " %"}</dd></div>
+      <div><dt>Montant investi</dt><dd>${money(j.cost_usd)}</dd></div>
+      <div><dt>SOL reçus à la vente, hors frais réseau</dt><dd>${sell?.sol_amount == null ? "Indisponible" : esc(sell.sol_amount) + " SOL"}</dd></div>
+      <div><dt>Produit de vente estimé en USD</dt><dd>${money(sell?.usd_estimate)}</dd></div>
+      <div><dt>Détection → première tentative d’envoi</dt><dd>${j.detect_to_send_ms == null ? "Indisponible" : esc(j.detect_to_send_ms) + " ms"}</dd></div>
+      <div><dt>Publication demandée à</dt><dd>${esc(j.post_started ? exactTime(j.post_started) : "Non enregistrée")}</dd></div>
+    </dl>
+    <div class="detail-links">${txLink(j.buy_tx_url, "Transaction d’achat")}${txLink(j.sell_tx_url, "Transaction de vente")}<a href="https://pump.fun/coin/${encodeURIComponent(j.mint)}" target="_blank" rel="noopener noreferrer">Token sur pump.fun ${arrowIcon}</a></div>
+    <p class="dialog-note">Les MC d’exécution sont des estimations : quantité exécutée sur Solana, offre relevée après confirmation et référence SOL/USD enregistrée lors de la préparation de l’achat ou du déclenchement du TP. Ils peuvent différer du MC affiché par pump.fun. Offre relevée : ${esc(supplyInfo?.supply_observed_at ? exactTime(supplyInfo.supply_observed_at) : "indisponible")}. La dernière cotation du tableau n’est pas le montant de vente exécuté. Une donnée historique manquante reste indisponible.</p>
+    ${j.buy_details_error || j.sell_details_error ? `<p class="detail-warning">Récupération différée : ${esc(j.buy_details_error || j.sell_details_error)}</p>` : ""}`;
 }
 function renderFeed(s) {
   const available = paused ? frozenFeed : s.feed;
@@ -335,6 +392,7 @@ async function refresh() {
     }
     phaseUI(next);
     renderPositions(next);
+    if ($("position-dialog").open) renderDetails();
     renderFeed(next);
     renderLogs(next);
     renderCredentials(next);
@@ -454,6 +512,16 @@ $("clear-logs").addEventListener("click", () => {
 });
 $("help-button").addEventListener("click", () => $("help-dialog").showModal());
 $("close-help").addEventListener("click", () => $("help-dialog").close());
+$("positions").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-mint]");
+  if (!button) return;
+  detailMint = button.dataset.mint;
+  renderDetails();
+  $("position-dialog").showModal();
+});
+$("close-position").addEventListener("click", () =>
+  $("position-dialog").close(),
+);
 setInterval(() => {
   $("clock").textContent = new Date().toLocaleTimeString("fr-FR", {
     hour12: false,

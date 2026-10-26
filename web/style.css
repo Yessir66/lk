@@ -1206,6 +1206,100 @@ dialog::backdrop {
   background: #020603bd;
   backdrop-filter: blur(4px);
 }
+.details-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px;
+  background: #202b22;
+  color: #c3e0a8;
+  border: 1px solid #374536;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 10px;
+}
+#position-dialog {
+  max-width: 820px;
+  max-height: 90vh;
+  overflow: auto;
+}
+.detail-address {
+  overflow-wrap: anywhere;
+}
+.detail-mc-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.detail-mc-grid section {
+  background: #0f1611;
+  border: 1px solid #33452e;
+  border-radius: 8px;
+  padding: 16px;
+}
+.detail-mc-grid span,
+.detail-mc-grid small,
+.detail-mc-grid time {
+  display: block;
+  font-size: 10px;
+  line-height: 1.7;
+  color: #9bab93;
+}
+.detail-mc-grid strong {
+  display: block;
+  font-size: 23px;
+  font-weight: 500;
+  color: #d1efb7;
+  padding: 12px 0;
+}
+.detail-facts {
+  font-size: 12px;
+  margin: 20px 0;
+}
+.detail-facts > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 10px 0;
+  border-bottom: 1px solid #29372b;
+}
+.detail-facts dt {
+  color: #9bab93;
+}
+.detail-facts dd {
+  margin: 0;
+  text-align: right;
+}
+.detail-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.detail-links a {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  color: #c3e0a8;
+  font-size: 12px;
+}
+.detail-warning {
+  color: #efb49c;
+}
+@media (max-width: 650px) {
+  #position-dialog {
+    padding: 18px;
+  }
+  .detail-mc-grid {
+    grid-template-columns: 1fr;
+  }
+  .detail-facts > div {
+    flex-direction: column;
+    gap: 5px;
+  }
+  .detail-facts dd {
+    text-align: left;
+  }
+}
 .dialog-top {
   display: flex;
   align-items: center;

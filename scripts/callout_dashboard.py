@@ -69,10 +69,12 @@ def read_jobs(path):
     try:
         with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=.2) as db:
             rows = db.execute('SELECT data FROM jobs ORDER BY rowid DESC').fetchall()
-        # Never return signed transactions, signatures or raw exception bodies to the browser.
+        # Never return signed bytes or raw exception bodies. Public signatures
+        # are exposed only as validated explorer links, not arbitrary payloads.
         fields = ('mint', 'caller', 'name', 'symbol', 'state', 'created', 'buy_confirmed', 'cost_usd',
                   'position_tokens', 'entry_mc', 'mark_usd', 'mark_cost_usd', 'mark_checked_at', 'exit_state', 'sold_at',
-                  'attempts', 'failure_reason', 'tp_missing_basis', 'tp_error', 'tp_error_at')
+                  'attempts', 'failure_reason', 'tp_missing_basis', 'tp_error', 'tp_error_at',
+                  'confirmed_at', 'first_send_at', 'detect_to_send_ms', 'prepare_ms', 'broadcast_ms', 'post_started')
         jobs, historical = [], 0
         for row in rows:
             job = json.loads(row[0])
@@ -81,6 +83,18 @@ def read_jobs(path):
                 public = {k: job[k] for k in fields if k in job}
                 if public.get('tp_error'):
                     public['tp_error'] = safe_message(public['tp_error'])
+                for side in ('buy', 'sell'):
+                    detail = job.get(side + '_details')
+                    if isinstance(detail, dict):
+                        allowed = ('mc_estimate', 'usd_estimate', 'sol_amount', 'token_raw', 'token_decimals',
+                                   'block_time', 'slot', 'supply_raw', 'supply_slot', 'supply_observed_at')
+                        public[side + '_details'] = {k: detail[k] for k in allowed if k in detail
+                                                     and (detail[k] is None or number(detail[k]) is not None)}
+                    if job.get(side + '_details_error'):
+                        public[side + '_details_error'] = safe_message(job[side + '_details_error'])
+                    signature = job.get('signature') if side == 'buy' else job.get('exit_tx', {}).get('signature')
+                    if isinstance(signature, str) and re.fullmatch(r'[1-9A-HJ-NP-Za-km-z]{64,88}', signature):
+                        public[side + '_tx_url'] = 'https://solscan.io/tx/' + signature
                 jobs.append(public)
                 if not active:
                     historical += 1
