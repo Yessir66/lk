@@ -256,12 +256,13 @@ def edit(msg_id, text, echo=True):
 
 def token_info(mint):
     with concurrent.futures.ThreadPoolExecutor(3) as ex:
-        fj = ex.submit(get_json, f"https://lite-api.jup.ag/tokens/v2/search?query={mint}")
+        fj = ex.submit(get_json, f"https://lite-api.jup.ag/tokens/v2/search?query={mint}", 6, 2)
         fd = ex.submit(get_json, f"https://api.dexscreener.com/latest/dex/tokens/{mint}")
         fo = ex.submit(get_json, f"https://api.dexscreener.com/orders/v1/solana/{mint}")
         jup = next((t for t in (fj.result() or []) if t.get("id") == mint), None)
         # its own pairs only: coins quoted in this token (PRESIDENT, STONK...) list theirs here too
         pairs = [p for p in (fd.result() or {}).get("pairs") or [] if (p.get("baseToken") or {}).get("address") == mint]
+        pairs = [p for p in pairs if p.get("priceUsd")] or pairs          # DexScreener also lists priceless ghosts
         orders = fo.result() or {}
     return jup, pairs, orders
 
@@ -273,9 +274,15 @@ def card(mint, t_alert):
     main = max(pairs, key=lambda p: (p.get("liquidity") or {}).get("usd") or 0, default={})
     name = j.get("name") or (main.get("baseToken") or {}).get("name") or "?"
     sym = j.get("symbol") or (main.get("baseToken") or {}).get("symbol") or "?"
+    # Jupiter first, DexScreener when Jupiter does not answer
     created = j.get("createdAt") or (j.get("firstPool") or {}).get("createdAt")
-    age = (t_alert - calendar.timegm(time.strptime(created[:19], "%Y-%m-%dT%H:%M:%S"))) / 60 if created else None
-    mc = j.get("mcap") or main.get("marketCap")
+    born = calendar.timegm(time.strptime(created[:19], "%Y-%m-%dT%H:%M:%S")) if created else \
+        min((p["pairCreatedAt"] / 1000 for p in pairs if p.get("pairCreatedAt")), default=None)
+    age = (t_alert - born) / 60 if born else None
+    mc = j.get("mcap") or main.get("marketCap") or main.get("fdv")
+    price = j.get("usdPrice") or float(main.get("priceUsd") or 0) or None
+    launchpad = j.get("launchpad") or ("pump.fun" if mint.endswith("pump") or any(p.get("dexId") == "pumpfun" for p in pairs)
+                                       else main.get("dexId"))
     liq = (main.get("liquidity") or {}).get("usd") or j.get("liquidity")
     quote = (main.get("quoteToken") or {}).get("symbol")
     s5 = j.get("stats5m") or {}
@@ -288,16 +295,17 @@ def card(mint, t_alert):
     by_liq = sorted(pairs, key=lambda p: -((p.get("liquidity") or {}).get("usd") or 0))
     pump = [p["pairAddress"] for p in by_liq if p.get("dexId") in ("pumpfun", "pumpswap")]
     # scanned for the minute after the alert: pump.fun curve + PumpSwap, as in the tested rule, else the main pool
-    scan = pump or [p["pairAddress"] for p in by_liq[:1]]
-    d = {"mint": mint, "name": name, "symbol": sym, "age_min": age, "launchpad": j.get("launchpad") or main.get("dexId"),
-         "graduated": bool(j.get("graduatedAt")), "mc": mc, "liq": liq, "liq_mc": liq / mc * 100 if liq and mc else None,
+    scan = pump[:3] or [p["pairAddress"] for p in by_liq[:1]]
+    d = {"mint": mint, "name": name, "symbol": sym, "age_min": age, "launchpad": launchpad,
+         "graduated": bool(j.get("graduatedAt")) or any(p.get("dexId") == "pumpswap" for p in pairs), "mc": mc, "liq": liq, "liq_mc": liq / mc * 100 if liq and mc else None,
          "quote": quote, "holders": j.get("holderCount"), "top_pct": au.get("topHoldersPercentage"),
          "dev": j.get("dev"), "dev_pct": au.get("devBalancePercentage"), "dev_mints": au.get("devMints"),
          "dev_migrations": au.get("devMigrations"), "organic": j.get("organicScore"),
          "organic_buyers_5m": s5.get("numOrganicBuyers"), "buy_5m": s5.get("buyVolume"), "sell_5m": s5.get("sellVolume"),
          "mint_auth_off": au.get("mintAuthorityDisabled"), "freeze_auth_off": au.get("freezeAuthorityDisabled"),
-         "x": x, "site": site, "telegram": telegram, "dex_paid": paid, "price": j.get("usdPrice"),
-         "supply": j.get("circSupply") or j.get("totalSupply"), "known": bool(jup or pairs),
+         "x": x, "site": site, "telegram": telegram, "dex_paid": paid, "price": price,
+         "supply": j.get("circSupply") or j.get("totalSupply") or (mc / price if mc and price else None),
+         "known": bool(jup or pairs),
          "pools": [p["pairAddress"] for p in by_liq if p.get("pairAddress")], "scan": scan,
          "main_pool": main.get("pairAddress")}
     return d
@@ -786,7 +794,7 @@ def replay_path(d, t0, reply_to):
     after = [r for r in rows if r[0] > m_entry]
     if not before or not after:
         return send("ℹ️ rejeu : pas assez de bougies pour rejouer le suivi", reply_to)
-    mc_per_usd = d["mc"] / d["price"] if d["mc"] and d["price"] else None
+    mc_per_usd = d["supply"]
     at_alert = next((r[4] for r in reversed(rows) if r[0] < t0), before[0][1])
     p0, high, half, events = before[-1][4], 1.0, False, []
     for t, o, h, lo, c, v in after:
