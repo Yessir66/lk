@@ -939,14 +939,38 @@ def resolve(mints):
     return next((b for b in base if b), mints[0])
 
 
+diag_seen = {}
+
+
+def diag(m):
+    """The extension's reports: page loaded, messages it skipped and why (repeats summed over 30 s)."""
+    now = time.time()
+    if m["kind"] == "hello":
+        print(f"{hm(now)} extension connectée : onglet {m.get('page')} · salons surveillés "
+              f"{m.get('channels') or 'tous'} · {m.get('history')} messages déjà affichés (ignorés)", flush=True)
+        return
+    key = (m.get("why"), m.get("channel"))
+    n, last = diag_seen.get(key, (0, 0.0))
+    n += 1
+    if m.get("preview") is not None or now - last > 30:
+        preview = f" : « {plain_line(m['preview'][:100])} »" if m.get("preview") else ""
+        print(f"{hm(now)} extension : message ignoré, {m.get('why')} (salon {m.get('channel')})"
+              f"{f' ×{n}' if n > 1 else ''}{preview}", flush=True)
+        diag_seen[key] = (0, now)
+    else:
+        diag_seen[key] = (n, last)
+
+
 def on_message(m, source):
     """A message from the extension or Telegram -> scout its token once."""
     text, links = m.get("text") or "", m.get("links") or []
     ts = (m.get("ts") or time.time() * 1000) / 1000
     mints = find_mints(text, links)
     if not mints:
+        print(f"{hm(time.time())} message sans adresse de token ({source}) : « {plain_line(text[:100])} »", flush=True)
         return "pas d'adresse"
     if time.time() - ts > MAX_LAG:
+        print(f"{hm(time.time())} message de {hm(ts)} ignoré : plus de {MAX_LAG} s", flush=True)
         return "message trop ancien"
     mint = mints[0] if mints[0].endswith(("pump", "bonk")) else resolve(mints)
     with lock:
@@ -956,6 +980,7 @@ def on_message(m, source):
             seen[mint], fresh = ts, True
     if not fresh:
         journal({"type": "later_message", "mint": mint, "source": source, "text": text[:300]})
+        print(f"{hm(time.time())} {mint[:8]}… déjà traité : message noté dans le journal", flush=True)
         return "déjà vu"
     print(f"{hm(time.time())} alerte {mint} ({source}, message de {hm(ts)})", flush=True)
     threading.Thread(target=scout, args=(mint, ts, source, text), daemon=True).start()
@@ -988,6 +1013,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             m = json.loads(raw)
         except json.JSONDecodeError:
             m = {"text": raw}
+        if m.get("kind"):
+            diag(m)
+            return self._reply(200, "ok")
         self._reply(200, on_message(m, "discord"))
 
     def log_message(self, *a):
