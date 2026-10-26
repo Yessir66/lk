@@ -14,5 +14,8 @@ function post(msg) {
     .catch(e => console.warn(`alert_scout.py injoignable (lancé ?) : ${e.message}`));
 }
 
-post({kind: "sw", channels: SCOUT_CHANNELS});         // each time Chrome starts the extension
+// on install / reload (↻) and when Chrome starts, not each time Chrome wakes this worker for a message
+const hello = () => post({kind: "sw", channels: SCOUT_CHANNELS});
+chrome.runtime.onInstalled.addListener(hello);
+chrome.runtime.onStartup.addListener(hello);
 chrome.runtime.onMessage.addListener(msg => { post(msg); });
