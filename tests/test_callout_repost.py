@@ -20,6 +20,11 @@ def call(identity='one', mint=MINT, created=1000):
 
 class RepostTest(unittest.TestCase):
     def setUp(self):
+        # Engine tests use explicit synthetic epoch times; don't mix in real
+        # microseconds at exact retry boundaries unless a test advances the clock.
+        clock = patch.object(r.time, 'monotonic', return_value=10)
+        clock.start()
+        self.addCleanup(clock.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.path = str(Path(self.tmp.name) / 'state')
         self.journal = r.Journal(self.path, 990, 'owner')
@@ -61,6 +66,108 @@ class RepostTest(unittest.TestCase):
         self.execution.exit_quote.return_value = {'otherAmountThreshold': '30000000'}
         self.execution.sign_quote.return_value = dict(raw='signed-sell', signature='sell-sig', last_valid_height=200)
         self.execution.status.return_value = None
+        self.execution.broadcast.reset_mock()  # Isolate subsequent sell broadcasts from the initial buy.
+
+    def test_first_send_is_immediate_and_persisted_without_status_or_height_probe(self):
+        self.add()
+        def broadcast(raw):
+            # A second database connection sees committed bytes before the RPC call.
+            recovered = r.Journal(self.path, 1002, 'owner')
+            try:
+                saved = recovered.jobs()[0]
+                self.assertEqual(saved['state'], 'signed')
+                self.assertEqual(saved['raw'], raw)
+                self.assertIn('first_send_at', saved)
+            finally:
+                recovered.db.close()
+        self.execution.broadcast.side_effect = broadcast
+        self.engine.step(1001)
+        self.execution.broadcast.assert_called_once_with('same-signed-bytes')
+        self.execution.status.assert_not_called()
+        self.execution.expired.assert_not_called()
+        self.assertIn('detect_to_send_ms', self.job())
+        self.assertIn('broadcast_ms', self.job())
+
+    def test_first_send_timeout_recovers_same_signature_and_never_reprepares(self):
+        self.add()
+        self.execution.broadcast.side_effect = r.RemoteError('RPC Solana/sendTransaction : connexion impossible')
+        self.engine.step(1001)
+        self.assertEqual(self.job()['state'], 'signed')
+        self.journal.db.close()
+        self.journal = r.Journal(self.path, 1002, 'owner')
+        self.engine = r.Engine(self.journal, self.execution, self.args)
+        self.execution.broadcast.side_effect = None
+        self.execution.status.return_value = {'err': None, 'confirmationStatus': 'confirmed'}
+        self.engine.step(1012)
+        self.execution.prepare.assert_called_once()
+        self.execution.status.assert_called_once_with('sig')
+        self.execution.broadcast.assert_called_once()
+        self.assertTrue(self.job()['buy_confirmed'])
+
+    def test_latency_includes_queue_preparation_and_separates_rpc_response(self):
+        self.journal.add(dict(call(), _detected_at=1000.8), 1001, 60, 15, '{text}')
+        clock = [10.0]
+        prepared = self.execution.prepare.return_value
+        def prepare(mint):
+            clock[0] += 2
+            return prepared
+        def broadcast(raw):
+            clock[0] += .05
+        self.execution.prepare.side_effect = prepare
+        self.execution.broadcast.side_effect = broadcast
+        with patch.object(r.time, 'monotonic', side_effect=lambda: clock[0]):
+            self.engine.step(1001)
+        self.assertEqual(self.job()['detect_to_send_ms'], 2200)
+        self.assertEqual(self.job()['callout_to_send_ms'], 3000)
+        self.assertEqual(self.job()['prepare_ms'], 2000)
+        self.assertEqual(self.job()['broadcast_ms'], 50)
+        self.assertNotIn('confirmed_at', self.job())
+
+    def test_already_signed_exit_keeps_priority_over_fresh_buy(self):
+        self.journal.save(dict(mint='old-position', state='posted', created=999, exit_state='signed'))
+        self.add()
+        self.args.take_profit = Decimal('50')
+        order = []
+        self.execution.broadcast.side_effect = lambda raw: order.append('buy')
+        with patch.object(self.engine, 'manage_exit', side_effect=lambda job, now: order.append(job['mint'])):
+            self.engine.step(1001, entry_pending=lambda: True)
+        self.assertEqual(order, ['old-position', MINT, 'buy'])
+
+    def test_failed_signed_journal_commit_never_sends_unpersisted_bytes(self):
+        self.add()
+        save = self.journal.save
+        def failing_save(job):
+            if job['state'] == 'signed':
+                raise OSError('disk unavailable')
+            save(job)
+        with patch.object(self.journal, 'save', side_effect=failing_save):
+            with self.assertRaises(OSError):
+                self.engine.advance(self.job(), 1001)
+        self.execution.broadcast.assert_not_called()
+
+    def test_new_entry_runs_before_old_tp_and_yields_background_for_queued_calls(self):
+        self.journal.save(dict(mint='old-position', state='posted', created=999))
+        self.add()
+        self.args.take_profit = Decimal('50')
+        order = []
+        self.execution.broadcast.side_effect = lambda raw: order.append('buy')
+        with patch.object(self.engine, 'manage_exit', side_effect=lambda job, now: order.append(job['mint'])):
+            self.engine.step(1001, entry_pending=lambda: True)
+        self.assertEqual(order, [MINT, 'buy'])
+
+    def test_prepare_reports_stage_timings_without_extra_requests(self):
+        execution = self.http_execution()
+        execution.args.usd, execution.args.slippage_bps = Decimal('2'), 100
+        execution.sol_price = MagicMock(return_value=Decimal('100'))
+        execution.rpc = MagicMock(return_value={'value': 100_000_000})
+        execution.jupiter = MagicMock(return_value={'inputMint': r.SOL, 'outputMint': MINT, 'inAmount': '20000000'})
+        execution.sign_quote = MagicMock(return_value={'raw': 'bytes', 'signature': 'sig', 'last_valid_height': 100})
+        with patch.object(r.time, 'monotonic', side_effect=[10, 10.1, 10.2, 10.5, 10.9]):
+            prepared = execution.prepare(MINT)
+        self.assertEqual(prepared['prepare_timings_ms'], dict(price=100, balance=100, quote=300, build_sign=400))
+        execution.rpc.assert_called_once_with('getBalance', ['owner', {'commitment': 'confirmed'}])
+        execution.jupiter.assert_called_once()
+        execution.sign_quote.assert_called_once()
 
     def test_tp_waits_below_50_and_triggers_at_exact_boundary(self):
         self.tp_position()
@@ -244,7 +351,7 @@ class RepostTest(unittest.TestCase):
     def test_tp_retry_delay_starts_after_slow_failed_request(self):
         self.tp_position()
         self.execution.exit_quote.side_effect = r.RemoteError('Jupiter 429', status=429, retry_after=120)
-        with patch.object(r.time, 'monotonic', side_effect=[10,40]):
+        with patch.object(r.time, 'monotonic', side_effect=[10,10,40]):
             self.engine.step(1010)
         self.assertEqual(self.job()['exit_retry_at'], 1160)
 
@@ -382,7 +489,7 @@ class RepostTest(unittest.TestCase):
         self.add()
         self.engine.step(1001)
         self.assertEqual(self.job()['state'], 'signed')
-        self.execution.broadcast.assert_not_called()
+        self.execution.broadcast.assert_called_once_with('same-signed-bytes')
         self.journal.db.close()
         self.journal = r.Journal(self.path, 1100, 'owner')
         self.engine = r.Engine(self.journal, self.execution, self.args)
@@ -391,6 +498,7 @@ class RepostTest(unittest.TestCase):
         self.execution.prepare.assert_called_once()
         self.assertEqual(self.execution.broadcast.call_args_list[0].args, ('same-signed-bytes',))
         self.assertEqual(self.execution.broadcast.call_args_list[1].args, ('same-signed-bytes',))
+        self.assertEqual(self.execution.broadcast.call_count, 3)
         self.execution.pump_call.assert_not_called()
 
     def test_publish_only_after_confirmation_and_15_seconds(self):
@@ -415,6 +523,7 @@ class RepostTest(unittest.TestCase):
     def test_no_new_purchase_when_signature_expired(self):
         self.add()
         self.engine.step(1001)
+        self.execution.broadcast.reset_mock()
         self.execution.expired.return_value = True
         self.engine.step(1016)
         self.engine.step(1100)

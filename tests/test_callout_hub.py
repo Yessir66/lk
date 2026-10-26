@@ -87,14 +87,58 @@ class HubTest(unittest.TestCase):
         partial = call()
         partial.pop('name')
         partial.pop('mcap_now')
-        def enrich(c):
-            self.assertFalse(reader.repost_queue.empty())
-            return dict(c, name='Token', symbol='T', mcap_now=2200)
-        reader.pump.enrich.side_effect = enrich
         reader.route([partial])
         reader.route([dict(partial, calloutId='another-call')])
-        reader.pump.enrich.assert_called_once()
+        reader.pump.enrich.assert_not_called()
+        self.assertEqual(reader.repost_queue.qsize(), 2)
         self.assertEqual(reader.alerts_queue.qsize(), 2)
+        worker = h.AlertWorker(reader.alerts_queue, 'unused', print, threading.Event())
+        worker.metadata_pump = MagicMock()
+        worker.metadata_pump.enrich.side_effect = lambda c: dict(c, name='Token', symbol='T', mcap_now=2200)
+        self.assertEqual(worker.enrich(reader.alerts_queue.get())['mcap_now'], 2200)
+        self.assertEqual(worker.enrich(reader.alerts_queue.get())['mcap_now'], 2200)
+        worker.metadata_pump.enrich.assert_called_once()
+
+    def test_all_trades_are_queued_before_ui_writes_in_same_batch(self):
+        reader = self.reader()
+        reader.follows = reader.targets = {AUTHOR: 'caller'}
+        def observer(kind, data):
+            self.assertEqual(reader.repost_queue.qsize(), 2)
+        reader.event_sink = observer
+        reader.route([call(), call('two')])
+        self.assertEqual(reader.repost_queue.qsize(), 2)
+        self.assertIn('_detected_at', reader.repost_queue.get())
+
+    def test_slow_metadata_worker_does_not_block_next_feed_or_trade_batch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stop, blocked, release = threading.Event(), threading.Event(), threading.Event()
+            reader = self.reader()
+            worker = h.AlertWorker(reader.alerts_queue, str(Path(tmp) / 'alerts'), lambda text: None, stop)
+            def enrich(c):
+                blocked.set()
+                release.wait(3)
+                return dict(c, name='Token', mcap_now=2100)
+            worker.metadata_pump = SimpleNamespace(enrich=enrich)
+            thread = threading.Thread(target=worker.run)
+            try:
+                thread.start()
+                self.assertTrue(worker.ready.wait(2))
+                reader.follows = reader.targets = {AUTHOR: 'caller'}
+                reader.route([dict(call(created=time.time() + .01), name=None)])
+                self.assertTrue(blocked.wait(2))
+                reader.next_refresh = float('inf')
+                reader.next_backup = float('inf')
+                reader.pump.feed.return_value = [call('next', created=time.time() + .01)]
+                reader.step()
+                reader.pump.feed.assert_called_once()
+                self.assertEqual(reader.repost_queue.qsize(), 2)
+                self.assertFalse(release.is_set())
+            finally:
+                stop.set()
+                release.set()
+                thread.join(3)
+            self.assertFalse(thread.is_alive())
+            self.assertIsNone(worker.error)
 
     def test_restarts_do_not_enrich_or_requeue_durable_ids(self):
         reader = self.reader()
@@ -142,7 +186,7 @@ class HubTest(unittest.TestCase):
             trade = h.RepostWorker(trade_events, str(Path(tmp)/'trade'), execution, args, stop)
             alerts = h.AlertWorker(alert_events, str(Path(tmp)/'alerts'), lambda text: delivered.set(), stop)
             fake_engine = MagicMock()
-            fake_engine.step.side_effect = lambda now: (blocked.set(), release.wait(3))
+            fake_engine.step.side_effect = lambda now, **kwargs: (blocked.set(), release.wait(3))
             threads = [threading.Thread(target=w.run) for w in (trade, alerts)]
             with patch.object(h, 'Engine', return_value=fake_engine):
                 try:

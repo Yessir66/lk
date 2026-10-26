@@ -77,11 +77,31 @@ Le flux `/home-feed/new` est lu par une seule fonction, pour les deux usages. So
 
 Quand le flux global est refusé ou indisponible, les profils sont interrogés plus souvent (intervalle de 2 secondes), et la source en erreur attend avant de réessayer. Les 429 provoquent une pause progressive de 120, 240, 480, 960 puis 1800 secondes ; un délai `Retry-After` plus long est respecté. Un succès remet la progression à zéro. Les pauses sur les listes ne sont pas annulées par le rafraîchissement des abonnements. La durée réelle dépend des réponses de l’API et du nombre de profils ; le flux contient une fenêtre limitée et ne garantit pas d’inclure tous les callouts. Les lectures de secours peuvent détecter certains callouts plus tard, et la limite d’âge de 60 secondes pour les achats reste appliquée.
 
-Les métadonnées d’un même mint sont réutilisées pendant 30 secondes, tout en conservant celles présentes dans le nouveau callout lorsqu’elles sont disponibles. Les données du flux suffisent généralement pour produire l’alerte sans requête supplémentaire. Un signal d’achat est transmis avant un éventuel enrichissement de l’alerte.
+Les métadonnées d’un même mint sont réutilisées pendant 30 secondes, tout en conservant celles présentes dans le nouveau callout lorsqu’elles sont disponibles. Les données du flux suffisent généralement pour produire l’alerte sans requête supplémentaire. L’ensemble des signaux d’achat d’un lot est transmis avant les écritures d’événements de l’interface. Les métadonnées manquantes sont récupérées par le worker Telegram avec son propre client persistant ; cette attente ne bloque plus le lecteur du flux suivant.
 
 Les requêtes nécessaires à une opération réelle subsistent : prix/cotation, transaction, confirmation RPC, contrôle du solde et publication authentifiée. En cas de réponse de publication perdue, le contrôle du profil personnel reste nécessaire pour retrouver le callout et éviter une publication répétée. Le partage concerne les lectures des callers, pas ces étapes d’exécution. Une limitation des lectures de profils ne suspend donc pas le suivi TP ni les confirmations, qui utilisent leurs propres API.
 
 Réglages : `--feed-interval 2` et `--backup-interval 15`. La nouvelle architecture évite les lectures faites en double et utilise un seul programme pour répartir les requêtes. Aucun gain de latence mesuré sur le PC Windows n’est encore établi.
+
+## Optimisation simple de l’entrée
+
+Cette version applique automatiquement les améliorations suivantes, depuis l’interface comme depuis le terminal :
+
+- Une transaction d’achat nouvellement signée est sauvegardée puis immédiatement envoyée. Elle n’attend plus un autre tour de boucle et les deux appels `getSignatureStatuses` / `getBlockHeight` qui précédaient le premier envoi. Le contrôle du solde, la simulation et le preflight restent actifs.
+- Les nouveaux achats et leurs confirmations passent avant les contrôles TP de fond et les publications des anciennes positions. Une vente déjà signée conserve la priorité. Si un signal arrive pendant le contrôle d’une position, le moteur rend la main entre deux positions pour prendre le nouveau signal ; une requête réseau déjà en cours reste susceptible de le retarder. Les TP reprennent lorsque les signaux en attente sont traités.
+- Les connexions HTTP persistantes et les caches de prix SOL (5 secondes) et de métadonnées (30 secondes) sont conservés. Les plafonds RPC/Jupiter, les pauses 429, le slippage et les frais de priorité ne sont pas augmentés.
+
+Le gain certain dans le parcours est la suppression d’un tour de boucle et de deux appels RPC avant le premier envoi. Le gain en millisecondes dépend du réseau, des quotas et des traitements déjà en cours ; aucun délai d’exécution en conditions réelles n’est garanti. Le délai de republication de 15 secondes ne retarde pas l’achat.
+
+Le journal du terminal et celui de l’interface affichent désormais :
+
+- `LATENCE ENTRÉE` : détection→première tentative d’envoi, âge approximatif depuis le callout et temps de préparation. La préparation détaille le prix SOL, le solde, la cotation et la construction/signature ; les attentes de quota sont incluses dans ces durées.
+- `DIFFUSION ACHAT ACCEPTÉE` : le RPC a répondu sans erreur à l’envoi. Le temps de réponse est affiché ; cela ne prouve pas la confirmation.
+- `LATENCE CONFIRMATION` : délai entre la première tentative d’envoi et la confirmation observée par le bot, y compris la cadence de vérification.
+
+Les mesures sont enregistrées dans le journal SQLite et un résumé reste disponible avec `py scripts\callout_hub.py --status`. Les anciens achats sans mesure restent lisibles. L’âge calculé depuis le callout dépend aussi de la précision des horloges. En simulation, aucune latence d’achat réelle n’est annoncée.
+
+Pour mettre à jour sous Windows, arrêter le hub ou l’interface, remplacer les fichiers du projet en conservant `data`, puis relancer `py scripts\callout_dashboard.py` ou `py scripts\callout_hub.py --live` dans le terminal contenant la clé Jupiter. Aucun nouveau paramètre ni nouvelle dépendance n’est nécessaire. Les transactions dont la réponse est inconnue restent reprises avec les mêmes octets signés ; les anciens achats abandonnés ne sont pas rejoués.
 
 ## Vérification
 

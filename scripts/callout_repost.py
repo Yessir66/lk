@@ -124,6 +124,7 @@ class Journal:
         text = random.choice(CALLOUT_TEXTS) if template is None else template.format(caller=CALLERS[author], text=call.get('thesis') or f'Call de {CALLERS[author]}')
         self.save(dict(mint=mint, call_id=str(call['calloutId']), caller=CALLERS[author], text=text,
                        created=created, due=created + delay, state='new', retry_at=0,
+                       detected_at=call.get('_detected_at', now), queued_at=now,
                        name=call.get('name'), symbol=call.get('symbol'), entry_mc=call.get('marketCap')))
         return True
 
@@ -181,6 +182,9 @@ def show_status(path):
                 print('  Dernière erreur TP : ' + job['tp_error'], flush=True)
             if job.get('attempts'):
                 print(f'  Tentatives de préparation : {job["attempts"]}', flush=True)
+            if job.get('detect_to_send_ms') is not None:
+                print(f'  Latence détection→première tentative d’envoi : {job["detect_to_send_ms"]}ms ; '
+                      f'préparation : {job.get("prepare_ms", "?")}ms ; réponse RPC : {job.get("broadcast_ms", "?")}ms', flush=True)
     finally:
         db.close()
 
@@ -307,16 +311,24 @@ class Execution:
             raise RemoteError('La session pump.fun et le wallet ne correspondent pas')
 
     def prepare(self, mint):
+        started = time.monotonic()
         price = self.sol_price()
+        priced = time.monotonic()
         amount = lamports_for(self.args.usd, price)
         balance = self.rpc('getBalance', [self.owner, {'commitment': 'confirmed'}])['value']
+        balanced = time.monotonic()
         if balance < amount + 5_000_000:
             raise RemoteError('SOL insuffisant pour le montant et la réserve de frais')
         quote = self.jupiter(f'/swap/v1/quote?inputMint={SOL}&outputMint={mint}&amount={amount}&slippageBps={self.args.slippage_bps}')
         if quote.get('inputMint') != SOL or quote.get('outputMint') != mint or int(quote.get('inAmount', 0)) != amount:
             raise RemoteError('La cotation ne correspond pas au montant et au token demandés')
+        quoted = time.monotonic()
         signed = self.sign_quote(quote)
         signed.update(lamports=amount, cost_usd=str(Decimal(amount) / 10**9 * Decimal(str(price))))
+        signed['prepare_timings_ms'] = dict(price=round((priced - started) * 1000),
+                                          balance=round((balanced - priced) * 1000),
+                                          quote=round((quoted - balanced) * 1000),
+                                          build_sign=round((time.monotonic() - quoted) * 1000))
         return signed
 
     def build_swap(self, quote):
@@ -405,12 +417,22 @@ class Engine:
     def __init__(self, journal, execution, args):
         self.journal, self.execution, self.args = journal, execution, args
 
-    def step(self, now):
+    def step(self, now, entry_pending=None):
         tick_started = time.monotonic()
-        for job in self.journal.jobs():
+        # Work already waiting in the queue must not sit behind every historical TP quote.
+        # A single worker still serializes all wallet operations and provider quotas.
+        jobs = sorted(self.journal.jobs(), key=lambda j: 0 if j.get('exit_state') == 'signed'
+                      else 1 if j['state'] in ('new', 'signed') else 2)
+        for job in jobs:
+            # Yield between background jobs if a fresh callout arrived while a
+            # remote request was in flight. Never interrupt an ongoing transaction.
+            if (job['state'] not in ('new', 'signed') and job.get('exit_state') != 'signed'
+                    and entry_pending and entry_pending()):
+                break
+            job_now = now + time.monotonic() - tick_started
             if self.args.live and getattr(self.args, 'take_profit', None) is not None:
                 try:
-                    self.manage_exit(job, now)
+                    self.manage_exit(job, job_now)
                 except Exception as exc:
                     detail = str(exc) if isinstance(exc, RemoteError) else type(exc).__name__
                     job['tp_error'] = detail
@@ -420,10 +442,10 @@ class Engine:
                     self.journal.save(job)
             if job.get('exit_state') in ('signed', 'sold', 'empty', 'review'):
                 continue
-            if job['state'] in ('posted', 'simulated', 'failed', 'review') or job.get('retry_at', 0) > now:
+            if job['state'] in ('posted', 'simulated', 'failed', 'review') or job.get('retry_at', 0) > job_now:
                 continue
             try:
-                self.advance(job, now)
+                self.advance(job, job_now)
             except Exception as exc:
                 # Never print responses, headers, private keys or arbitrary exception text.
                 detail = str(exc) if isinstance(exc, RemoteError) else type(exc).__name__
@@ -516,18 +538,29 @@ class Engine:
                 job['attempts'] = job.get('attempts', 0) + 1
                 self.journal.save(job)
                 print(f'PRÉPARATION ACHAT : {job["caller"]}, tentative {job["attempts"]}', flush=True)
+                started = time.monotonic()
                 job.update(self.execution.prepare(job['mint']), state='signed')
-                print(f'ACHAT SIGNÉ : {job["mint"]}, en attente de diffusion/confirmation.', flush=True)
+                elapsed = time.monotonic() - started
+                job['prepare_ms'] = round(elapsed * 1000)
+                # Commit signed bytes before sending, including on the first attempt.
+                # No status/height lookup is needed for a transaction just constructed.
+                self.journal.save(job)
+                self.send_buy(job, now + elapsed)
             self.journal.save(job)
             return
         if job['state'] == 'signed':
+            status_started = time.monotonic()
             status = self.execution.status(job['signature'])
+            now += time.monotonic() - status_started
             if status and status.get('err') is not None:
                 job['state'] = 'failed'
             elif status and status.get('confirmationStatus') in ('confirmed', 'finalized'):
                 job['state'] = 'confirmed'
                 job['buy_confirmed'] = True
+                job.setdefault('confirmed_at', now)
                 print(f'Achat confirmé : {job["mint"]}', flush=True)
+                if job.get('first_send_at') is not None:
+                    print(f'LATENCE CONFIRMATION : {max(0, now - job["first_send_at"]):.2f}s depuis le premier envoi (confirmation observée par le bot).', flush=True)
             elif status:
                 # Already processed: wait for confirmation, never replace this transaction.
                 job['retry_at'] = now + 1
@@ -536,8 +569,7 @@ class Engine:
                 print(f'Transaction expirée/non retrouvée : vérifier {job["signature"]}', flush=True)
             else:
                 # All retries use the same signed transaction and therefore the same signature.
-                self.execution.broadcast(job['raw'])
-                job['retry_at'] = now + 2
+                self.send_buy(job, now)
             self.journal.save(job)
             return
         if job['state'] in ('publishing', 'uncertain'):
@@ -574,6 +606,28 @@ class Engine:
                 job['state'] = 'uncertain'
             self.journal.save(job)
 
+    def send_buy(self, job, now):
+        first = 'first_send_at' not in job
+        if first:
+            job['first_send_at'] = now
+            job['detect_to_send_ms'] = round(max(0, now - job.get('detected_at', now)) * 1000)
+            job['callout_to_send_ms'] = round(max(0, now - job['created']) * 1000)
+        # Persist the attempt even if the RPC response is lost. Recovery always checks
+        # this exact signature; it never reconstructs the purchase after an ambiguous send.
+        self.journal.save(job)
+        if first:
+            stages = ', '.join(f'{key}={value}ms' for key, value in job.get('prepare_timings_ms', {}).items())
+            print(f'LATENCE ENTRÉE : {job["caller"]} ; détection→envoi={job["detect_to_send_ms"]}ms ; '
+                  f'callout→envoi≈{job["callout_to_send_ms"]}ms ; préparation={job.get("prepare_ms", 0)}ms'
+                  + (f' ({stages}, attentes de quota incluses)' if stages else ''), flush=True)
+        started = time.monotonic()
+        self.execution.broadcast(job['raw'])
+        elapsed = time.monotonic() - started
+        job['broadcast_ms'] = round(elapsed * 1000)
+        job['retry_at'] = now + elapsed + (0 if first else 2)
+        self.journal.save(job)
+        print(f'DIFFUSION ACHAT ACCEPTÉE : {job["mint"]} ; réponse RPC en {job["broadcast_ms"]}ms, confirmation en attente.', flush=True)
+
 
 def detect(events, stop, since):
     pump, index, feed_after, list_after = Pump('browser'), 0, 0, 0
@@ -592,7 +646,7 @@ def detect(events, stop, since):
                 for call in rows:
                     try:
                         if call.get('author') in CALLERS and timestamp(call['createdAt']) >= since:
-                            events.put(call)
+                            events.put(dict(call, _detected_at=time.time()))
                     except (KeyError, TypeError, ValueError, OverflowError):
                         pass
             except RemoteError as exc:
@@ -679,7 +733,7 @@ def run_repost(args):
                 journal.add(call, time.time(), args.max_age, args.delay, args.text)
             except queue.Empty:
                 pass
-            engine.step(time.time())
+            engine.step(time.time(), entry_pending=lambda: not events.empty())
     finally:
         stop.set()
         journal.db.close()

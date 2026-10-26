@@ -27,7 +27,6 @@ class SharedReader:
         self.priority, self.others = deque(), deque()
         self.backup_count = 0
         self.seen_alerts, self.seen_reposts = set(), set()
-        self.metadata = {}
         self.event_sink, self.seen_ui = event_sink, set()
         self.last_health = 0
 
@@ -54,6 +53,18 @@ class SharedReader:
             print(f'Abonnements différés : {exc}', flush=True)
 
     def route(self, rows):
+        # Route the entire batch to trading before UI disk writes or Telegram work.
+        detected = time.time()
+        if self.repost:
+            for call in reversed(rows):
+                try:
+                    identity = str(call['calloutId'])
+                    if (call.get('author') in CALLERS and WALLET.fullmatch(call.get('coinMint', ''))
+                            and timestamp(call['createdAt']) >= self.repost_since and identity not in self.seen_reposts):
+                        self.repost_queue.put(dict(call, _detected_at=detected))
+                        self.seen_reposts.add(identity)
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    continue
         for call in reversed(rows):
             try:
                 identity = str(call['calloutId'])
@@ -69,21 +80,9 @@ class SharedReader:
                 if author not in self.targets:
                     continue
                 created = timestamp(call['createdAt'])
-                # Send to the trade worker first: metadata and Telegram cannot delay an order.
-                if self.repost and author in CALLERS and created >= self.repost_since and identity not in self.seen_reposts:
-                    self.repost_queue.put(dict(call))
-                    self.seen_reposts.add(identity)
                 if author not in self.follows or created < self.alert_since or identity in self.seen_alerts:
                     continue
                 enriched = dict(call, author_name=self.follows[author])
-                cached = self.metadata.get(mint)
-                if cached and time.monotonic() - cached[0] < 30:
-                    for key in ('name', 'symbol', 'mcap_now'):
-                        if enriched.get(key) is None:
-                            enriched[key] = cached[1].get(key)
-                if not enriched.get('name') or enriched.get('mcap_now') is None:
-                    enriched = self.pump.enrich(enriched)
-                self.metadata[mint] = (time.monotonic(), enriched)
                 self.alerts_queue.put(enriched)
                 self.seen_alerts.add(identity)
             except (KeyError, TypeError, ValueError, OverflowError):
@@ -95,9 +94,6 @@ class SharedReader:
             self.seen_reposts.clear()
         if len(self.seen_ui) > 20000:
             self.seen_ui.clear()
-        if len(self.metadata) > 1000:
-            cutoff = time.monotonic() - 30
-            self.metadata = {k: v for k, v in self.metadata.items() if v[0] >= cutoff}
 
     def backup_wallet(self):
         # One shared profile read, even when that caller belongs to both features.
@@ -171,6 +167,26 @@ class AlertWorker:
         self.events, self.path, self.sender, self.stop = events, path, sender, stop
         self.ready, self.since, self.error = threading.Event(), None, None
         self.known = set()
+        self.metadata, self.metadata_pump = {}, None
+
+    def enrich(self, call):
+        # This client belongs only to the alert thread; sessions are never shared
+        # across threads and coin metadata cannot block the public feed reader.
+        mint = call['coinMint']
+        cached = self.metadata.get(mint)
+        if cached and time.monotonic() - cached[0] < 30:
+            for key in ('name', 'symbol', 'mcap_now'):
+                if call.get(key) is None:
+                    call[key] = cached[1].get(key)
+        if not call.get('name') or call.get('mcap_now') is None:
+            if self.metadata_pump is None:
+                self.metadata_pump = Pump('browser')
+            call = self.metadata_pump.enrich(call)
+        if len(self.metadata) > 1000:
+            cutoff = time.monotonic() - 30
+            self.metadata = {k: v for k, v in self.metadata.items() if v[0] >= cutoff}
+        self.metadata[mint] = (time.monotonic(), dict(call))
+        return call
 
     def run(self):
         store = None
@@ -184,7 +200,7 @@ class AlertWorker:
                 try:
                     call = self.events.get(timeout=.25)
                     if not store.known(call):
-                        store.enqueue(call)
+                        store.enqueue(self.enrich(call))
                 except queue.Empty:
                     pass
                 except (KeyError, ValueError, TypeError, OverflowError):
@@ -226,7 +242,7 @@ class RepostWorker:
                     pass
                 except (KeyError, TypeError, ValueError, OverflowError):
                     print('Signal de republication incomplet ignoré', flush=True)
-                engine.step(time.time())
+                engine.step(time.time(), entry_pending=lambda: not self.events.empty())
         except Exception as exc:
             self.error = type(exc).__name__
             self.stop.set()
