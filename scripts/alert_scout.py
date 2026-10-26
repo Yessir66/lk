@@ -225,7 +225,7 @@ def tg(method, body):
 
 def plain_line(s):
     """without emoji, which the Windows console shows as ?"""
-    return re.sub(r"[\U00010000-\U0010FFFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]", "", s).strip()
+    return re.sub(r"[\U00010000-\U0010FFFF\u2300-\u23FF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]", "", s).strip()
 
 
 def show(text):
