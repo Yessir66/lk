@@ -945,6 +945,13 @@ diag_seen = {}
 def diag(m):
     """The extension's reports: page loaded, messages it skipped and why (repeats summed over 30 s)."""
     now = time.time()
+    if any(not isinstance(c, str) for c in m.get("channels") or []):
+        print("⚠️ extension/config.js : mets chaque identifiant de salon entre guillemets, par exemple "
+              "[\"1234567890123456789\"] (sans guillemets, un nombre aussi long est arrondi)", flush=True)
+    if m["kind"] == "sw":
+        print(f"{hm(now)} extension chargée dans Chrome · salons surveillés {m.get('channels') or 'tous'} · "
+              f"recharge maintenant l'onglet Discord (F5)", flush=True)
+        return
     if m["kind"] == "hello":
         print(f"{hm(now)} extension connectée : onglet {m.get('page')} · salons surveillés "
               f"{m.get('channels') or 'tous'} · {m.get('history')} messages déjà affichés (ignorés)", flush=True)

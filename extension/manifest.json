@@ -5,11 +5,21 @@
   "description": "Transmet les nouveaux messages du salon d'alertes Discord à alert_scout.py, sur ce PC. Lecture seule.",
   "content_scripts": [
     {
-      "matches": ["https://discord.com/channels/*"],
-      "js": ["config.js", "content.js"],
+      "matches": [
+        "https://discord.com/channels/*",
+        "https://*.discord.com/channels/*"
+      ],
+      "js": [
+        "config.js",
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ],
-  "background": {"service_worker": "background.js"},
-  "host_permissions": ["http://127.0.0.1/*"]
+  "background": {
+    "service_worker": "background.js"
+  },
+  "host_permissions": [
+    "http://127.0.0.1/*"
+  ]
 }

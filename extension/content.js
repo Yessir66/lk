@@ -9,7 +9,11 @@
   const MAX_AGE_MS = 3 * 60 * 1000;   // older messages are history (channel opened, scrolled up)
   const done = new Set();             // sent, or skipped for good
   const pending = new Set();          // new messages in a watched channel still without an address
-  const send = msg => chrome.runtime.sendMessage({port: SCOUT_PORT, ...msg});
+  if (typeof SCOUT_CHANNELS === "undefined") {
+    console.error("[scout] config.js illisible : corrige-le, puis ↻ dans chrome://extensions et F5 ici");
+    return;
+  }
+  const send = msg => chrome.runtime.sendMessage(msg);
 
   function channelOf(li) {
     const m = li.id.match(/^chat-messages-(\d+)-(\d+)$/);
@@ -20,7 +24,7 @@
     if (done.has(li.id)) return;
     const channel = channelOf(li);
     if (!channel) return;
-    if (SCOUT_CHANNELS.length && !SCOUT_CHANNELS.includes(channel)) {
+    if (SCOUT_CHANNELS.length && !SCOUT_CHANNELS.map(String).includes(channel)) {
       done.add(li.id);
       send({kind: "skip", why: "salon non surveillé", channel});
       return;
@@ -49,6 +53,7 @@
   const history = document.querySelectorAll(MESSAGE);
   history.forEach(li => done.add(li.id));               // on screen at load: history
   send({kind: "hello", page: location.pathname, channels: SCOUT_CHANNELS, history: history.length});
+  console.log(`[scout] actif · salons surveillés : ${SCOUT_CHANNELS.join(", ") || "tous"} · ${history.length} messages d'historique ignorés`);
   new MutationObserver(mutations => {
     const touched = new Set();
     for (const m of mutations) {
