@@ -82,7 +82,14 @@ async function request(path, data) {
   return body;
 }
 function hydrate(config, callers) {
-  for (const name of ["profile", "usd", "delay", "take_profit", "max_age"])
+  for (const name of [
+    "profile",
+    "usd",
+    "delay",
+    "take_profit",
+    "max_age",
+    "jupiter_rps",
+  ])
     $(name).value = config[name];
   $("slippage").value = config.slippage_bps / 100;
   setMode(config.mode);
@@ -130,6 +137,7 @@ function configuration() {
       (n) => n.value,
     ),
     slippage_bps: Math.round(Number($("slippage").value) * 100),
+    jupiter_rps: Number($("jupiter_rps").value),
   };
   for (const name of ["usd", "delay", "take_profit", "max_age"])
     values[name] = Number($(name).value);

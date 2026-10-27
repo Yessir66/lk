@@ -20,9 +20,9 @@ from callout_repost import CALLERS, ROOT
 from callout_hub import retained_path
 
 DEFAULTS = {'profile': 'Lelouch_0x', 'mode': 'simulation', 'usd': 2, 'delay': 15,
-            'take_profit': 50, 'slippage_bps': 100, 'max_age': 60, 'callers': list(CALLERS.values())}
+            'take_profit': 50, 'slippage_bps': 100, 'max_age': 60, 'jupiter_rps': .5, 'callers': list(CALLERS.values())}
 RANGES = {'usd': (.01, 10000), 'delay': (0, 300), 'take_profit': (.01, 10000),
-          'slippage_bps': (1, 5000), 'max_age': (1, 600)}
+          'slippage_bps': (1, 5000), 'max_age': (1, 600), 'jupiter_rps': (.1, 150)}
 
 
 def validate_config(value):

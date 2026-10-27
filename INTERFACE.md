@@ -42,6 +42,14 @@ Le PnL est **une estimation** basée sur la dernière cotation minimale et le co
 
 « Vider l’affichage » masque les lignes de journal de l’écran, sans effacer les positions ni les journaux d’exécution. La fermeture d’un onglet navigateur ne ferme pas le serveur ni le bot : utiliser Arrêter, puis Ctrl+C dans le terminal pour fermer l’interface.
 
+## Plafond local Jupiter
+
+Le champ **Plafond Jupiter** dans Configuration règle le nombre maximal de débuts de requêtes par seconde pour le worker : prix, cotations d’achat/vente et construction des transactions partagent ce même plafond. Le forfait gratuit affiché sur le portail en octobre 2026 indique une requête toutes les deux secondes : la valeur par défaut est donc **0,5**. Pour le forfait Developer à 10 requêtes/s, **8** laisse une marge si le reste de l’organisation ne consomme pas cette marge. Le quota est partagé avec les autres applications utilisant la même organisation.
+
+Arrêter le hub depuis l’interface, modifier le champ, puis démarrer à nouveau. Le réglage est sauvegardé localement et transmis au hub avec `--jupiter-rps`. Modifier ce champ ne modifie pas l’abonnement et les pauses 429 restent actives. Il n’est pas nécessaire de changer la clé API pour modifier le plafond local. Les anciens fichiers de réglages sans ce champ adoptent 0,5.
+
+Pour un lancement direct sans interface : `py scripts\callout_hub.py --live --jupiter-rps 0.5`, ou `--jupiter-rps 8` après activation effective d’un quota compatible. Le réglage Jupiter ne change ni la cadence du flux pump.fun ni le plafond du RPC Solana. Pendant l’arrêt du hub, le suivi TP est suspendu.
+
 ## Affichage de tes callers
 
 Le panneau « Mes callers » conserve séparément les 240 derniers callouts reçus des callers configurés pendant la session de l’interface. Ils ne sont plus évincés par les messages du flux général. Le filtre suit les callers cochés, identifiés par leur wallet même si le nom pump.fun change. Les callers décochés ne sont pas affichés dans ce filtre. Un compteur indique le nombre disponible avant recherche. Cette conservation concerne uniquement l’affichage et n’ajoute aucune requête pump.fun ni aucun achat rétroactif ; elle ne constitue pas un historique complet de pump.fun. Elle reste disponible lors d’un arrêt/redémarrage du hub dans la même interface, puis repart à zéro quand le serveur de l’interface est fermé.

@@ -341,6 +341,7 @@ def run_hub(args):
         mode = 'achats réels' if args.live else 'alertes seules' if args.alerts_only else 'achats simulés'
         tp = '' if args.alerts_only else f'TP +{args.take_profit}%, vente totale, '
         print(f'HUB : {label}, {mode}, {tp}flux unique toutes les {args.feed_interval}s minimum.', flush=True)
+        print(f'Plafond Jupiter local : {args.jupiter_rps:g} requête(s)/s, partagé entre prix, cotations et constructions.', flush=True)
         while not stop.is_set() and not (args.stop_file and Path(args.stop_file).exists()):
             reader.step()
             stop.wait(.1)

@@ -415,7 +415,16 @@ class RepostTest(unittest.TestCase):
         with patch.object(r.time, 'monotonic', return_value=10), patch.object(r.time, 'sleep') as sleep:
             execution.jupiter('/swap/v1/quote')
             execution.jupiter('/price/v3')
-        self.assertEqual(sleep.call_args_list[-1].args, (1.0,))
+        self.assertEqual(sleep.call_args_list[-1].args, (2.0,))
+
+    def test_custom_jupiter_pacing_applies_to_all_endpoints(self):
+        execution = self.http_execution()
+        execution.args.jupiter_rps = 8
+        execution.http.request.return_value = SimpleNamespace(status_code=200, headers={}, json=lambda: {})
+        with patch.object(r.time, 'monotonic', return_value=10), patch.object(r.time, 'sleep') as sleep:
+            execution.jupiter('/swap/v1/quote')
+            execution.jupiter('/swap/v1/swap', {})
+        self.assertEqual(sleep.call_args_list[-1].args, (.125,))
 
     def test_wallet_balance_cache_and_fresh_check_before_sell(self):
         execution = self.http_execution()

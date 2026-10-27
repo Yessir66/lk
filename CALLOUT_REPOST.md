@@ -112,7 +112,7 @@ La lecture des callouts et les cotations publiques sont vérifiables sans fonds.
 
 Les erreurs d’exécution identifient le service et l’opération : par exemple `RPC Solana/getTokenAccountsByOwner : HTTP 429` ou `Jupiter/swap/v1/quote : HTTP 429`. Les URL RPC, clés API, en-têtes et réponses arbitraires ne sont pas affichés. Les erreurs JSON-RPC exposent seulement le code numérique et le nom de la méthode.
 
-Le client espace les requêtes d’exécution : plafond local par défaut de 2 requêtes RPC/s et 1 requête Jupiter/s. Chaque fournisseur possède une pause partagée en cas de 429, même lorsque plusieurs positions sont suivies. Le délai augmente de 15, 30, 60, 120, 240 puis 300 secondes ; un `Retry-After` plus long est toujours respecté. Les jobs attendent ce délai au lieu de relancer leur étape toutes les 5 ou 10 secondes. Un refus JSON-RPC signalant une limitation est traité comme un 429.
+Le client espace les requêtes d’exécution : plafond local par défaut de 2 requêtes RPC/s et 0,5 requête Jupiter/s (une toutes les deux secondes, pour le forfait gratuit affiché en octobre 2026). Chaque fournisseur possède une pause partagée en cas de 429, même lorsque plusieurs positions sont suivies. Le délai augmente de 15, 30, 60, 120, 240 puis 300 secondes ; un `Retry-After` plus long est toujours respecté. Les jobs attendent ce délai au lieu de relancer leur étape toutes les 5 ou 10 secondes. Un refus JSON-RPC signalant une limitation est traité comme un 429.
 
 Les paramètres `--rpc-rps` et `--jupiter-rps` doivent correspondre aux quotas de ton accès. Ce plafond local n’accorde pas de quota supplémentaire au serveur. Le délai de contrôle TP peut donc dépasser 5 secondes, notamment avec plusieurs positions ou pendant une pause fournisseur.
 

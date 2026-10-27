@@ -26,7 +26,8 @@ class DashboardTest(unittest.TestCase):
 
     def test_validates_only_supported_fields_finite_values_and_configured_callers(self):
         for change in [{'mode':'other'}, {'usd':float('nan')}, {'usd':True}, {'profile':'--live'},
-                       {'callers':[]}, {'callers':['unknown']}, {'slippage_bps':1.5}, {'secret':'no'}]:
+                       {'callers':[]}, {'callers':['unknown']}, {'slippage_bps':1.5}, {'secret':'no'},
+                       {'jupiter_rps':0}, {'jupiter_rps':float('inf')}, {'jupiter_rps':151}]:
             with self.assertRaises(ValueError): d.validate_config(dict(d.DEFAULTS, **change))
         self.assertEqual(d.validate_config({'usd':3})['usd'],3)
 
@@ -41,9 +42,23 @@ class DashboardTest(unittest.TestCase):
             self.assertIsInstance(command,list)
             self.assertNotIn('shell',popen.call_args.kwargs)
             self.assertEqual(command[command.index('--slippage-bps')+1],'100')
+            self.assertEqual(command[command.index('--jupiter-rps')+1],'0.5')
             with self.assertRaises(ValueError): self.control.start(d.DEFAULTS)
             self.assertEqual(popen.call_count,1)
         self.assertFalse(any('secret' in key.lower() for key in json.loads((self.control.directory/'settings.json').read_text())))
+
+    def test_custom_jupiter_ceiling_is_forwarded_and_retained_after_restart(self):
+        process = MagicMock()
+        process.poll.return_value = None
+        with patch.object(d.subprocess, 'Popen', return_value=process) as popen, patch.object(d.threading, 'Thread'):
+            self.control.start(dict(d.DEFAULTS, jupiter_rps=8))
+        command = popen.call_args.args[0]
+        self.assertEqual(command[command.index('--jupiter-rps')+1], '8')
+        self.assertEqual(d.Dashboard(self.root).config['jupiter_rps'], 8)
+        old = dict(d.DEFAULTS)
+        old.pop('jupiter_rps')
+        (self.control.directory/'settings.json').write_text(json.dumps(old))
+        self.assertEqual(d.Dashboard(self.root).config['jupiter_rps'], .5)
 
     def test_live_requires_local_wallet_and_session_files(self):
         with patch.object(d.subprocess,'Popen') as popen:

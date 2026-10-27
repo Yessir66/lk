@@ -238,7 +238,7 @@ class Execution:
         remaining = limit['until'] - time.monotonic()
         if remaining > 0:
             raise RemoteError(f'{label} : pause fournisseur ({remaining:.0f}s restantes)', status=429, retry_after=remaining)
-        interval = 1 / getattr(self.args, 'jupiter_rps', 1) if bucket == 'jupiter' else 1 / getattr(self.args, 'rpc_rps', 2)
+        interval = 1 / getattr(self.args, 'jupiter_rps', .5) if bucket == 'jupiter' else 1 / getattr(self.args, 'rpc_rps', 2)
         time.sleep(max(0, limit['next'] - time.monotonic()))
         limit['next'] = time.monotonic() + interval
         try:
@@ -780,7 +780,7 @@ def parse_args(argv=None, configure=None):
     parser.add_argument('--token', default=str(ROOT / 'data' / 'pump_token.txt'))
     parser.add_argument('--rpc', default=os.getenv('SOLANA_RPC_URL', 'https://api.mainnet-beta.solana.com'))
     parser.add_argument('--rpc-rps', type=float, default=2, help='Plafond local des requêtes RPC par seconde')
-    parser.add_argument('--jupiter-rps', type=float, default=1, help='Plafond local des requêtes Jupiter par seconde')
+    parser.add_argument('--jupiter-rps', type=float, default=.5, help='Plafond Jupiter par seconde (défaut : 0,5, soit une requête toutes les 2 s)')
     parser.add_argument('--jupiter', default='https://api.jup.ag')
     parser.add_argument('--text', default=None, help='Remplacer le choix aléatoire : {text} et {caller} sont remplacés')
     parser.add_argument('--state')
