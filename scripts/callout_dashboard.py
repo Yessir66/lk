@@ -121,6 +121,7 @@ class Dashboard:
         self.phase = 'stopped'
         self.logs = deque(maxlen=400)
         self.feed = deque(maxlen=240)
+        self.caller_feed = deque(maxlen=240)
         self.ids = set()
         self.feed_count = 0
         self.health = {}
@@ -222,12 +223,15 @@ class Dashboard:
                         if identity not in self.ids:
                             self.ids.add(identity)
                             self.feed_count += 1
-                            self.feed.appendleft(dict(call, observed_at=event['at']))
+                            observed = dict(call, observed_at=event['at'])
+                            self.feed.appendleft(observed)
+                            if call.get('author') in CALLERS or call.get('author_name') in CALLERS.values():
+                                self.caller_feed.appendleft(observed)
                 except (ValueError, KeyError, TypeError):
                     pass
             self.offset = stream.tell()
         if len(self.ids) > 20000:
-            self.ids = {str(call['calloutId']) for call in self.feed}
+            self.ids = {str(call['calloutId']) for call in list(self.feed) + list(self.caller_feed)}
 
     def snapshot(self):
         with self.lock:
@@ -247,6 +251,7 @@ class Dashboard:
             return {'phase': self.phase, 'running': bool(self.process and self.process.poll() is None),
                     'config': config, 'callers': list(CALLERS.values()), 'started_at': self.started_at,
                     'health': self.health, 'feed_received': self.feed_count, 'feed': list(self.feed), 'logs': list(self.logs),
+                    'caller_feed': list(self.caller_feed), 'caller_wallets': dict(CALLERS),
                     'jobs': jobs, 'journal_error': error,
                     'summary': {'positions': len(positions), 'buys': len(confirmed), 'cost': cost, 'pnl': pnl},
                     'credentials': {'wallet': (self.root/'data/pump_wallet.txt').is_file(),

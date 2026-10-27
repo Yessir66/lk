@@ -42,6 +42,10 @@ Le PnL est **une estimation** basée sur la dernière cotation minimale et le co
 
 « Vider l’affichage » masque les lignes de journal de l’écran, sans effacer les positions ni les journaux d’exécution. La fermeture d’un onglet navigateur ne ferme pas le serveur ni le bot : utiliser Arrêter, puis Ctrl+C dans le terminal pour fermer l’interface.
 
+## Affichage de tes callers
+
+Le panneau « Mes callers » conserve séparément les 240 derniers callouts reçus des callers configurés pendant la session de l’interface. Ils ne sont plus évincés par les messages du flux général. Le filtre suit les callers cochés, identifiés par leur wallet même si le nom pump.fun change. Les callers décochés ne sont pas affichés dans ce filtre. Un compteur indique le nombre disponible avant recherche. Cette conservation concerne uniquement l’affichage et n’ajoute aucune requête pump.fun ni aucun achat rétroactif ; elle ne constitue pas un historique complet de pump.fun. Elle reste disponible lors d’un arrêt/redémarrage du hub dans la même interface, puis repart à zéro quand le serveur de l’interface est fermé.
+
 ## Détails d’une position : MC, heures et transactions
 
 Dans Positions → En cours ou Historique, cliquer sur **Détails** à droite de la ligne. La fiche se met à jour pendant le fonctionnement du hub et affiche :

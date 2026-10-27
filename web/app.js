@@ -13,6 +13,7 @@ let state = null,
   positionView = "open",
   paused = false;
 let frozenFeed = [],
+  frozenCallers = [],
   detailMint = null,
   errorsOnly = false,
   logCutoff = 0,
@@ -304,46 +305,63 @@ function renderDetails() {
     ${j.buy_details_error || j.sell_details_error ? `<p class="detail-warning">Récupération différée : ${esc(j.buy_details_error || j.sell_details_error)}</p>` : ""}`;
 }
 function renderFeed(s) {
-  const available = paused ? frozenFeed : s.feed;
+  const globalFeed = paused ? frozenFeed : s.feed;
+  const callerFeed = paused ? frozenCallers : s.caller_feed || s.feed;
+  const available = feedFilter === "all" ? globalFeed : callerFeed;
   $("metric-calls").textContent = s.feed_received ?? s.feed.length;
   $("feed-total").textContent = s.feed.length;
   const query = $("search").value.toLowerCase().trim();
   const selected = new Set(configuration().callers);
+  const callerName = (c) =>
+    s.caller_wallets?.[c.author] || c.author_name || "Inconnu";
+  const chosen = (c) => selected.has(callerName(c));
+  $("callers-total").textContent = callerFeed.filter(chosen).length;
   const rows = available
     .filter(
       (c) =>
-        (feedFilter === "all" || selected.has(c.author_name)) &&
-        [c.author_name, c.name, c.symbol, c.coinMint, c.thesis].some((v) =>
+        (feedFilter === "all" || chosen(c)) &&
+        [
+          callerName(c),
+          c.author_name,
+          c.name,
+          c.symbol,
+          c.coinMint,
+          c.thesis,
+        ].some((v) =>
           String(v || "")
             .toLowerCase()
             .includes(query),
         ),
     )
     .sort((a, b) => epoch(b.createdAt) - epoch(a.createdAt));
-  if (!available.length) {
+  if (!available.length && feedFilter === "all") {
+    $("feed").dataset.signature = "";
     if (!$("feed").querySelector(".feed-empty"))
       $("feed").innerHTML =
         '<div class="feed-empty"><div class="radar"><span></span><i></i></div><h3>À l’écoute du marché</h3><p>Les callouts reçus apparaîtront ici pendant l’exécution du hub.</p><div class="feed-example"><span class="dot lime"></span> Un flux commun. Deux usages.</div></div>';
     return;
   }
   if (!rows.length) {
+    $("feed").dataset.signature = "";
     $("feed").innerHTML =
-      '<div class="no-results">Aucun callout ne correspond à ce filtre.</div>';
+      feedFilter !== "all" && !query
+        ? '<div class="no-results">Aucun callout reçu pour les callers cochés dans cette session. Leurs callouts seront conservés ici séparément du flux général.</div>'
+        : '<div class="no-results">Aucun callout ne correspond à cette recherche.</div>';
     return;
   }
-  const signature = JSON.stringify(
+  const signature = JSON.stringify([
+    [...selected],
     rows.map((c) => [
       c.calloutId,
       Math.floor((Date.now() / 1000 - epoch(c.createdAt)) / 10),
     ]),
-  );
+  ]);
   if ($("feed").dataset.signature === signature) return;
   $("feed").dataset.signature = signature;
   $("feed").innerHTML = rows
     .map((c) => {
-      const name = c.author_name || "Inconnu";
-      const chosen = selected.has(name);
-      return `<article class="feed-card"><div class="feed-person"><span class="feed-avatar">${esc(name.slice(0, 2).toUpperCase())}</span><strong>${esc(name)}</strong>${chosen ? '<span class="feed-selected">SUIVI</span>' : ""}<span class="feed-age">il y a ${age(c.createdAt)}</span></div><div class="feed-symbol-row"><a class="feed-symbol" href="https://pump.fun/coin/${encodeURIComponent(c.coinMint)}" target="_blank" rel="noopener noreferrer">${esc(c.symbol ? "$" + c.symbol : c.name || c.coinMint.slice(0, 7) + "…")}</a><span class="feed-mc">${compact(c.marketCap)} MC</span><button class="feed-copy" data-mint="${esc(c.coinMint)}" title="Copier l’adresse du token">+ Copier CA</button></div><p class="feed-thesis">${esc(c.thesis || "Aucun commentaire.")}</p></article>`;
+      const name = callerName(c);
+      return `<article class="feed-card"><div class="feed-person"><span class="feed-avatar">${esc(name.slice(0, 2).toUpperCase())}</span><strong>${esc(name)}</strong>${chosen(c) ? '<span class="feed-selected">SUIVI</span>' : ""}<span class="feed-age">il y a ${age(c.createdAt)}</span></div><div class="feed-symbol-row"><a class="feed-symbol" href="https://pump.fun/coin/${encodeURIComponent(c.coinMint)}" target="_blank" rel="noopener noreferrer">${esc(c.symbol ? "$" + c.symbol : c.name || c.coinMint.slice(0, 7) + "…")}</a><span class="feed-mc">${compact(c.marketCap)} MC</span><button class="feed-copy" data-mint="${esc(c.coinMint)}" title="Copier l’adresse du token">+ Copier CA</button></div><p class="feed-thesis">${esc(c.thesis || "Aucun commentaire.")}</p></article>`;
     })
     .join("");
 }
@@ -468,6 +486,7 @@ document.querySelectorAll("[data-filter]").forEach((b) =>
 $("pause-feed").addEventListener("click", () => {
   paused = !paused;
   frozenFeed = state ? [...state.feed] : [];
+  frozenCallers = state ? [...(state.caller_feed || state.feed)] : [];
   $("pause-feed").innerHTML = paused ? playIcon : pauseIcon;
   $("pause-feed").title = paused
     ? "Reprendre l’affichage"

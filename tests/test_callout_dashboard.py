@@ -161,6 +161,21 @@ class DashboardTest(unittest.TestCase):
         self.control.ingest()
         self.assertEqual(len(self.control.feed),1)
 
+    def test_caller_history_survives_global_feed_overflow_and_repeated_events(self):
+        self.control.event_path = self.control.directory/'events-retention.jsonl'
+        caller = next(iter(d.CALLERS))
+        observed = {'calloutId': 'caller-one', 'author': caller, 'author_name': 'renamed-profile', 'coinMint': r.SOL}
+        events = [{'type': 'callout', 'at': 1, 'data': observed}]
+        events += [{'type': 'callout', 'at': i+2, 'data': {'calloutId': str(i), 'author': 'other', 'coinMint': r.SOL}} for i in range(300)]
+        events.append(events[0])
+        self.control.event_path.write_text(''.join(json.dumps(e)+'\n' for e in events))
+        state = self.control.snapshot()
+        self.assertEqual(len(state['feed']), 240)
+        self.assertFalse(any(c['calloutId'] == 'caller-one' for c in state['feed']))
+        self.assertEqual([c['calloutId'] for c in state['caller_feed']], ['caller-one'])
+        self.assertEqual(state['feed_received'], 301)
+        self.assertEqual(state['caller_wallets'][caller], d.CALLERS[caller])
+
     def test_ui_event_observer_does_not_change_trade_filters_or_request_metadata(self):
         import queue
         pump=MagicMock()
