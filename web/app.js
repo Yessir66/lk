@@ -7,6 +7,7 @@ const playIcon =
 const pauseIcon =
   '<svg class="icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M7 4v12M13 4v12"/></svg>';
 const token = document.querySelector('meta[name="app-token"]').content;
+let compatibleServer = false;
 let state = null,
   hydrated = false,
   feedFilter = "all",
@@ -433,6 +434,22 @@ function renderCredentials(s) {
 async function refresh() {
   try {
     const next = await request("/api/state");
+    compatibleServer = next.api_schema === 2 && next.config?.workflow_version === 2;
+    if (!compatibleServer) {
+      state = null;
+      hydrated = false;
+      $("version-banner").hidden = false;
+      $("version-banner").textContent = "Versions mélangées : cette page est récente, mais le serveur Python est ancien. Ferme le terminal de l’interface avec Ctrl+C, remplace le dossier scripts complet, puis lance LANCER_NOUVELLE_INTERFACE.bat. Ouvre l’adresse affichée par ce nouveau terminal.";
+      $("build-label").textContent = "Interface 2026.10.29.1 · ancien serveur détecté";
+      $("callers").textContent = "Liste indisponible tant que le serveur n’est pas à jour.";
+      $("selected-count").textContent = "—";
+      $("start").disabled = true;
+      $("stop").disabled = !next.running;
+      $("connection").textContent = "Serveur incompatible";
+      return;
+    }
+    $("version-banner").hidden = true;
+    $("build-label").textContent = "Serveur " + next.build + " · " + next.project_folder + " · PID " + next.pid;
     state = next;
     if (!hydrated) {
       hydrate(next.config, next.callers);
@@ -447,6 +464,7 @@ async function refresh() {
     $("connection").innerHTML = "<i></i> Connexion locale";
     if (next.journal_error) toast(next.journal_error, true);
   } catch (error) {
+    compatibleServer = false;
     $("connection").innerHTML = "<i></i> Serveur déconnecté";
     $("feed-live").innerHTML = "<i></i> DÉCONNECTÉ";
     $("feed-live").className = "live-label";
@@ -469,6 +487,7 @@ $("settings").addEventListener("input", () => {
   }
 });
 $("start").addEventListener("click", async () => {
+  if (!compatibleServer) return toast("Mets le serveur Python à jour avant de démarrer.", true);
   if (!$("settings").reportValidity()) return;
   const config = configuration();
   if (!config.callers.length)

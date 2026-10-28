@@ -1233,6 +1233,22 @@ dialog::backdrop {
   border-radius: 7px;
   font-size: 11px;
 }
+.page-heading .build-label {
+  font-size: 10px;
+  color: #93a38d;
+  overflow-wrap: anywhere;
+  max-width: 850px;
+}
+.version-banner {
+  padding: 18px;
+  margin-bottom: 24px;
+  background: #35201c;
+  color: #f0c1b7;
+  border: 1px solid #785041;
+  border-radius: 9px;
+  line-height: 1.7;
+  font-size: 13px;
+}
 #position-dialog {
   max-width: 820px;
   max-height: 90vh;

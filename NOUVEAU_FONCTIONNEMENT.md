@@ -52,6 +52,10 @@ Les ventes signées sont sauvegardées avant envoi et reprises avec la même sig
 
 ## Mise à jour Windows et migration
 
+Si l’ancienne liste persiste, utiliser **LANCER_NOUVELLE_INTERFACE.bat**, situé à la racine du ZIP, après extraction. Ce lanceur se place dans son propre dossier et ouvre le port **8770** afin de distinguer la nouvelle interface d’un serveur encore actif sur 8766. Il ne ferme aucun autre processus. Arrêter l’ancien bot avant de démarrer le nouveau.
+
+La version **2026.10.29.1** affiche le dossier absolu, le PID et la version du serveur sous le titre. `/api/version` expose aussi ces informations localement. Le navigateur bloque Démarrer s’il reçoit encore une ancienne API. Un serveur récent refuse une installation dont le moteur garde les dix anciens callers ou dont les nouveaux modules manquent. Pour un diagnostic sans démarrer le serveur ni le bot : `py scripts\callout_dashboard.py --diagnose`.
+
 Arrêter le bot, puis l’interface avec Ctrl+C. Télécharger la nouvelle version, remplacer `scripts` et `web` en conservant **tout `data`**, puis relancer :
 
 ```bat

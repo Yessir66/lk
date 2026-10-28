@@ -18,6 +18,7 @@ from callout_alerts import API, Pump, RemoteError, WALLET, retry_seconds, timest
 from callout_content import local_text, image_type
 
 SOL = 'So11111111111111111111111111111111111111112'
+WORKFLOW_VERSION = 2
 
 
 ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == 'scripts' else Path(__file__).resolve().parent

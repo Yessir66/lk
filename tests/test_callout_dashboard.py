@@ -69,6 +69,19 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual((config['buy_delay'],config['update_delay'],config['stop_loss'],config['delay']),(12,10,50,0))
         self.assertEqual((config['jupiter_rps'],config['usd']),(8,3))
 
+    def test_mixed_engine_is_rejected_before_any_runner_starts(self):
+        with patch.object(d.repost_module, 'WORKFLOW_VERSION', 1), patch.object(d.subprocess, 'Popen') as popen:
+            with self.assertRaisesRegex(ValueError, 'Installation mélangée'):
+                self.control.start(d.DEFAULTS)
+            popen.assert_not_called()
+
+    def test_installation_metadata_has_public_version_and_source_paths(self):
+        info=self.control.snapshot()
+        self.assertEqual(info['api_schema'],2)
+        self.assertEqual(info['build'],d.BUILD_VERSION)
+        self.assertTrue(info['dashboard_file'].endswith('callout_dashboard.py'))
+        self.assertTrue(info['engine_file'].endswith('callout_repost.py'))
+
     def test_live_requires_local_wallet_and_session_files(self):
         with patch.object(d.subprocess,'Popen') as popen:
             with self.assertRaises(ValueError): self.control.start(dict(d.DEFAULTS,mode='live'))
@@ -245,6 +258,9 @@ class HTTPTest(unittest.TestCase):
         self.assertIn(self.control.token.encode(),raw)
         self.assertEqual(self.request('GET','/app.js')[0],200)
         self.assertEqual(self.request('GET','/api/state')[0],200)
+        status, raw = self.request('GET','/api/version')
+        self.assertEqual(status,200)
+        self.assertEqual(json.loads(raw)['callers'],['lynk0x_','YourMistyy','narc'])
         self.assertEqual(self.request('GET','/../data/pump_wallet.txt')[0],404)
 
     def test_controls_require_local_origin_host_and_request_token(self):

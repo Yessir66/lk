@@ -17,7 +17,31 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import webbrowser
 
 from callout_repost import CALLERS, ROOT
+import callout_repost as repost_module
 from callout_hub import retained_path
+
+BUILD_VERSION = '2026.10.29.1'
+API_SCHEMA = 2
+EXPECTED_WALLETS = {
+    'CkPFGv2Wv1vwdWjtXioEgb8jhZQfs3eVZez3QCetu7xD',
+    '8NFh9y6qmMigMvRtT2KhrnCDo4BE2jMYcondAzmXZ26E',
+    'CxgPWvH2GoEDENELne2XKAR2z2Fr4shG2uaeyqZceGve',
+}
+
+
+def installation_info():
+    return {'build': BUILD_VERSION, 'api_schema': API_SCHEMA, 'pid': os.getpid(),
+            'project_folder': str(ROOT.resolve()), 'dashboard_file': str(Path(__file__).resolve()),
+            'engine_file': str(Path(repost_module.__file__).resolve())}
+
+
+def validate_installation():
+    if getattr(repost_module, 'WORKFLOW_VERSION', None) != 2 or set(CALLERS) != EXPECTED_WALLETS:
+        raise ValueError('Installation mélangée : scripts/callout_repost.py est ancien. Remplace tout le dossier scripts, '
+                         'puis relance le serveur. Fichier chargé : ' + str(Path(repost_module.__file__).resolve()))
+    missing = [name for name in ('callout_content.py', 'callout_workflow.py') if not (ROOT/'scripts'/name).is_file()]
+    if missing:
+        raise ValueError('Installation incomplète : ' + ', '.join(missing))
 
 DEFAULTS = {'profile': 'Lelouch_0x', 'mode': 'simulation', 'usd': 2, 'delay': 0, 'buy_delay': 12, 'update_delay': 10,
             'take_profit': 50, 'stop_loss': 50, 'rewrite_mode': 'local', 'workflow_version': 2,
@@ -156,6 +180,7 @@ class Dashboard:
             self.logs.append({'at': time.time(), 'level': level, 'message': message})
 
     def start(self, value):
+        validate_installation()
         config = validate_config(value)
         with self.lock:
             if self.process and self.process.poll() is None:
@@ -269,7 +294,7 @@ class Dashboard:
             cost = sum(number(j.get('mark_cost_usd', j.get('cost_usd'))) for j in positions) if known_costs else None
             marked = [j for j in positions if not j.get('tp_error') and time.time() - (number(j.get('mark_checked_at')) or 0) < 60 and number(j.get('mark_usd')) is not None and number(j.get('mark_cost_usd', j.get('cost_usd'))) is not None]
             pnl = sum(number(j['mark_usd']) - number(j.get('mark_cost_usd', j.get('cost_usd'))) for j in marked) if marked and len(marked) == len(positions) else None
-            return {'phase': self.phase, 'running': bool(self.process and self.process.poll() is None),
+            return {**installation_info(), 'phase': self.phase, 'running': bool(self.process and self.process.poll() is None),
                     'config': config, 'callers': list(CALLERS.values()), 'started_at': self.started_at,
                     'health': self.health, 'feed_received': self.feed_count, 'feed': list(self.feed), 'logs': list(self.logs),
                     'caller_feed': list(self.caller_feed), 'caller_wallets': dict(CALLERS),
@@ -322,6 +347,8 @@ def make_server(controller, port=8765):
                 return self.reply(403, {'error': 'Accès local uniquement.'})
             if self.path == '/api/state':
                 return self.reply(200, controller.snapshot())
+            if self.path == '/api/version':
+                return self.reply(200, {**installation_info(), 'callers': list(CALLERS.values())})
             assets = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8'), '/favicon.svg': ('favicon.svg', 'image/svg+xml')}
             if self.path not in assets:
                 return self.reply(404, {'error': 'Introuvable.'})
@@ -357,7 +384,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--no-browser', action='store_true')
+    parser.add_argument('--diagnose', action='store_true', help='Afficher la version et les fichiers chargés sans lancer le bot')
     args = parser.parse_args()
+    print(json.dumps({**installation_info(), 'callers': list(CALLERS.values())}, ensure_ascii=False, indent=2), flush=True)
+    try:
+        validate_installation()
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    if args.diagnose:
+        return
     controller = Dashboard()
     try:
         server = make_server(controller, args.port)
