@@ -1224,6 +1224,15 @@ dialog::backdrop {
   line-height: 1.7;
   margin: 7px 0 14px;
 }
+#rewrite_mode {
+  width: 100%;
+  border: 1px solid #374536;
+  background: #0c1210;
+  color: #c9d8c2;
+  padding: 10px;
+  border-radius: 7px;
+  font-size: 11px;
+}
 #position-dialog {
   max-width: 820px;
   max-height: 90vh;

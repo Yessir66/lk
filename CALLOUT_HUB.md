@@ -1,5 +1,7 @@
 # Un seul bot pour les alertes et la republication
 
+> **Nouvelle stratégie :** voir [NOUVEAU_FONCTIONNEMENT.md](NOUVEAU_FONCTIONNEMENT.md) pour les trois callers, les délais achat/update 12/10 s, les images et le SL −50 %. Les descriptions de l’ancienne stratégie ci-dessous restent historiques.
+
 Une interface graphique locale est disponible : voir [INTERFACE.md](INTERFACE.md).
 
 

@@ -26,7 +26,9 @@ class HubTest(unittest.TestCase):
         pump.following.return_value = {AUTHOR: 'caller', 'other': 'other-user'}
         pump.feed.return_value = [call()]
         pump.callouts.return_value = [call()]
-        return h.SharedReader(pump, 'owner', 900, 900, queue.Queue(), queue.Queue(), repost=repost)
+        reader = h.SharedReader(pump, 'owner', 900, 900, queue.Queue(), queue.Queue(), repost=repost)
+        reader.configured_only = False  # Keep the legacy alerts-only/fan-out cases under test.
+        return reader
 
     def test_one_feed_one_profile_read_fans_out_once_to_both_features(self):
         reader = self.reader()

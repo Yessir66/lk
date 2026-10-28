@@ -1,5 +1,7 @@
 # Callout Desk — interface locale Windows
 
+> **Nouvelle stratégie :** voir [NOUVEAU_FONCTIONNEMENT.md](NOUVEAU_FONCTIONNEMENT.md) pour les trois callers, les délais achat/update 12/10 s, les images et le SL −50 %. Les descriptions de l’ancienne stratégie ci-dessous restent historiques.
+
 ![Aperçu de l’interface au premier lancement](docs/dashboard.png)
 
 Le tableau de bord reprend la présentation sombre des captures : paramètres à gauche, positions et journal au centre, callouts à droite. Il pilote le hub existant avec un lecteur partagé. Il est accessible uniquement sur l’ordinateur qui le lance.

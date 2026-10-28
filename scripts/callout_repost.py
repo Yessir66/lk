@@ -1,48 +1,31 @@
 #!/usr/bin/env python3
-"""Acheter 2 USD puis publier un callout pump.fun, au plus tôt 15 s après l'original."""
+"""Acheter après 12 s, publier après confirmation, suivre les updates et les sorties."""
 import argparse
 import base64
 import json
 import os
 from pathlib import Path
 import queue
-import random
 import math
 import sqlite3
 import threading
 import time
 import uuid
+import re
 from decimal import Decimal, ROUND_DOWN
 
 from callout_alerts import API, Pump, RemoteError, WALLET, retry_seconds, timestamp
+from callout_content import local_text, image_type
 
 SOL = 'So11111111111111111111111111111111111111112'
-CALLOUT_TEXTS = [
-    "let's run it, seems like a good narra",
-    'narra looks clean on this one, sending it',
-    "like this narrative a lot, let's see where it goes",
-    "good narra, early enough, let's run it",
-    "this one has a real narrative, i'm in",
-    'grabbed a small bag early on this one',
-    "the timing on this one feels right, i'm in",
-    'chart looks healthy and the community is waking up',
-    'could see this ticker everywhere soon, taking a position',
-    'still early here, holding this one',
-]
+
 
 ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == 'scripts' else Path(__file__).resolve().parent
-# Addresses taken from the original repository's caller list; stable through profile renames.
+# Only these three profiles may trigger new purchases and publications.
 CALLERS = {
-    '6yVb4pxNwDfr6rovwNnBg3SyKSvDcHGD4WdFPN1JJBqm': '0xEthan',
-    'Be24Gbf5KisDk1LcWWZsBn8dvB816By7YzYF5zWZnRR6': 'chairman',
-    '5hAgYC8TJCcEZV7LTXAzkTrm7YL29YXyQQJPCNrG84zM': 'schoen',
-    '87rRdssFiTJKY4MGARa4G5vQ31hmR7MxSmhzeaJ5AAxJ': 'Dior',
-    'ardinRsN1mNYVeoJWTBsWeYeXvuR9UUDGMsCDKpb6AT': 'trunoest',
-    'CE44oKS3wpUerx8afyeii56u5oQjBLZknzm4Q2CYHUz9': 'ely',
-    'DuARUpsEzdVbVpSnbGipLJvWxaXUCPLDJDjNov6Rc6s6': 'HarryPaulDavies',
-    'EqBQhoU88ty3a3aDphDRCBuiRirjUsFSFi4UHGY64qvv': 'sadcrissy',
-    '2M2vLX34LXMg24dMEnjWHvRXS1tshpEDRWzmXgV8ENNZ': 'SossaDotKek',
-    'AH39BneW9UeWxQysUcwogQrYFdPvJuRVZ5w4ccq9SKfL': '_logjam',
+    'CkPFGv2Wv1vwdWjtXioEgb8jhZQfs3eVZez3QCetu7xD': 'lynk0x_',
+    '8NFh9y6qmMigMvRtT2KhrnCDo4BE2jMYcondAzmXZ26E': 'YourMistyy',
+    'CxgPWvH2GoEDENELne2XKAR2z2Fr4shG2uaeyqZceGve': 'narc',
 }
 
 
@@ -97,6 +80,7 @@ class Journal:
         self.db = sqlite3.connect(path)
         self.db.execute('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)')
         self.db.execute('CREATE TABLE IF NOT EXISTS jobs (mint TEXT PRIMARY KEY, data TEXT NOT NULL)')
+        self.db.execute('CREATE TABLE IF NOT EXISTS updates (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
         for key, value in [('since', str(since)), ('owner', owner)]:
             self.db.execute('INSERT OR IGNORE INTO meta VALUES (?,?)', (key, value))
         self.db.commit()
@@ -112,7 +96,7 @@ class Journal:
     def jobs(self):
         return [json.loads(r[0]) for r in self.db.execute('SELECT data FROM jobs ORDER BY rowid')]
 
-    def add(self, call, now, max_age, delay, template):
+    def add(self, call, now, max_age, delay, template, buy_delay=0, stop_loss=None):
         mint, author = call.get('coinMint', ''), call.get('author')
         if author not in CALLERS or not WALLET.fullmatch(mint):
             return False
@@ -121,11 +105,47 @@ class Journal:
             return False
         if self.db.execute('SELECT 1 FROM jobs WHERE mint=?', (mint,)).fetchone():
             return False
-        text = random.choice(CALLOUT_TEXTS) if template is None else template.format(caller=CALLERS[author], text=call.get('thesis') or f'Call de {CALLERS[author]}')
+        text = local_text(call) if template is None else template.format(caller=CALLERS[author], text=call.get('thesis') or '')
         self.save(dict(mint=mint, call_id=str(call['calloutId']), caller=CALLERS[author], text=text,
                        created=created, due=created + delay, state='new', retry_at=0,
                        detected_at=call.get('_detected_at', now), queued_at=now,
+                       buy_at=created + buy_delay, source_author=author, source_thesis=call.get('thesis') or '',
+                       source_media=call.get('mediaUrl'), content_ready=False, workflow_version=2,
+                       stop_loss=str(stop_loss) if stop_loss is not None else None,
                        name=call.get('name'), symbol=call.get('symbol'), entry_mc=call.get('marketCap')))
+        return True
+
+    def apply_policy(self):
+        for job in self.jobs():
+            if job.get('source_author') not in CALLERS:
+                job['publication_disabled'] = True
+                if job['state'] == 'new':
+                    job.update(state='failed', failure_reason='caller_removed')
+                self.save(job)  # Existing holdings still keep their TP/SL monitoring.
+
+    def save_update(self, update):
+        self.db.execute('INSERT OR REPLACE INTO updates VALUES (?,?)', (update['key'], json.dumps(update)))
+        self.db.commit()
+
+    def updates(self):
+        return [json.loads(r[0]) for r in self.db.execute('SELECT data FROM updates ORDER BY rowid')]
+
+    def add_update(self, event, now, delay):
+        row = self.db.execute('SELECT data FROM jobs WHERE mint=?', (event.get('mint'),)).fetchone()
+        if not row:
+            return False
+        job = json.loads(row[0])
+        if job.get('publication_disabled') or job.get('source_author') not in CALLERS or event.get('source_call_id') != job['call_id']:
+            return False
+        source = event['update']
+        created = timestamp(source['createdAt'])
+        identity = str(source['id'])
+        key = job['call_id'] + ':' + identity
+        if created < job['created'] or created > now + 5 or self.db.execute('SELECT 1 FROM updates WHERE id=?', (key,)).fetchone():
+            return False
+        self.save_update(dict(key=key, mint=job['mint'], source=source, created=created, due=created+delay,
+                              text=local_text(source, 'update', job.get('exit_state') in ('sold', 'empty')),
+                              state='new', retry_at=0, content_ready=False))
         return True
 
 
@@ -169,7 +189,7 @@ def show_status(path):
             job = json.loads(row[0])
             print(f'{job.get("caller", "?")} | {job["mint"]} | état : {job["state"]}', flush=True)
             if job.get('buy_confirmed') or job['state'] in ('confirmed', 'publishing', 'uncertain', 'posted'):
-                print('  Achat confirmé ; TP : ' + job.get('exit_state', 'en attente de contrôle'), flush=True)
+                print('  Achat confirmé ; sortie ' + ('SL' if job.get('exit_reason') == 'sl' else 'TP/SL' if job.get('stop_loss') else 'TP') + ' : ' + job.get('exit_state', 'en attente de contrôle'), flush=True)
             elif job.get('signature'):
                 print('  Transaction signée ; confirmation non établie par cet état.', flush=True)
             else:
@@ -284,7 +304,7 @@ class Execution:
         return self.json(self.args.jupiter.rstrip('/') + path, body, headers,
                          label=f'Jupiter{path.split("?")[0]}', bucket='jupiter')
 
-    def pump_call(self, fields=None):
+    def pump_call(self, fields=None, image=None, reply_to=None):
         # Re-read to allow session renewal without restarting or buying again.
         token = Path(self.args.token).read_text().strip()
         headers = {'Authorization': f'Bearer {token}', 'Cookie': f'auth_token={token}',
@@ -292,12 +312,28 @@ class Execution:
         data = None
         if fields is not None:
             boundary = '----callout' + uuid.uuid4().hex
-            data = ''.join(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n' for k, v in fields.items())
-            data = (data + f'--{boundary}--\r\n').encode()
+            data = ''.join(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n' for k, v in fields.items()).encode()
+            if image and image.get('image_path'):
+                path = Path(image['image_path']).resolve()
+                if not path.is_relative_to((ROOT / 'data' / 'content').resolve()):
+                    raise RemoteError('Chemin du média refusé')
+                if path.is_file() and path.stat().st_size <= 8*1024*1024:
+                    blob = path.read_bytes()
+                    mime = image_type(blob)
+                    if mime:
+                        suffix = {'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp'}[mime]
+                        data += (f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="callout.{suffix}"\r\n'
+                                 f'Content-Type: {mime}\r\n\r\n').encode() + blob + b'\r\n'
+            data += f'--{boundary}--\r\n'.encode()
             headers['Content-Type'] = f'multipart/form-data; boundary={boundary}'
+        if reply_to is not None and not re.fullmatch(r'[0-9a-fA-F-]{36}', str(reply_to)):
+            raise RemoteError('Identifiant du callout de destination invalide')
+        route = '/auth/my-profile' if fields is None else '/callout/create'
+        if reply_to is not None:
+            route = '/callout/' + reply_to + '/replies'
         try:
             response = self.http.request('GET' if fields is None else 'POST',
-                                         API + ('/auth/my-profile' if fields is None else '/callout/create'),
+                                         API + route,
                                          headers=headers, data=data, timeout=20)
             return response.status_code, response.text
         except Exception:
@@ -485,13 +521,85 @@ class Execution:
         return self.token_amount(mint, fresh=True) > 0
 
     def already_posted(self, job):
-        return any(c.get('coinMint') == job['mint'] and c.get('thesis') == job['text']
-                   and timestamp(c['createdAt']) >= job['created'] for c in self.pump.callouts(self.owner))
+        for c in self.pump.callouts(self.owner):
+            if c.get('coinMint') == job['mint'] and c.get('thesis') == job['text'] and timestamp(c['createdAt']) >= job['created']:
+                job['own_callout_id'] = c.get('calloutId')
+                return True
+        return False
+
+    def reply_exists(self, callout_id, update):
+        rows = self.pump.get(f'/callout/{callout_id}/replies?filter=AUTHOR_ONLY&sort=RECENCY&limit=100').get('replies', [])
+        return any(r.get('content') == update['text'] and timestamp(r['createdAt']) >= update['created'] for r in rows if r.get('createdAt'))
 
 
 class Engine:
     def __init__(self, journal, execution, args):
         self.journal, self.execution, self.args = journal, execution, args
+
+    def manage_updates(self, now, entry_pending=None):
+        if now < getattr(self, 'next_update_post', 0) or (entry_pending and entry_pending()):
+            return
+        jobs = {j['mint']: j for j in self.journal.jobs()}
+        if any(j['state'] == 'signed' or j.get('exit_state') == 'signed' for j in jobs.values()):
+            return
+        for update in self.journal.updates():
+            job = jobs.get(update['mint'])
+            if not job or job.get('publication_disabled') or job.get('source_author') not in CALLERS:
+                continue
+            if update['state'] not in ('new', 'publishing', 'uncertain') or update.get('retry_at', 0) > now or now < update['due'] or job['state'] != 'posted':
+                continue
+            try:
+                if not self.args.live:
+                    update['state'] = 'simulated'
+                    self.journal.save_update(update)
+                    continue
+                if not job.get('own_callout_id'):
+                    self.execution.already_posted(job)
+                    self.journal.save(job)
+                    if not job.get('own_callout_id'):
+                        update['retry_at'] = now + 15
+                        self.journal.save_update(update)
+                        return
+                if update['state'] in ('publishing', 'uncertain'):
+                    if self.execution.reply_exists(job['own_callout_id'], update):
+                        update['state'] = 'posted'
+                    elif now - update['post_started'] > 120:
+                        update['state'] = 'review'
+                    update['retry_at'] = now + 10
+                    self.journal.save_update(update)
+                    return
+                if job.get('exit_state') == 'review':
+                    update['retry_at'] = now + 60
+                    self.journal.save_update(update)
+                    return
+                closed = job.get('exit_state') in ('sold', 'empty')
+                if closed and not update.get('prepared_closed'):
+                    update['text'] = local_text(update['source'], 'update', True)
+                self.execution.check_auth()
+                update.update(state='publishing', post_started=now)
+                self.journal.save_update(update)
+                self.next_update_post = now + 6.1  # The replies route is limited to 10/min.
+                status, body = self.execution.pump_call({'content': update['text']}, image=update, reply_to=job['own_callout_id'])
+                if 200 <= status < 300:
+                    update['state'] = 'posted'
+                    update['published_at'] = now
+                    print(f'UPDATE PUBLIÉE : {job["caller"]} → {job["mint"]}', flush=True)
+                elif status in (401, 403, 429):
+                    update.update(state='new', retry_at=now+30)
+                elif status == 400 and update.get('image_path') and any(s in body for s in ('MEDIA_REJECTED', 'INVALID_IMAGE', 'UNSUPPORTED_MEDIA')):
+                    update.pop('image_path', None)
+                    update.update(state='new', retry_at=now+1, image_rejected=True)
+                elif 400 <= status < 500:
+                    update['state'] = 'failed'
+                else:
+                    update.update(state='uncertain', retry_at=now+10)
+                self.journal.save_update(update)
+                return
+            except Exception as exc:
+                update['retry_at'] = now + max(10, (exc.retry_after or 0) if isinstance(exc, RemoteError) else 0)
+                self.journal.save_update(update)
+                print('Update différée : ' + (str(exc) if isinstance(exc, RemoteError) else type(exc).__name__), flush=True)
+                return
 
     def collect_details(self, now, entry_pending=None):
         # One read-only enrichment per turn, after orders/TPs; never on entry's
@@ -574,7 +682,7 @@ class Engine:
                 job.update(exit_state='watching', exit_retry_at=now + self.args.tp_interval)
             elif status and status.get('confirmationStatus') in ('confirmed', 'finalized'):
                 job.update(exit_state='sold', sold_at=now)
-                print(f'TP CONFIRMÉ : 100 % de la position vendue, {job["mint"]}', flush=True)
+                print(f'{"SL" if job.get("exit_reason") == "sl" else "TP"} CONFIRMÉ : 100 % de la position vendue, {job["mint"]}', flush=True)
             elif status:
                 job['exit_retry_at'] = now + 1
             elif self.execution.expired(tx['last_valid_height']):
@@ -611,15 +719,20 @@ class Engine:
             job.pop('tp_error', None)
             job.update(mark_usd=str(value), mark_checked_at=now)
             target = cost * (1 + self.args.take_profit / 100)
-            if value >= target:
+            # SL uses the quoted expected output, not the slippage-adjusted floor:
+            # a wide tolerance must not trigger a stop before the market reaches it.
+            expected = Decimal(quote.get('outAmount', quote['otherAmountThreshold'])) / 10**9 * sol_usd
+            stop = job.get('stop_loss')
+            stopped = stop is not None and expected <= cost * (1 - Decimal(str(stop)) / 100)
+            if value >= target or stopped:
                 if self.execution.token_amount(job['mint'], fresh=True) < amount:
                     job['exit_retry_at'] = now + self.args.tp_interval
                     self.journal.save(job)
                     return
                 # Persist before broadcasting, just as for the buy; never sell twice after a timeout.
                 job['exit_tx'] = self.execution.sign_quote(quote)
-                job.update(exit_state='signed', exit_tokens=amount, exit_trigger_usd=str(value), exit_sol_usd=str(sol_usd))
-                print(f'TP +{self.args.take_profit}% déclenché : vente totale de la position {job["mint"]}', flush=True)
+                job.update(exit_state='signed', exit_tokens=amount, exit_trigger_usd=str(value), exit_sol_usd=str(sol_usd), exit_reason='sl' if stopped else 'tp')
+                print(f'{"SL" if stopped else "TP"} déclenché : vente totale de la position {job["mint"]}', flush=True)
             else:
                 job['exit_state'] = 'watching'
         job['exit_retry_at'] = now + (0 if job.get('exit_state') == 'signed' else self.args.tp_interval)
@@ -633,6 +746,8 @@ class Engine:
 
     def advance(self, job, now):
         if job['state'] == 'new':
+            if now < job.get('buy_at', 0):
+                return
             if now - job['created'] > self.args.max_age:
                 self.expire_entry(job)
             elif not self.args.live:
@@ -666,6 +781,10 @@ class Engine:
                 print(f'Achat confirmé : {job["mint"]}', flush=True)
                 if job.get('first_send_at') is not None:
                     print(f'LATENCE CONFIRMATION : {max(0, now - job["first_send_at"]):.2f}s depuis le premier envoi (confirmation observée par le bot).', flush=True)
+                self.journal.save(job)
+                if not job.get('publication_disabled') and now >= job['due']:
+                    self.advance(job, now)
+                return
             elif status:
                 # Already processed: wait for confirmation, never replace this transaction.
                 job['retry_at'] = now + 1
@@ -689,6 +808,8 @@ class Engine:
             self.journal.save(job)
             return
         if job['state'] == 'confirmed' and now >= job['due']:
+            if job.get('publication_disabled'):
+                return
             if not self.execution.holds(job['mint']):
                 job['retry_at'] = now + 3
                 self.journal.save(job)
@@ -697,10 +818,20 @@ class Engine:
             job.update(state='publishing', post_started=now)
             self.journal.save(job)
             # If this call times out/crashes, next step reconciles rather than posts twice.
-            status, body = self.execution.pump_call({'coinMint': job['mint'], 'thesis': job['text']})
+            fields = {'coinMint': job['mint'], 'thesis': job['text']}
+            status, body = (self.execution.pump_call(fields, image=job) if job.get('image_path') else self.execution.pump_call(fields))
             if 200 <= status < 300:
                 job['state'] = 'posted'
+                try:
+                    payload = json.loads(body)
+                    job['own_callout_id'] = payload.get('callout', {}).get('calloutId') or payload.get('calloutId')
+                except (ValueError, TypeError, AttributeError):
+                    pass
                 print(f'CALLOUT PUBLIÉ : {job["caller"]} → {job["mint"]}', flush=True)
+            elif status == 400 and job.get('image_path') and any(s in body for s in ('MEDIA_REJECTED', 'INVALID_IMAGE', 'UNSUPPORTED_MEDIA')):
+                job.pop('image_path', None)
+                job.update(state='confirmed', retry_at=now+1, image_rejected=True)
+                print('Image refusée : nouvelle tentative de publication du texte seul, sans racheter.', flush=True)
             elif status in (401, 403, 429) or (400 <= status < 500 and 'INSUFFICIENT_BALANCE' in body):
                 job.update(state='confirmed', retry_at=now + 30)
                 print(f'Publication refusée HTTP {status} ; achat conservé, nouvelle tentative sans racheter.', flush=True)
@@ -771,7 +902,11 @@ def parse_args(argv=None, configure=None):
     parser.add_argument('--profile', default='Lelouch_0x')
     parser.add_argument('--live', action='store_true', help='Effectuer réellement les achats et publications')
     parser.add_argument('--usd', type=Decimal, default=Decimal('2'))
-    parser.add_argument('--delay', type=float, default=15)
+    parser.add_argument('--delay', type=float, default=0, help='Délai minimal supplémentaire de publication depuis le callout (défaut : 0)')
+    parser.add_argument('--buy-delay', type=float, default=12, help='Attendre ce délai depuis le callout avant de préparer l’achat')
+    parser.add_argument('--update-delay', type=float, default=10, help='Délai minimal depuis une update du caller avant sa republication')
+    parser.add_argument('--rewrite-mode', choices=('local', 'ai'), default='local')
+    parser.add_argument('--stop-loss', type=Decimal, default=Decimal('50'), help='Perte en %% déclenchant la vente totale (défaut : 50)')
     parser.add_argument('--max-age', type=float, default=60, help='Ne pas acheter un callout découvert trop tard')
     parser.add_argument('--take-profit', type=Decimal, default=Decimal('50'), help='Gain en %% du coût USD déclenchant une vente totale (défaut : 50)')
     parser.add_argument('--tp-interval', type=float, default=5, help='Intervalle de contrôle du TP par position, en secondes')
@@ -793,6 +928,8 @@ def parse_args(argv=None, configure=None):
         parser.error('Les plafonds RPC et Jupiter doivent être positifs')
     if not args.take_profit.is_finite() or args.take_profit <= 0 or not math.isfinite(args.tp_interval) or args.tp_interval < 1:
         parser.error('TP et intervalle de contrôle invalides')
+    if not args.stop_loss.is_finite() or not 0 < args.stop_loss < 100 or any(not math.isfinite(n) or n < 0 for n in (args.buy_delay, args.update_delay)):
+        parser.error('Stop loss ou délais invalides')
     try:
         if args.text is not None:
             args.text.format(text='exemple', caller='exemple')
@@ -826,22 +963,31 @@ def run_repost(args):
     execution = Execution(args)
     path = args.state or str(ROOT / 'data' / ('repost_live.sqlite3' if args.live else 'repost_simulation.sqlite3'))
     journal = Journal(path, time.time(), execution.owner)
+    journal.apply_policy()
     engine = Engine(journal, execution, args)
     events, stop = queue.Queue(), threading.Event()
+    from callout_workflow import Workflow
+    workflow = Workflow(journal, args, events, stop)
     thread = threading.Thread(target=detect, args=(events, stop, journal.since), daemon=True)
-    print(f'{"RÉEL" if args.live else "SIMULATION"} : 10 callers, {args.usd} USD/token, délai minimal {args.delay}s. Profil {args.profile}', flush=True)
+    print(f'{"RÉEL" if args.live else "SIMULATION"} : {len(CALLERS)} callers, {args.usd} USD/token, achat après {args.buy_delay}s. Profil {args.profile}', flush=True)
     thread.start()
     try:
         while True:
             try:
                 call = events.get(timeout=.5)
-                journal.add(call, time.time(), args.max_age, args.delay, args.text)
+                if call.get('_kind') == 'update':
+                    journal.add_update(call, time.time(), args.update_delay)
+                else:
+                    journal.add(call, time.time(), args.max_age, args.delay, args.text, buy_delay=args.buy_delay, stop_loss=args.stop_loss)
             except queue.Empty:
                 pass
+            workflow.tick(time.time())
             engine.step(time.time(), entry_pending=lambda: not events.empty())
+            engine.manage_updates(time.time(), entry_pending=lambda: not events.empty())
             engine.collect_details(time.time(), entry_pending=lambda: not events.empty())
     finally:
         stop.set()
+        workflow.close()
         journal.db.close()
 
 

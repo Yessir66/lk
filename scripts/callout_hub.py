@@ -29,10 +29,11 @@ class SharedReader:
         self.seen_alerts, self.seen_reposts = set(), set()
         self.event_sink, self.seen_ui = event_sink, set()
         self.last_health = 0
+        self.configured_only = True
 
     def refresh(self, now):
         try:
-            follows = self.pump.following(self.owner)
+            follows = dict(CALLERS) if self.configured_only else self.pump.following(self.owner)
             self.follows = follows
             self.targets = dict(follows)
             if self.repost:
@@ -228,8 +229,12 @@ class RepostWorker:
 
     def run(self):
         journal = None
+        workflow = None
         try:
             journal = Journal(self.path, time.time(), self.execution.owner)
+            journal.apply_policy()
+            from callout_workflow import Workflow
+            workflow = Workflow(journal, self.args, self.events, self.stop)
             self.since = journal.since
             self.known = {job['call_id'] for job in journal.jobs()}
             engine = Engine(journal, self.execution, self.args)
@@ -237,18 +242,26 @@ class RepostWorker:
             while not self.stop.is_set():
                 try:
                     call = self.events.get(timeout=.25)
-                    journal.add(call, time.time(), self.args.max_age, self.args.delay, self.args.text)
+                    if call.get('_kind') == 'update':
+                        journal.add_update(call, time.time(), getattr(self.args, 'update_delay', 10))
+                    else:
+                        journal.add(call, time.time(), self.args.max_age, self.args.delay, self.args.text,
+                                    buy_delay=getattr(self.args, 'buy_delay', 12), stop_loss=getattr(self.args, 'stop_loss', 50))
                 except queue.Empty:
                     pass
                 except (KeyError, TypeError, ValueError, OverflowError):
                     print('Signal de republication incomplet ignoré', flush=True)
+                workflow.tick(time.time())
                 engine.step(time.time(), entry_pending=lambda: not self.events.empty())
+                engine.manage_updates(time.time(), entry_pending=lambda: not self.events.empty())
                 engine.collect_details(time.time(), entry_pending=lambda: not self.events.empty())
         except Exception as exc:
             self.error = type(exc).__name__
             self.stop.set()
         finally:
             self.ready.set()
+            if workflow:
+                workflow.close()
             if journal:
                 journal.db.close()
 
@@ -339,7 +352,7 @@ def run_hub(args):
         if repost:
             reader.seen_reposts.update(repost.known)
         mode = 'achats réels' if args.live else 'alertes seules' if args.alerts_only else 'achats simulés'
-        tp = '' if args.alerts_only else f'TP +{args.take_profit}%, vente totale, '
+        tp = '' if args.alerts_only else f'achat après {args.buy_delay:g}s, TP +{args.take_profit}%, SL -{args.stop_loss}%, vente totale, '
         print(f'HUB : {label}, {mode}, {tp}flux unique toutes les {args.feed_interval}s minimum.', flush=True)
         print(f'Plafond Jupiter local : {args.jupiter_rps:g} requête(s)/s, partagé entre prix, cotations et constructions.', flush=True)
         while not stop.is_set() and not (args.stop_file and Path(args.stop_file).exists()):

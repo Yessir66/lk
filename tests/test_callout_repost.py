@@ -558,20 +558,14 @@ class RepostTest(unittest.TestCase):
         self.assertNotIn('tp_error',self.job())
         self.assertEqual(self.job()['exit_state'],'watching')
 
-    def test_random_phrase_persisted_through_restart_and_duplicates(self):
-        self.assertEqual(len(r.CALLOUT_TEXTS), 10)
-        with patch.object(r.random, 'choice', return_value=r.CALLOUT_TEXTS[7]) as choose:
-            self.assertTrue(self.journal.add(call(), 1001, 60, 15, None))
-            self.assertFalse(self.journal.add(call('same-mint'), 1001, 60, 15, None))
-            choose.assert_called_once_with(r.CALLOUT_TEXTS)
-        selected = self.job()['text']
-        self.journal.db.close()
-        self.journal = r.Journal(self.path, 1100, 'owner')
-        self.assertEqual(self.job()['text'], selected)
-        self.assertEqual(selected, 'chart looks healthy and the community is waking up')
+    def test_source_text_is_retained_and_duplicate_cannot_replace_it(self):
+        self.assertTrue(self.journal.add(call(), 1001, 60, 0, None))
+        self.assertFalse(self.journal.add(dict(call('duplicate'), thesis='Replacement'), 1001, 60, 0, None))
+        self.assertIn('Original thesis', self.job()['text'])
+        self.assertEqual(self.job()['source_thesis'], 'Original thesis')
 
     def test_ten_callers_and_exact_dollar_conversion(self):
-        self.assertEqual(len(r.CALLERS), 10)
+        self.assertEqual(len(r.CALLERS), 3)
         self.assertEqual(r.lamports_for(2, 200), 10_000_000)
         self.assertEqual(r.lamports_for(2, 150), 13_333_333)
         for invalid in (0, -1, 'NaN', 'Infinity'):

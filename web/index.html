@@ -134,12 +134,12 @@
                   /><span>USD</span>
                 </div></label
               ><label
-                >Délai de publication
+                >Délai avant achat
                 <div class="input-unit">
                   <input
-                    id="delay"
+                    id="buy_delay"
                     type="number"
-                    value="15"
+                    value="12"
                     min="0"
                     max="300"
                     step="1"
@@ -194,6 +194,46 @@
                 required
               /><span>secondes</span>
             </div>
+            <div class="field-grid">
+              <label
+                >Stop loss
+                <div class="input-unit">
+                  <input
+                    id="stop_loss"
+                    type="number"
+                    value="50"
+                    min="0.01"
+                    max="99.99"
+                    step="0.01"
+                    required
+                  /><span>%</span>
+                </div></label
+              >
+              <label
+                >Délai des updates
+                <div class="input-unit">
+                  <input
+                    id="update_delay"
+                    type="number"
+                    value="10"
+                    min="0"
+                    max="600"
+                    step="0.1"
+                    required
+                  /><span>sec</span>
+                </div></label
+              >
+            </div>
+            <label class="field-label" for="rewrite_mode">Reformulation</label>
+            <select id="rewrite_mode">
+              <option value="local">Locale · texte de secours fidèle</option>
+              <option value="ai">IA OpenAI · avec secours local</option>
+            </select>
+            <p class="field-help">
+              L’IA utilise OPENAI_API_KEY sur ton PC, avec facturation API
+              distincte. Images préparées en parallèle ; publication après
+              confirmation de l’achat.
+            </p>
             <label class="field-label" for="jupiter_rps">Plafond Jupiter</label>
             <div class="input-unit">
               <input

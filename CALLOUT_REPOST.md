@@ -1,5 +1,7 @@
 # Achat et republication des callouts
 
+> **Nouvelle stratégie :** voir [NOUVEAU_FONCTIONNEMENT.md](NOUVEAU_FONCTIONNEMENT.md) pour les trois callers, les délais achat/update 12/10 s, les images et le SL −50 %. Les descriptions de l’ancienne stratégie ci-dessous restent historiques.
+
 Pour utiliser les alertes et la republication ensemble avec un lecteur commun, voir [CALLOUT_HUB.md](CALLOUT_HUB.md).
 
 

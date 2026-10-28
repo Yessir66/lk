@@ -177,7 +177,7 @@ class Pump:
                               author=position.get('walletAddress'), author_name=position.get('userName'), coinMint=row.get('coinMint'),
                               name=row.get('coinName'), symbol=row.get('symbol'),
                               marketCap=call.get('calledOutAtMcap'), mcap_now=row.get('marketCap'),
-                              thesis=call.get('thesis')))
+                              thesis=call.get('thesis'), mediaUrl=call.get('mediaUrl') or position.get('mediaUrl'), updates=call.get('updates') or []))
         return calls
 
 

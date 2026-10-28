@@ -19,10 +19,12 @@ import webbrowser
 from callout_repost import CALLERS, ROOT
 from callout_hub import retained_path
 
-DEFAULTS = {'profile': 'Lelouch_0x', 'mode': 'simulation', 'usd': 2, 'delay': 15,
-            'take_profit': 50, 'slippage_bps': 100, 'max_age': 60, 'jupiter_rps': .5, 'callers': list(CALLERS.values())}
+DEFAULTS = {'profile': 'Lelouch_0x', 'mode': 'simulation', 'usd': 2, 'delay': 0, 'buy_delay': 12, 'update_delay': 10,
+            'take_profit': 50, 'stop_loss': 50, 'rewrite_mode': 'local', 'workflow_version': 2,
+            'slippage_bps': 100, 'max_age': 60, 'jupiter_rps': .5, 'callers': list(CALLERS.values())}
 RANGES = {'usd': (.01, 10000), 'delay': (0, 300), 'take_profit': (.01, 10000),
-          'slippage_bps': (1, 5000), 'max_age': (1, 600), 'jupiter_rps': (.1, 150)}
+          'slippage_bps': (1, 5000), 'max_age': (1, 600), 'jupiter_rps': (.1, 150),
+          'buy_delay': (0, 600), 'update_delay': (0, 600), 'stop_loss': (.01, 99.99)}
 
 
 def validate_config(value):
@@ -34,6 +36,8 @@ def validate_config(value):
         raise ValueError('Profil pump.fun invalide.')
     if result['mode'] not in ('simulation', 'live'):
         raise ValueError('Mode invalide.')
+    if result['rewrite_mode'] not in ('local', 'ai') or result['workflow_version'] != 2:
+        raise ValueError('Mode de rédaction ou version invalide.')
     for key, (low, high) in RANGES.items():
         number = result[key]
         if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number) or not low <= number <= high:
@@ -56,7 +60,7 @@ def number(value):
 
 def safe_message(value):
     text = str(value)
-    for key in ('JUP_API_KEY', 'SOLANA_RPC_URL', 'TELEGRAM_BOT_TOKEN', 'TG_API_HASH'):
+    for key in ('JUP_API_KEY', 'SOLANA_RPC_URL', 'TELEGRAM_BOT_TOKEN', 'TG_API_HASH', 'OPENAI_API_KEY'):
         secret = os.getenv(key)
         if secret:
             text = text.replace(secret, '[masqué]')
@@ -69,18 +73,29 @@ def read_jobs(path):
     try:
         with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=.2) as db:
             rows = db.execute('SELECT data FROM jobs ORDER BY rowid DESC').fetchall()
+            update_counts = {}
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='updates'").fetchone():
+                for (raw,) in db.execute('SELECT data FROM updates'):
+                    update = json.loads(raw)
+                    counts = update_counts.setdefault(update['mint'], {'posted': 0, 'pending': 0, 'review': 0})
+                    kind = 'posted' if update['state'] == 'posted' else 'pending' if update['state'] in ('new', 'publishing', 'uncertain') else 'review' if update['state'] in ('review', 'failed') else None
+                    if kind:
+                        counts[kind] += 1
         # Never return signed bytes or raw exception bodies. Public signatures
         # are exposed only as validated explorer links, not arbitrary payloads.
         fields = ('mint', 'caller', 'name', 'symbol', 'state', 'created', 'buy_confirmed', 'cost_usd',
                   'position_tokens', 'entry_mc', 'mark_usd', 'mark_cost_usd', 'mark_checked_at', 'exit_state', 'sold_at',
                   'attempts', 'failure_reason', 'tp_missing_basis', 'tp_error', 'tp_error_at',
-                  'confirmed_at', 'first_send_at', 'detect_to_send_ms', 'prepare_ms', 'broadcast_ms', 'post_started')
+                  'confirmed_at', 'first_send_at', 'detect_to_send_ms', 'prepare_ms', 'broadcast_ms', 'post_started',
+                  'buy_at', 'stop_loss', 'exit_reason', 'text', 'rewrite_method', 'image_unavailable', 'image_rejected')
         jobs, historical = [], 0
         for row in rows:
             job = json.loads(row[0])
             active = (job.get('buy_confirmed') or job['state'] in ('confirmed', 'publishing', 'uncertain', 'posted')) and job.get('exit_state') not in ('sold', 'empty')
             if active or historical < 300:
                 public = {k: job[k] for k in fields if k in job}
+                public['has_image'] = bool(job.get('image_path'))
+                public['updates_summary'] = update_counts.get(job['mint'], {'posted': 0, 'pending': 0, 'review': 0})
                 if public.get('tp_error'):
                     public['tp_error'] = safe_message(public['tp_error'])
                 for side in ('buy', 'sell'):
@@ -112,7 +127,12 @@ class Dashboard:
         config_file = self.directory / 'settings.json'
         if config_file.is_file():
             try:
-                self.config = validate_config(json.loads(config_file.read_text(encoding='utf-8')))
+                saved = json.loads(config_file.read_text(encoding='utf-8'))
+                if saved.get('workflow_version') != 2:
+                    selected = [n for n in saved.get('callers', []) if n in CALLERS.values()]
+                    saved.update(workflow_version=2, callers=selected or list(CALLERS.values()), delay=0,
+                                 buy_delay=12, update_delay=10, stop_loss=50, rewrite_mode='local')
+                self.config = validate_config(saved)
             except (ValueError, OSError):
                 pass
         self.token = secrets.token_urlsafe(32)
@@ -159,6 +179,7 @@ class Dashboard:
                        '--callers=' + ','.join(config['callers'])]
             for key in RANGES:
                 command += ['--' + key.replace('_', '-'), str(int(config[key])) if key == 'slippage_bps' else str(config[key])]
+            command += ['--rewrite-mode', config['rewrite_mode']]
             command += ['--live'] if config['mode'] == 'live' else ['--dry-run']
             environment = os.environ.copy()
             environment['PYTHONIOENCODING'] = 'utf-8'
@@ -257,7 +278,7 @@ class Dashboard:
                     'credentials': {'wallet': (self.root/'data/pump_wallet.txt').is_file(),
                                     'pump_session': (self.root/'data/pump_token.txt').is_file(),
                                     'telegram': Path(retained_path('callout_alerts_telegram.session')).is_file(),
-                                    'jupiter': bool(os.getenv('JUP_API_KEY')),
+                                    'jupiter': bool(os.getenv('JUP_API_KEY')), 'openai': bool(os.getenv('OPENAI_API_KEY')),
                                     'rpc_personal': bool(os.getenv('SOLANA_RPC_URL'))}}
 
     def close(self):

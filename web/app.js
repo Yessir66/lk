@@ -85,7 +85,10 @@ function hydrate(config, callers) {
   for (const name of [
     "profile",
     "usd",
-    "delay",
+    "buy_delay",
+    "update_delay",
+    "stop_loss",
+    "rewrite_mode",
     "take_profit",
     "max_age",
     "jupiter_rps",
@@ -126,11 +129,13 @@ function updateStart() {
   $("start").innerHTML =
     playIcon + " " + (live ? "Démarrer en réel" : "Démarrer");
   $("strategy-note").textContent =
-    `À +${$("take_profit").value} %, vente de 100 % de la position.`;
+    `TP +${$("take_profit").value} % · SL −${$("stop_loss").value} % : vente de 100 % de la quantité achetée.`;
   $("empty-tp").textContent = "+" + $("take_profit").value + " %";
 }
 function configuration() {
   const values = {
+    delay: 0,
+    rewrite_mode: $("rewrite_mode").value,
     mode: $("mode").value,
     profile: $("profile").value.trim(),
     callers: [...document.querySelectorAll('input[name="caller"]:checked')].map(
@@ -139,7 +144,14 @@ function configuration() {
     slippage_bps: Math.round(Number($("slippage").value) * 100),
     jupiter_rps: Number($("jupiter_rps").value),
   };
-  for (const name of ["usd", "delay", "take_profit", "max_age"])
+  for (const name of [
+    "usd",
+    "buy_delay",
+    "update_delay",
+    "take_profit",
+    "stop_loss",
+    "max_age",
+  ])
     values[name] = Number($(name).value);
   return values;
 }
@@ -207,7 +219,7 @@ function renderPositions(s) {
       : (s.summary.pnl >= 0 ? "+" : "−") + money(Math.abs(s.summary.pnl));
   $("metric-pnl").classList.toggle("negative", s.summary.pnl < 0);
   $("position-note").textContent = s.summary.positions
-    ? `TP configuré à +${s.config.take_profit} % · vente totale`
+    ? `TP +${s.config.take_profit} % · SL des nouvelles entrées −${s.config.stop_loss} %`
     : "Aucune position ouverte";
   $("journal-mode").textContent =
     "Journal " + (s.config.mode === "live" ? "réel" : "de simulation");
@@ -239,20 +251,23 @@ function renderPositions(s) {
   $("positions").innerHTML = jobs
     .map((j) => {
       const status =
-        j.tp_error && !["sold", "empty", "review"].includes(j.exit_state)
-          ? "tp_paused"
-          : j.exit_state || j.state;
+        j.exit_state === "sold" && j.exit_reason === "sl"
+          ? "sl_sold"
+          : j.tp_error && !["sold", "empty", "review"].includes(j.exit_state)
+            ? "tp_paused"
+            : j.exit_state || j.state;
+      names.sl_sold = "SL confirmé";
       const kind = ["review", "failed", "uncertain", "tp_paused"].includes(
         status,
       )
         ? "error"
-        : ["sold", "empty", "simulated"].includes(status)
+        : ["sold", "sl_sold", "empty", "simulated"].includes(status)
           ? "closed"
           : ["signed", "new", "publishing"].includes(status)
             ? "wait"
             : "";
       const mint = String(j.mint);
-      return `<tr><td><div class="token-main"><span class="token-avatar">${esc((j.symbol || j.name || mint)[0])}</span><div><div class="token-name" title="${esc(j.name || mint)}">${esc(j.symbol ? "$" + j.symbol : j.name || mint.slice(0, 7) + "…")}</div><div class="token-caller">${esc(j.caller)}</div><div class="money-sub">MC call : ${esc(compact(j.entry_mc))}</div></div></div></td><td><span class="money">${money(j.cost_usd)}</span><div class="money-sub">≈ ${esc(compact(j.buy_details?.mc_estimate))}</div><div class="money-sub">${age(j.created)}</div></td><td><span class="money">${money(j.mark_usd)}</span><div class="money-sub">${j.mark_checked_at ? "cotée il y a " + age(j.mark_checked_at) : "cotation indisponible"}</div></td><td><span class="state-tag ${kind}" title="${esc(status === "tp_paused" ? j.tp_error : j.failure_reason === "entry_expired" ? "Callout trop ancien pour préparer l’achat" : status === "empty" ? "Solde nul ; ne confirme pas une vente au TP" : status === "simulated" ? "Décision simulée, aucun achat" : names[status] || status)}">${esc(names[status] || status)}</span></td><td><button class="details-button" data-mint="${esc(mint)}" aria-label="Détails de ${esc(j.symbol || j.name || mint)}">Détails ${arrowIcon}</button></td></tr>`;
+      return `<tr><td><div class="token-main"><span class="token-avatar">${esc((j.symbol || j.name || mint)[0])}</span><div><div class="token-name" title="${esc(j.name || mint)}">${esc(j.symbol ? "$" + j.symbol : j.name || mint.slice(0, 7) + "…")}</div><div class="token-caller">${esc(j.caller)}</div><div class="money-sub">MC call : ${esc(compact(j.entry_mc))}</div></div></div></td><td><span class="money">${money(j.cost_usd)}</span><div class="money-sub">≈ ${esc(compact(j.buy_details?.mc_estimate))}</div><div class="money-sub">${age(j.created)}</div></td><td><span class="money">${money(j.mark_usd)}</span><div class="money-sub">${j.mark_checked_at ? "cotée il y a " + age(j.mark_checked_at) : "cotation indisponible"}</div></td><td><span class="state-tag ${kind}" title="${esc(status === "tp_paused" ? j.tp_error : j.failure_reason === "entry_expired" ? "Callout trop ancien pour préparer l’achat" : status === "empty" ? "Solde nul ; ne confirme pas une vente au TP" : status === "simulated" ? "Décision simulée, aucun achat" : names[status] || status)}">${esc(j.stop_loss != null && status === "watching" ? "TP / SL en suivi" : j.stop_loss != null && status === "tp_paused" ? "Sortie différée" : names[status] || status)}</span></td><td><button class="details-button" data-mint="${esc(mint)}" aria-label="Détails de ${esc(j.symbol || j.name || mint)}">Détails ${arrowIcon}</button></td></tr>`;
     })
     .join("");
 }
@@ -307,7 +322,13 @@ function renderDetails() {
       <div><dt>Produit de vente estimé en USD</dt><dd>${money(sell?.usd_estimate)}</dd></div>
       <div><dt>Détection → première tentative d’envoi</dt><dd>${j.detect_to_send_ms == null ? "Indisponible" : esc(j.detect_to_send_ms) + " ms"}</dd></div>
       <div><dt>Publication demandée à</dt><dd>${esc(j.post_started ? exactTime(j.post_started) : "Non enregistrée")}</dd></div>
+      <div><dt>Achat prévu au plus tôt à</dt><dd>${esc(j.buy_at ? exactTime(j.buy_at) : "Ancienne stratégie")}</dd></div>
+      <div><dt>Stop loss enregistré</dt><dd>${j.stop_loss == null ? "Non défini pour cette ancienne entrée" : "−" + esc(j.stop_loss) + " %"}</dd></div>
+      <div><dt>Rédaction utilisée</dt><dd>${esc(j.rewrite_method || "Texte de secours / historique")}</dd></div>
+      <div><dt>Image du callout</dt><dd>${j.has_image ? "Préparée pour la publication" : j.image_rejected ? "Refusée par pump.fun" : j.image_unavailable ? "Indisponible" : "Aucune image préparée"}</dd></div>
+      <div><dt>Updates</dt><dd>${j.updates_summary?.posted || 0} publiées · ${j.updates_summary?.pending || 0} en attente · ${j.updates_summary?.review || 0} à vérifier</dd></div>
     </dl>
+    <p><strong>Texte du callout</strong><br>${esc(j.text || "Non enregistré")}</p>
     <div class="detail-links">${txLink(j.buy_tx_url, "Transaction d’achat")}${txLink(j.sell_tx_url, "Transaction de vente")}<a href="https://pump.fun/coin/${encodeURIComponent(j.mint)}" target="_blank" rel="noopener noreferrer">Token sur pump.fun ${arrowIcon}</a></div>
     <p class="dialog-note">Les MC d’exécution sont des estimations : quantité exécutée sur Solana, offre relevée après confirmation et référence SOL/USD enregistrée lors de la préparation de l’achat ou du déclenchement du TP. Ils peuvent différer du MC affiché par pump.fun. Offre relevée : ${esc(supplyInfo?.supply_observed_at ? exactTime(supplyInfo.supply_observed_at) : "indisponible")}. La dernière cotation du tableau n’est pas le montant de vente exécuté. Une donnée historique manquante reste indisponible.</p>
     ${j.buy_details_error || j.sell_details_error ? `<p class="detail-warning">Récupération différée : ${esc(j.buy_details_error || j.sell_details_error)}</p>` : ""}`;
@@ -400,6 +421,7 @@ function renderCredentials(s) {
     ["pump_session", "Session pump.fun"],
     ["telegram", "Telegram"],
     ["jupiter", "API Jupiter"],
+    ["openai", "API OpenAI (optionnelle)"],
   ];
   $("credentials").innerHTML = labels
     .map(

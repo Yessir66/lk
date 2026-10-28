@@ -60,6 +60,15 @@ class DashboardTest(unittest.TestCase):
         (self.control.directory/'settings.json').write_text(json.dumps(old))
         self.assertEqual(d.Dashboard(self.root).config['jupiter_rps'], .5)
 
+    def test_old_settings_migrate_callers_and_delays_without_losing_quota(self):
+        old=dict(d.DEFAULTS, callers=['chairman','Dior'], delay=15, jupiter_rps=8, usd=3)
+        old.pop('workflow_version')
+        (self.control.directory/'settings.json').write_text(json.dumps(old))
+        config=d.Dashboard(self.root).config
+        self.assertEqual(config['callers'],list(r.CALLERS.values()))
+        self.assertEqual((config['buy_delay'],config['update_delay'],config['stop_loss'],config['delay']),(12,10,50,0))
+        self.assertEqual((config['jupiter_rps'],config['usd']),(8,3))
+
     def test_live_requires_local_wallet_and_session_files(self):
         with patch.object(d.subprocess,'Popen') as popen:
             with self.assertRaises(ValueError): self.control.start(dict(d.DEFAULTS,mode='live'))
@@ -207,8 +216,8 @@ class DashboardTest(unittest.TestCase):
     def test_caller_selection_reaches_existing_engine_mapping(self):
         original=dict(r.CALLERS)
         with patch.dict(r.CALLERS, original):
-            r.parse_args(['--callers','Dior,schoen'])
-            self.assertEqual(set(r.CALLERS.values()),{'Dior','schoen'})
+            r.parse_args(['--callers','lynk0x_,narc'])
+            self.assertEqual(set(r.CALLERS.values()),{'lynk0x_','narc'})
         self.assertEqual(r.CALLERS,original)
 
 
