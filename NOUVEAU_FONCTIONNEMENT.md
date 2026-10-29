@@ -1,3 +1,5 @@
+> Depuis la version **2026.10.29.3**, l’exécution par défaut passe par **Trojan**. Voir [TROJAN.md](TROJAN.md) pour l’installation, les délais 5/12 secondes, la confirmation et les limites. Les paramètres de sorties locales décrits ci-dessous concernent uniquement le mode **Jupiter**.
+
 # Fonctionnement actuel : trois callers, délais d’achat et updates
 
 Cette version remplace la liste de trading précédente par ces trois profils, identifiés par leurs wallets :

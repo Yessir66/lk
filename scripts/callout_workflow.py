@@ -92,7 +92,7 @@ class Workflow:
             if result is None:
                 self.content.submit(key, source)
                 continue
-            if job['state'] in ('new', 'signed', 'confirmed', 'simulated') and not job.get('post_started'):
+            if job['state'] in ('new', 'signed', 'trojan_waiting', 'confirmed', 'simulated') and not job.get('post_started'):
                 if getattr(self.args, 'text', None) is None:
                     job['text'] = result['text']
                 job.update({k: v for k, v in result.items() if k != 'text'})

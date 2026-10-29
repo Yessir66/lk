@@ -77,10 +77,35 @@ class DashboardTest(unittest.TestCase):
 
     def test_installation_metadata_has_public_version_and_source_paths(self):
         info=self.control.snapshot()
-        self.assertEqual(info['api_schema'],2)
+        self.assertEqual(info['api_schema'],3)
         self.assertEqual(info['build'],d.BUILD_VERSION)
         self.assertTrue(info['dashboard_file'].endswith('callout_dashboard.py'))
         self.assertTrue(info['engine_file'].endswith('callout_repost.py'))
+
+    def test_trojan_live_launch_does_not_require_a_local_wallet_key(self):
+        for name in ('pump_token.txt', 'callout_alerts_telegram.session'):
+            (self.root/'data'/name).write_text('fixture')
+        with patch.object(d, 'retained_path', return_value=str(self.root/'data/callout_alerts_telegram.session')), \
+             patch.object(d.subprocess, 'Popen') as popen, patch.object(d.threading, 'Thread'):
+            self.control.start(dict(d.DEFAULTS, mode='live'))
+            command = popen.call_args.args[0]
+            self.assertEqual(command[command.index('--executor')+1], 'trojan')
+            self.assertEqual(command[command.index('--trojan-bot')+1], '@solana_trojanbot')
+        self.assertFalse((self.root/'data/pump_wallet.txt').exists())
+
+    def test_trojan_config_rejects_unknown_executor_or_invalid_recipient(self):
+        for changes in ({'executor': 'unknown'}, {'trojan_bot': 'not a handle'}, {'trojan_bot': '--live'}):
+            with self.assertRaises(ValueError):
+                d.validate_config(dict(d.DEFAULTS, **changes))
+
+    def test_existing_settings_default_to_trojan_without_resetting_delays(self):
+        saved = dict(d.DEFAULTS, buy_delay=15)
+        saved.pop('executor')
+        saved.pop('trojan_bot')
+        (self.control.directory/'settings.json').write_text(json.dumps(saved))
+        config = d.Dashboard(self.root).config
+        self.assertEqual(config['executor'], 'trojan')
+        self.assertEqual(config['buy_delay'], 15)
 
     def test_live_requires_local_wallet_and_session_files(self):
         with patch.object(d.subprocess,'Popen') as popen:

@@ -90,6 +90,8 @@ function hydrate(config, callers) {
     "update_delay",
     "stop_loss",
     "rewrite_mode",
+    "executor",
+    "trojan_bot",
     "take_profit",
     "max_age",
     "jupiter_rps",
@@ -125,18 +127,31 @@ function updateSelection() {
   updateStart();
 }
 function updateStart() {
+  const trojan = $("executor").value === "trojan";
+  for (const id of ["usd", "take_profit", "stop_loss", "slippage", "jupiter_rps"])
+    $(id).disabled = Boolean(state?.running) || trojan;
+  $("trojan_bot").disabled = Boolean(state?.running) || !trojan;
+  $("executor-help").textContent = trojan
+    ? "Montant et TP/SL : réglés dans Trojan. Aucun ordre Jupiter. Les anciennes positions ne reçoivent pas automatiquement les sorties Trojan."
+    : "Achats et sorties gérés localement par Jupiter selon les paramètres ci-dessous.";
   const live = $("mode").value === "live";
   $("start").classList.toggle("real", live);
   $("start").innerHTML =
     playIcon + " " + (live ? "Démarrer en réel" : "Démarrer");
   $("strategy-note").textContent =
-    `TP +${$("take_profit").value} % · SL −${$("stop_loss").value} % : vente de 100 % de la quantité achetée.`;
-  $("empty-tp").textContent = "+" + $("take_profit").value + " %";
+    trojan ? "Achats et TP/SL gérés par Trojan. Vérifie ses réglages avant de démarrer."
+    : `TP +${$("take_profit").value} % · SL −${$("stop_loss").value} % : vente de 100 % de la quantité achetée.`;
+  $("empty-tp").textContent = trojan ? "Sorties dans Trojan" : "TP +" + $("take_profit").value + " % · vente à 100 %";
+  $("empty-description").textContent = trojan
+    ? "Le callout sera publié après vérification de l’achat sur Solana. TP/SL gérés par Trojan."
+    : "Les achats confirmés apparaîtront ici. TP/SL suivis par le hub.";
 }
 function configuration() {
   const values = {
     delay: 0,
     rewrite_mode: $("rewrite_mode").value,
+    executor: $("executor").value,
+    trojan_bot: $("trojan_bot").value.trim(),
     mode: $("mode").value,
     profile: $("profile").value.trim(),
     callers: [...document.querySelectorAll('input[name="caller"]:checked')].map(
@@ -178,8 +193,9 @@ function phaseUI(s) {
   $("start").disabled = s.running;
   $("stop").disabled = !s.running || s.phase === "stopping";
   document
-    .querySelectorAll("#settings input,#settings button")
+    .querySelectorAll("#settings input,#settings button,#settings select")
     .forEach((e) => (e.disabled = s.running));
+  updateStart();
   $("profile-label").textContent = s.config.profile;
   $("journal-status").textContent =
     s.phase === "running"
@@ -220,7 +236,8 @@ function renderPositions(s) {
       : (s.summary.pnl >= 0 ? "+" : "−") + money(Math.abs(s.summary.pnl));
   $("metric-pnl").classList.toggle("negative", s.summary.pnl < 0);
   $("position-note").textContent = s.summary.positions
-    ? `TP +${s.config.take_profit} % · SL des nouvelles entrées −${s.config.stop_loss} %`
+    ? s.config.executor === "trojan" ? "Sorties gérées dans Trojan · anciennes positions à vérifier"
+      : `TP +${s.config.take_profit} % · SL des nouvelles entrées −${s.config.stop_loss} %`
     : "Aucune position ouverte";
   $("journal-mode").textContent =
     "Journal " + (s.config.mode === "live" ? "réel" : "de simulation");
@@ -248,6 +265,9 @@ function renderPositions(s) {
     failed: "Échec",
     simulated: "Simulé",
     uncertain: "À vérifier",
+    trojan_waiting: "Achat Trojan en attente",
+    external: "Sorties via Trojan",
+    external_legacy: "Ancienne position · sorties à configurer",
   };
   $("positions").innerHTML = jobs
     .map((j) => {
@@ -319,6 +339,7 @@ function renderDetails() {
     <dl class="detail-facts">
       <div><dt>Écart estimé entrée / callout</dt><dd>${gap == null ? "Indisponible" : (gap >= 0 ? "+" : "") + gap.toFixed(2) + " %"}</dd></div>
       <div><dt>Montant investi</dt><dd>${money(j.cost_usd)}</dd></div>
+      <div><dt>Exécution</dt><dd>${j.executor === "trojan" ? "Trojan · montant et TP/SL configurés dans Telegram" : "Jupiter local"}</dd></div>
       <div><dt>SOL reçus à la vente, hors frais réseau</dt><dd>${sell?.sol_amount == null ? "Indisponible" : esc(sell.sol_amount) + " SOL"}</dd></div>
       <div><dt>Produit de vente estimé en USD</dt><dd>${money(sell?.usd_estimate)}</dd></div>
       <div><dt>Détection → première tentative d’envoi</dt><dd>${j.detect_to_send_ms == null ? "Indisponible" : esc(j.detect_to_send_ms) + " ms"}</dd></div>
@@ -418,10 +439,10 @@ function renderLogs(s) {
 }
 function renderCredentials(s) {
   const labels = [
-    ["wallet", "Wallet pump.fun"],
+    ["wallet", "Clé wallet locale (Jupiter seulement)"],
     ["pump_session", "Session pump.fun"],
     ["telegram", "Telegram"],
-    ["jupiter", "API Jupiter"],
+    ["jupiter", "API Jupiter (exécution locale seulement)"],
     ["openai", "API OpenAI (optionnelle)"],
   ];
   $("credentials").innerHTML = labels
@@ -434,13 +455,13 @@ function renderCredentials(s) {
 async function refresh() {
   try {
     const next = await request("/api/state");
-    compatibleServer = next.api_schema === 2 && next.config?.workflow_version === 2;
+    compatibleServer = next.api_schema === 3 && next.config?.workflow_version === 2;
     if (!compatibleServer) {
       state = null;
       hydrated = false;
       $("version-banner").hidden = false;
       $("version-banner").textContent = "Versions mélangées : cette page est récente, mais le serveur Python est ancien. Ferme le terminal de l’interface avec Ctrl+C, remplace le dossier scripts complet, puis lance LANCER_NOUVELLE_INTERFACE.bat. Ouvre l’adresse affichée par ce nouveau terminal.";
-      $("build-label").textContent = "Interface 2026.10.29.1 · ancien serveur détecté";
+      $("build-label").textContent = "Interface 2026.10.29.3 · ancien serveur détecté";
       $("callers").textContent = "Liste indisponible tant que le serveur n’est pas à jour.";
       $("selected-count").textContent = "—";
       $("start").disabled = true;

@@ -20,8 +20,8 @@ from callout_repost import CALLERS, ROOT
 import callout_repost as repost_module
 from callout_hub import retained_path
 
-BUILD_VERSION = '2026.10.29.2'
-API_SCHEMA = 2
+BUILD_VERSION = '2026.10.29.3'
+API_SCHEMA = 3
 EXPECTED_WALLETS = {
     'CkPFGv2Wv1vwdWjtXioEgb8jhZQfs3eVZez3QCetu7xD',
     '8NFh9y6qmMigMvRtT2KhrnCDo4BE2jMYcondAzmXZ26E',
@@ -36,14 +36,16 @@ def installation_info():
 
 
 def validate_installation():
-    if getattr(repost_module, 'WORKFLOW_VERSION', None) != 2 or set(CALLERS) != EXPECTED_WALLETS:
+    if (getattr(repost_module, 'WORKFLOW_VERSION', None) != 2
+            or getattr(repost_module, 'EXECUTION_VERSION', None) != 1 or set(CALLERS) != EXPECTED_WALLETS):
         raise ValueError('Installation mélangée : scripts/callout_repost.py est ancien. Remplace tout le dossier scripts, '
                          'puis relance le serveur. Fichier chargé : ' + str(Path(repost_module.__file__).resolve()))
-    missing = [name for name in ('callout_content.py', 'callout_workflow.py') if not (ROOT/'scripts'/name).is_file()]
+    missing = [name for name in ('callout_content.py', 'callout_workflow.py', 'callout_trojan.py') if not (ROOT/'scripts'/name).is_file()]
     if missing:
         raise ValueError('Installation incomplète : ' + ', '.join(missing))
 
 DEFAULTS = {'profile': 'Lelouch_0x', 'mode': 'simulation', 'usd': 2, 'delay': 0, 'buy_delay': 12, 'update_delay': 10,
+            'executor': 'trojan', 'trojan_bot': '@solana_trojanbot',
             'take_profit': 50, 'stop_loss': 50, 'rewrite_mode': 'local', 'workflow_version': 2,
             'slippage_bps': 100, 'max_age': 60, 'jupiter_rps': .5, 'callers': list(CALLERS.values())}
 RANGES = {'usd': (.01, 10000), 'delay': (0, 300), 'take_profit': (.01, 10000),
@@ -60,6 +62,8 @@ def validate_config(value):
         raise ValueError('Profil pump.fun invalide.')
     if result['mode'] not in ('simulation', 'live'):
         raise ValueError('Mode invalide.')
+    if result['executor'] not in ('jupiter', 'trojan') or not isinstance(result['trojan_bot'], str) or not re.fullmatch(r'@[A-Za-z0-9_]{5,32}', result['trojan_bot']):
+        raise ValueError('Exécuteur ou bot Trojan invalide.')
     if result['rewrite_mode'] not in ('local', 'ai') or result['workflow_version'] != 2:
         raise ValueError('Mode de rédaction ou version invalide.')
     for key, (low, high) in RANGES.items():
@@ -111,7 +115,8 @@ def read_jobs(path):
                   'position_tokens', 'entry_mc', 'mark_usd', 'mark_cost_usd', 'mark_checked_at', 'exit_state', 'sold_at',
                   'attempts', 'failure_reason', 'tp_missing_basis', 'tp_error', 'tp_error_at',
                   'confirmed_at', 'first_send_at', 'detect_to_send_ms', 'prepare_ms', 'broadcast_ms', 'post_started',
-                  'buy_at', 'stop_loss', 'exit_reason', 'text', 'rewrite_method', 'image_unavailable', 'image_rejected')
+                  'buy_at', 'stop_loss', 'exit_reason', 'text', 'rewrite_method', 'image_unavailable', 'image_rejected',
+                  'executor', 'trojan_delivery', 'trojan_sent_at', 'trojan_buy_time')
         jobs, historical = [], 0
         for row in rows:
             job = json.loads(row[0])
@@ -186,7 +191,8 @@ class Dashboard:
             if self.process and self.process.poll() is None:
                 raise ValueError('Le hub est déjà en cours. Arrête-le avant de modifier ses paramètres.')
             if config['mode'] == 'live':
-                missing = [name for name in ('pump_wallet.txt', 'pump_token.txt') if not (self.root / 'data' / name).is_file()]
+                required = ('pump_wallet.txt', 'pump_token.txt') if config['executor'] == 'jupiter' else ('pump_token.txt',)
+                missing = [name for name in required if not (self.root / 'data' / name).is_file()]
                 if missing:
                     raise ValueError('Fichiers locaux manquants dans data : ' + ', '.join(missing))
                 if not Path(retained_path('callout_alerts_telegram.session')).is_file():
@@ -205,6 +211,7 @@ class Dashboard:
             for key in RANGES:
                 command += ['--' + key.replace('_', '-'), str(int(config[key])) if key == 'slippage_bps' else str(config[key])]
             command += ['--rewrite-mode', config['rewrite_mode']]
+            command += ['--executor', config['executor'], '--trojan-bot', config['trojan_bot']]
             command += ['--live'] if config['mode'] == 'live' else ['--dry-run']
             environment = os.environ.copy()
             environment['PYTHONIOENCODING'] = 'utf-8'

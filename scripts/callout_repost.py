@@ -19,6 +19,7 @@ from callout_content import local_text, image_type
 
 SOL = 'So11111111111111111111111111111111111111112'
 WORKFLOW_VERSION = 2
+EXECUTION_VERSION = 1
 
 
 ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == 'scripts' else Path(__file__).resolve().parent
@@ -192,8 +193,10 @@ def show_status(path):
         for row in rows:
             job = json.loads(row[0])
             print(f'{job.get("caller", "?")} | {job["mint"]} | état : {job["state"]}', flush=True)
+            if job.get('executor') == 'trojan':
+                print('  Exécution Trojan ; montant et sorties configurés dans Telegram.', flush=True)
             if job.get('buy_confirmed') or job['state'] in ('confirmed', 'publishing', 'uncertain', 'posted'):
-                print('  Achat confirmé ; sortie ' + ('SL' if job.get('exit_reason') == 'sl' else 'TP/SL' if job.get('stop_loss') else 'TP') + ' : ' + job.get('exit_state', 'en attente de contrôle'), flush=True)
+                print('  Achat confirmé ; sortie ' + ('Trojan' if job.get('executor') == 'trojan' else 'SL' if job.get('exit_reason') == 'sl' else 'TP/SL' if job.get('stop_loss') else 'TP') + ' : ' + job.get('exit_state', 'en attente de contrôle'), flush=True)
             elif job.get('signature'):
                 print('  Transaction signée ; confirmation non établie par cet état.', flush=True)
             else:
@@ -749,6 +752,10 @@ class Engine:
             print(f'  Dernière erreur : {job["last_error"]}', flush=True)
 
     def advance(self, job, now):
+        if job.get('executor') == 'trojan' and getattr(self.args, 'executor', 'jupiter') != 'trojan' and job['state'] in ('new', 'trojan_waiting'):
+            job.update(state='review', failure_reason='executor_changed')
+            self.journal.save(job)
+            return
         if job['state'] == 'new':
             if now < job.get('buy_at', 0):
                 return
@@ -905,6 +912,8 @@ def parse_args(argv=None, configure=None):
     parser.add_argument('--status', action='store_true', help='Afficher le journal réel en lecture seule, sans connexion ni achat')
     parser.add_argument('--profile', default='Lelouch_0x')
     parser.add_argument('--live', action='store_true', help='Effectuer réellement les achats et publications')
+    parser.add_argument('--executor', choices=('jupiter', 'trojan'), default='trojan')
+    parser.add_argument('--trojan-bot', default='@solana_trojanbot')
     parser.add_argument('--usd', type=Decimal, default=Decimal('2'))
     parser.add_argument('--delay', type=float, default=0, help='Délai minimal supplémentaire de publication depuis le callout (défaut : 0)')
     parser.add_argument('--buy-delay', type=float, default=12, help='Attendre ce délai depuis le callout avant de préparer l’achat')
@@ -939,7 +948,10 @@ def parse_args(argv=None, configure=None):
             args.text.format(text='exemple', caller='exemple')
     except (KeyError, ValueError, AttributeError, IndexError):
         parser.error('--text accepte seulement {text} et {caller}')
-    if args.live and not (args.status or args.check_swap) and any(not Path(p).is_file() for p in (args.wallet, args.token)):
+    required = (args.wallet, args.token) if args.executor == 'jupiter' else (args.token,)
+    if not re.fullmatch(r'@[A-Za-z0-9_]{5,32}', args.trojan_bot):
+        parser.error('Identifiant --trojan-bot invalide')
+    if args.live and not (args.status or args.check_swap) and any(not Path(p).is_file() for p in required):
         parser.error('Créer les fichiers locaux --wallet et --token (voir CALLOUT_REPOST.md)')
     if args.callers is not None:
         requested = {name.strip().lower() for name in args.callers.split(',') if name.strip()}
@@ -964,6 +976,8 @@ def main():
 
 
 def run_repost(args):
+    if args.executor == 'trojan':
+        raise RemoteError('Le relais Trojan se lance avec callout_hub.py ou le tableau de bord, pas callout_repost.py')
     execution = Execution(args)
     path = args.state or str(ROOT / 'data' / ('repost_live.sqlite3' if args.live else 'repost_simulation.sqlite3'))
     journal = Journal(path, time.time(), execution.owner)

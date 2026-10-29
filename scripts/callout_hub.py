@@ -237,7 +237,11 @@ class RepostWorker:
             workflow = Workflow(journal, self.args, self.events, self.stop)
             self.since = journal.since
             self.known = {job['call_id'] for job in journal.jobs()}
-            engine = Engine(journal, self.execution, self.args)
+            if getattr(self.args, 'executor', 'jupiter') == 'trojan':
+                from callout_trojan import TrojanEngine
+                engine = TrojanEngine(journal, self.execution, self.args)
+            else:
+                engine = Engine(journal, self.execution, self.args)
             self.ready.set()
             while not self.stop.is_set():
                 try:
@@ -245,8 +249,14 @@ class RepostWorker:
                     if call.get('_kind') == 'update':
                         journal.add_update(call, time.time(), getattr(self.args, 'update_delay', 10))
                     else:
-                        journal.add(call, time.time(), self.args.max_age, self.args.delay, self.args.text,
-                                    buy_delay=getattr(self.args, 'buy_delay', 12), stop_loss=getattr(self.args, 'stop_loss', 50))
+                        added = journal.add(call, time.time(), self.args.max_age, self.args.delay, self.args.text,
+                                            buy_delay=getattr(self.args, 'buy_delay', 12), stop_loss=getattr(self.args, 'stop_loss', 50))
+                        if added:
+                            job = next(j for j in journal.jobs() if j['mint'] == call['coinMint'])
+                            job['executor'] = getattr(self.args, 'executor', 'jupiter')
+                            if job['executor'] == 'trojan':
+                                job['stop_loss'] = None  # Settings live in Trojan, not this journal.
+                            journal.save(job)
                 except queue.Empty:
                     pass
                 except (KeyError, TypeError, ValueError, OverflowError):
@@ -330,7 +340,14 @@ def run_hub(args):
         workers.append(alerts)
         repost = None
         if not args.alerts_only:
-            execution = Execution(args, owner=owner)
+            if args.executor == 'trojan':
+                from callout_trojan import TrojanExecution, TrojanRelay
+                relay = TrojanRelay(user, args.trojan_bot) if args.live else None
+                if relay is not None and relay.peer.id == user.entity.id:
+                    raise RemoteError('La destination des alertes Telegram doit être différente de Trojan pour éviter les doubles achats')
+                execution = TrojanExecution(args, owner, relay)
+            else:
+                execution = Execution(args, owner=owner)
             repost_path = args.state or str(ROOT / 'data' / ('repost_live.sqlite3' if args.live else 'repost_simulation.sqlite3'))
             repost = RepostWorker(repost_queue, repost_path, execution, args, stop)
             workers.append(repost)
@@ -353,10 +370,15 @@ def run_hub(args):
             reader.seen_reposts.update(repost.known)
         mode = 'achats réels' if args.live else 'alertes seules' if args.alerts_only else 'achats simulés'
         tp = '' if args.alerts_only else f'achat après {args.buy_delay:g}s, TP +{args.take_profit}%, SL -{args.stop_loss}%, vente totale, '
+        if not args.alerts_only and args.executor == 'trojan':
+            tp = f'envoi CA après {args.buy_delay:g}s (YourMistyy : 5s), montant et sorties réglés dans Trojan, '
         print(f'HUB : {label}, {mode}, {tp}flux unique toutes les {args.feed_interval}s minimum.', flush=True)
         if not args.alerts_only:
             print('YourMistyy : achat après 5s, callout dès confirmation ; délai des updates inchangé.', flush=True)
-        print(f'Plafond Jupiter local : {args.jupiter_rps:g} requête(s)/s, partagé entre prix, cotations et constructions.', flush=True)
+            if args.executor == 'trojan':
+                print(f'EXÉCUTION TROJAN : {args.trojan_bot}. Montant et TP/SL réglés dans Trojan. Aucune transaction Solana signée ou diffusée localement. Les anciennes positions ne reçoivent pas automatiquement les sorties Trojan.', flush=True)
+        if args.executor == 'jupiter':
+            print(f'Plafond Jupiter local : {args.jupiter_rps:g} requête(s)/s, partagé entre prix, cotations et constructions.', flush=True)
         while not stop.is_set() and not (args.stop_file and Path(args.stop_file).exists()):
             reader.step()
             stop.wait(.1)

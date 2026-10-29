@@ -110,6 +110,11 @@
             <p class="mode-help" id="mode-help">
               Lecture réelle du flux. Aucun envoi ni achat.
             </p>
+            <label class="field-label" for="executor">Exécution des ordres</label>
+            <select id="executor"><option value="trojan">Trojan · Telegram</option><option value="jupiter">Jupiter · exécution locale</option></select>
+            <label class="field-label" for="trojan_bot">Bot Trojan</label>
+            <input id="trojan_bot" value="@solana_trojanbot" pattern="@[A-Za-z0-9_]{5,32}" required />
+            <p class="hint" id="executor-help">Le montant, le TP et le SL sont configurés dans Trojan. Aucun achat ni vente Jupiter. Le callout attend un achat confirmé sur ton wallet pump.fun.</p>
             <label class="field-label" for="profile">Profil pump.fun</label>
             <div class="input-prefix">
               <span>@</span
@@ -268,8 +273,7 @@
             </div>
             <div id="callers" class="caller-list"></div>
             <div class="settings-hint">
-              Les alertes Telegram suivent les abonnements du profil. La
-              sélection ci-dessus concerne les achats et republications.
+              Cette sélection concerne les alertes, les achats et les republications des trois profils configurés.
             </div>
           </form>
           <div class="config-footer">
@@ -312,13 +316,11 @@
                 </svg>
               </div>
               <h3>La prochaine position commence par un signal.</h3>
-              <p>
-                Les achats confirmés apparaîtront ici.<br />Le TP et les
-                confirmations restent suivis par le hub.
+              <p id="empty-description">
+                Les achats confirmés apparaîtront ici.
               </p>
               <span class="empty-chip"
-                >TP <b id="empty-tp">+50 %</b> <span>·</span> Vente à 100
-                %</span
+                ><b id="empty-tp">Sorties dans Trojan</b></span
               >
             </div>
             <div class="panel-foot">
