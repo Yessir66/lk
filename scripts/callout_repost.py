@@ -28,6 +28,8 @@ CALLERS = {
     '8NFh9y6qmMigMvRtT2KhrnCDo4BE2jMYcondAzmXZ26E': 'YourMistyy',
     'CxgPWvH2GoEDENELne2XKAR2z2Fr4shG2uaeyqZceGve': 'narc',
 }
+# Use the stable wallet identity, including if the profile changes its name.
+BUY_DELAY_OVERRIDES = {'8NFh9y6qmMigMvRtT2KhrnCDo4BE2jMYcondAzmXZ26E': 5}
 
 
 def lamports_for(usd, sol_price):
@@ -107,6 +109,7 @@ class Journal:
         if self.db.execute('SELECT 1 FROM jobs WHERE mint=?', (mint,)).fetchone():
             return False
         text = local_text(call) if template is None else template.format(caller=CALLERS[author], text=call.get('thesis') or '')
+        buy_delay = BUY_DELAY_OVERRIDES.get(author, buy_delay)
         self.save(dict(mint=mint, call_id=str(call['calloutId']), caller=CALLERS[author], text=text,
                        created=created, due=created + delay, state='new', retry_at=0,
                        detected_at=call.get('_detected_at', now), queued_at=now,
@@ -971,6 +974,7 @@ def run_repost(args):
     workflow = Workflow(journal, args, events, stop)
     thread = threading.Thread(target=detect, args=(events, stop, journal.since), daemon=True)
     print(f'{"RÉEL" if args.live else "SIMULATION"} : {len(CALLERS)} callers, {args.usd} USD/token, achat après {args.buy_delay}s. Profil {args.profile}', flush=True)
+    print('Exception YourMistyy : achat après 5s, callout dès confirmation ; délai des updates inchangé.', flush=True)
     thread.start()
     try:
         while True:

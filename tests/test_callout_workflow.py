@@ -66,6 +66,31 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(self.job()['own_callout_id'], OWN)
         self.execution.pump_call.assert_called_once()
 
+    def test_yourmistyy_buys_after_5_seconds_and_posts_after_confirmation(self):
+        author = next(wallet for wallet, name in r.CALLERS.items() if name == 'YourMistyy')
+        self.journal.add(dict(calloutId=PARENT, author=author, coinMint=r.SOL, createdAt=1000,
+                              thesis='Project context'), 1001, 60, 0, None, buy_delay=12, stop_loss=50)
+        self.assertEqual(self.job()['buy_at'], 1005)
+        self.engine.step(1004.99)
+        self.execution.prepare.assert_not_called()
+        self.engine.step(1005)
+        self.execution.prepare.assert_called_once()
+        self.execution.pump_call.assert_not_called()
+        self.engine.step(1006)
+        self.assertEqual(self.job()['state'], 'posted')
+        self.execution.pump_call.assert_called_once()
+
+    def test_other_callers_keep_configured_buy_delay(self):
+        for author, name in r.CALLERS.items():
+            if name == 'YourMistyy':
+                continue
+            with self.subTest(caller=name):
+                self.journal.add(dict(calloutId=PARENT, author=author, coinMint=r.SOL,
+                                      createdAt=1000), 1001, 60, 0, None, buy_delay=12)
+                self.assertEqual(self.job()['buy_at'], 1012)
+                self.journal.db.execute('DELETE FROM jobs')
+                self.journal.db.commit()
+
     def test_stop_loss_uses_expected_quote_and_sells_only_bought_tokens(self):
         self.confirmed()
         job = self.job();job['position_tokens'] = 1000;self.journal.save(job)

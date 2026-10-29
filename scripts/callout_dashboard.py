@@ -20,7 +20,7 @@ from callout_repost import CALLERS, ROOT
 import callout_repost as repost_module
 from callout_hub import retained_path
 
-BUILD_VERSION = '2026.10.29.1'
+BUILD_VERSION = '2026.10.29.2'
 API_SCHEMA = 2
 EXPECTED_WALLETS = {
     'CkPFGv2Wv1vwdWjtXioEgb8jhZQfs3eVZez3QCetu7xD',

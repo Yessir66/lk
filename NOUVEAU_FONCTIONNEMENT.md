@@ -1,4 +1,4 @@
-# Fonctionnement actuel : trois callers, achat après 12 secondes et updates
+# Fonctionnement actuel : trois callers, délais d’achat et updates
 
 Cette version remplace la liste de trading précédente par ces trois profils, identifiés par leurs wallets :
 
@@ -13,7 +13,7 @@ Le hub envoie aussi ses alertes Telegram uniquement pour les profils configurés
 ## Cycle d’un nouveau callout
 
 1. À la détection, le journal conserve le caller, le texte source, son image éventuelle et l’heure de publication pump.fun. Une préparation de contenu démarre sur un worker séparé.
-2. L’achat de 2 USD par défaut ne commence pas avant **publication du caller + 12 secondes**. C’est le début de préparation de la transaction : cotation, construction, signature, diffusion et confirmation prennent encore du temps. Une détection après cette échéance est traitée immédiatement si elle respecte encore l’âge maximal configuré, 60 secondes par défaut.
+2. L’achat de 2 USD par défaut ne commence pas avant **publication du caller + 5 secondes pour YourMistyy**, et **+ 12 secondes par défaut pour lynk0x_ et narc** (champ « Délai avant achat »). L’exception YourMistyy est liée à son wallet, même si son nom change. C’est le début de préparation de la transaction : cotation, construction, signature, diffusion et confirmation prennent encore du temps. Une détection après cette échéance est traitée immédiatement si elle respecte encore l’âge maximal configuré, 60 secondes par défaut. Ce changement s’applique aux nouveaux signaux après redémarrage du hub.
 3. Dès que l’achat est confirmé et la détention vérifiée, la publication est tentée dans le même passage du moteur, sans attente supplémentaire de 15 secondes. L’authentification et la réponse de pump.fun peuvent encore retarder l’affichage.
 4. Le texte et l’image déjà prêts sont utilisés. Si la préparation tarde, le texte local sauvegardé sert de secours. Une image prête plus tard peut faire l’objet d’une réponse distincte sur le bon callout, sans nouvel achat.
 5. Les réponses du caller d’origine sont surveillées via le filtre API **AUTHOR_ONLY**. Une réponse d’un autre wallet identifié est rejetée. Les tombstones et quotes sont ignorées. Chaque update est programmée au plus tôt **heure de son auteur + 10 secondes**, puis publiée sous le callout de notre compte. Une détection tardive ou un refus API prolonge ce délai ; ce n’est pas une garantie de publication à la seconde exacte.

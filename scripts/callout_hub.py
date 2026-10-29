@@ -354,6 +354,8 @@ def run_hub(args):
         mode = 'achats réels' if args.live else 'alertes seules' if args.alerts_only else 'achats simulés'
         tp = '' if args.alerts_only else f'achat après {args.buy_delay:g}s, TP +{args.take_profit}%, SL -{args.stop_loss}%, vente totale, '
         print(f'HUB : {label}, {mode}, {tp}flux unique toutes les {args.feed_interval}s minimum.', flush=True)
+        if not args.alerts_only:
+            print('YourMistyy : achat après 5s, callout dès confirmation ; délai des updates inchangé.', flush=True)
         print(f'Plafond Jupiter local : {args.jupiter_rps:g} requête(s)/s, partagé entre prix, cotations et constructions.', flush=True)
         while not stop.is_set() and not (args.stop_file and Path(args.stop_file).exists()):
             reader.step()
