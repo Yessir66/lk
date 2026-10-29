@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Auto Refresh</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <section class="card">
+    <div class="tab-line">
+      <img class="favicon" id="cur-icon" alt="">
+      <span class="title" id="cur-title"></span>
+    </div>
+    <div class="controls">
+      <span>Toutes les</span>
+      <input type="number" id="cur-value" min="0" step="any" aria-label="Intervalle">
+      <select id="cur-unit" aria-label="Unité"></select>
+      <button id="cur-toggle"></button>
+    </div>
+    <div class="status" id="cur-status"></div>
+  </section>
+
+  <h2>Onglets actualisés <span class="count" id="count"></span></h2>
+  <ul id="list"></ul>
+  <p class="empty" id="empty">Aucun onglet pour l'instant.</p>
+
+  <footer id="shortcut"></footer>
+
+  <template id="row">
+    <li class="row">
+      <img class="favicon" alt="">
+      <div class="main">
+        <a class="title" href="#" title="Aller à cet onglet"></a>
+        <div class="controls small">
+          <input type="number" min="0" step="any" aria-label="Intervalle">
+          <select aria-label="Unité"></select>
+          <span class="countdown"></span>
+        </div>
+      </div>
+      <button class="remove" title="Arrêter d'actualiser cet onglet" aria-label="Arrêter">×</button>
+    </li>
+  </template>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
