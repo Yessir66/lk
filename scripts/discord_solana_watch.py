@@ -12,10 +12,10 @@ import time
 from urllib.parse import urlparse
 
 from curl_cffi import requests
-from discord_token_analysis import Analyzer, Store, ReadRPC, RemoteError, candidates, write_reports, valid_address
+from discord_token_analysis import Analyzer, Store, ReadRPC, RemoteError, candidates, write_reports, valid_address, wallet_diagnostic
 
 ROOT = Path(__file__).resolve().parents[1]
-WATCH_VERSION = '2026.10.31.3'
+WATCH_VERSION = '2026.10.31.4'
 
 
 class StateLock:
@@ -297,8 +297,10 @@ def analyze_worker(args, stop):
                 store.finish(signal['mint'], result=result)
                 c = result['callouts']['count']
                 print(f'RAPPORT PRÊT : {signal["mint"]} ; callouts publics retrouvés : {c if c is not None else "indisponible"}', flush=True)
+                for name in ('DECU','LE L'):
+                    print(wallet_diagnostic(result,name),flush=True)
                 if not result.get('alert_eligible'):
-                    print('AUCUNE ALERTE TELEGRAM : aucun achat antérieur vérifié de DECU ou LE L.', flush=True)
+                    print('AUCUNE ALERTE TELEGRAM : preuve insuffisante ; voir les diagnostics DECU / LE L ci-dessus.', flush=True)
             except Exception as exc:
                 message = str(exc) if isinstance(exc, RemoteError) else 'Analyse indisponible (' + type(exc).__name__ + ')'
                 store.finish(signal['mint'], error=message)
@@ -325,6 +327,7 @@ def parse_args(argv=None):
     parser.add_argument('--state', type=Path, default=ROOT/'data/discord_solana/state.sqlite3')
     parser.add_argument('--output', type=Path, default=ROOT/'data/discord_solana/reports')
     parser.add_argument('--retry-errors', action='store_true', help='Retenter les analyses en erreur, en lecture seule')
+    parser.add_argument('--retry-mint', help='Réanalyser uniquement un CA déjà enregistré, en conservant son heure de signal')
     parser.add_argument('--no-telegram', action='store_true', help='Conserver uniquement les rapports locaux')
     parser.add_argument('--telegram-history', action='store_true', help='Envoyer aussi les bilans déjà terminés avant cette mise à jour')
     parser.add_argument('--retry-telegram', action='store_true', help='Retenter les envois explicitement refusés ; pas les livraisons incertaines')
@@ -343,6 +346,8 @@ def parse_args(argv=None):
             args.channel = channel_id(args.channel)
         except ValueError as exc:
             parser.error(str(exc))
+    if args.retry_mint and not valid_address(args.retry_mint):
+        parser.error('--retry-mint : adresse invalide')
     return args
 
 
@@ -352,6 +357,8 @@ def run(args):
     store, stop, reader = Store(args.state), threading.Event(), None
     if args.retry_errors:
         store.retry_errors()
+    if args.retry_mint:
+        store.retry_mint(args.retry_mint)
     sender = None if args.no_telegram else configured_telegram(args.scout_config)
     if sender:
         from discord_token_telegram import Outbox

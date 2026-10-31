@@ -16,9 +16,13 @@ from curl_cffi import requests
 
 
 class RemoteError(RuntimeError):
-    def __init__(self, message, status=None, retry_after=None):
+    def __init__(self, message, status=None, retry_after=None, rpc_code=None):
         super().__init__(message)
         self.status, self.retry_after = status, retry_after
+        self.rpc_code = rpc_code
+
+
+MAX_TRANSACTION_VERSION = 1
 
 
 def timestamp(value):
@@ -154,6 +158,14 @@ class Store:
         self.db.execute("UPDATE signals SET state='pending' WHERE state='running'")
         self.db.commit()
 
+    def retry_mint(self, mint):
+        if not valid_address(mint):
+            raise RemoteError('CA invalide pour la réanalyse')
+        if not self.db.execute('SELECT 1 FROM signals WHERE mint=?', (mint,)).fetchone():
+            raise RemoteError('Ce CA ne figure pas dans ce journal ; utiliser le dossier du Scout qui a reçu le signal')
+        self.db.execute("UPDATE signals SET state='pending',error=NULL WHERE mint=?", (mint,))
+        self.db.commit()
+
     def retry_errors(self):
         self.db.execute("UPDATE signals SET state='pending',error=NULL WHERE state='error'")
         for mint, data in self.db.execute("SELECT mint,result FROM signals WHERE state='done'").fetchall():
@@ -180,10 +192,15 @@ class ReadRPC:
         try:
             response = self.http.post(self.url, json={'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params}, timeout=15)
             if response.status_code != 200:
-                raise RemoteError(f'RPC {method} : HTTP {response.status_code}')
+                raise RemoteError(f'RPC {method} : HTTP {response.status_code}', status=response.status_code)
             data = response.json()
             if data.get('error') is not None:
-                raise RemoteError(f'RPC {method} : requête refusée')
+                error=data['error']
+                code=error.get('code') if isinstance(error,dict) else None
+                code=code if isinstance(code,int) else None
+                detail='version de transaction non prise en charge' if code==-32015 else 'requête refusée'
+                suffix=f' (code {code})' if code is not None else ''
+                raise RemoteError(f'RPC {method} : {detail}{suffix}',rpc_code=code)
             return data['result']
         except RemoteError:
             raise
@@ -195,7 +212,7 @@ class ReadRPC:
         if row:
             return json.loads(row[0])
         result = self.call('getTransaction', [signature, {'encoding': 'jsonParsed', 'commitment': 'confirmed',
-                                                         'maxSupportedTransactionVersion': 0}])
+                                                         'maxSupportedTransactionVersion': MAX_TRANSACTION_VERSION}])
         if result:
             self.store.db.execute('INSERT OR REPLACE INTO transactions VALUES (?,?)', (signature, json.dumps(result)))
             self.store.db.commit()
@@ -266,6 +283,22 @@ def verified_buy_wallets(result):
                 found.append(name)
                 break
     return found
+
+
+def wallet_diagnostic(result,name):
+    snapshot=result.get('wallets',{}).get(name,{})
+    if not snapshot.get('available'):
+        return name+' : LECTURE INDISPONIBLE — '+str(snapshot.get('reason') or 'données manquantes')
+    prefix='ACHAT ANTÉRIEUR VÉRIFIÉ' if name in verified_buy_wallets(result) else (
+        'ANALYSE PARTIELLE / PREUVE INSUFFISANTE' if snapshot.get('history_limited') else 'PAS D’ACHAT ANTÉRIEUR VÉRIFIÉ')
+    text=(name+' : '+prefix+f' ; {snapshot.get("signatures_scanned", "?")} signatures parcourues'
+          +f' ; {snapshot.get("transactions_fetched", "?")} transactions lues'
+          +f' ; {snapshot.get("transactions_missing",0)} indisponibles'
+          +f' ; {snapshot.get("buys",0)} achats reconnus'
+          +f' ; {len(snapshot.get("unclassified_movements",[]))} mouvements non attribués')
+    if snapshot.get('read_errors'):text+=' ; '+snapshot['read_errors'][0]['reason']
+    if snapshot.get('same_second_as_signal'):text+=' ; transaction dans la seconde du signal : ordre incertain'
+    return text
 
 
 def parse_trade(tx, wallet, mint, signature):
@@ -340,14 +373,24 @@ def wallet_snapshot(rpc, wallet, mint, created, cutoff, max_signatures=300):
         if older or len(page) < limit:
             boundary = True
             break
-    trades, missing = [], 0
-    for row in signatures:
+    trades, missing, read_errors, fetched = [], 0, [], 0
+    for position,row in enumerate(signatures):
         if row.get('err') is not None:
             continue
-        tx = rpc.transaction(row['signature'])
+        try:
+            tx = rpc.transaction(row['signature'])
+        except RemoteError as exc:
+            read_errors.append({'signature':row['signature'],'reason':str(exc),'rpc_code':exc.rpc_code})
+            if exc.rpc_code == -32015:
+                missing += 1
+                continue
+            # Preserve already verified trades, but stop hammering an unavailable provider.
+            missing += sum(r.get('err') is None for r in signatures[position:])
+            break
         if not tx:
             missing += 1
             continue
+        fetched += 1
         at = tx.get('blockTime')
         if at is None or not created <= at <= cutoff:
             missing += at is None
@@ -368,7 +411,9 @@ def wallet_snapshot(rpc, wallet, mint, created, cutoff, max_signatures=300):
     for t in buys + sells:
         for asset, amount in t['quotes'].items():
             totals[t['kind']][asset] += Decimal(amount)
-    return {'wallet': wallet, 'available': True, 'history_boundary_reached': boundary,
+    return {'wallet': wallet, 'available': not read_errors or fetched > 0,
+            'reason':read_errors[0]['reason'] if read_errors else None,'read_errors':read_errors,
+            'transactions_fetched':fetched,'history_boundary_reached': boundary,
             'history_limited': not boundary or missing > 0 or attribution_limited, 'transactions_missing': missing,
             'trade_attribution_limited': attribution_limited,
             'signatures_scanned': scanned, 'signatures_examined': len(signatures), 'buys': len(buys), 'sells': len(sells),
@@ -510,6 +555,7 @@ def _write_reports(store, folder):
                 body += '<p class="warning">Métadonnées indisponibles : l’heure de création n’a pas été vérifiée ; les wallets restent consultés dans l’historique borné avant le signal.</p>'
             for name, snapshot in result['wallets'].items():
                 body += f'<h3>{esc(name)}</h3>'
+                body += '<p>'+esc(wallet_diagnostic(result,name))+'</p>'
                 if not snapshot.get('available'):
                     body += f'<p>Indisponible : {esc(snapshot.get("reason"))}</p>'
                     continue

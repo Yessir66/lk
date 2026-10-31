@@ -1,4 +1,4 @@
-# Alertes Discord filtrées : DECU, LE L — version 2026.10.31.3
+# Alertes Discord filtrées : DECU, LE L — version 2026.10.31.4
 
 Ce module complète **alert_scout**, décrit dans le document fourni par l’utilisateur (`alert_scout_pour_ia.md`, instantané c50ebba de la branche claude/quirky-archimedes-6j2dkq). Il ne remplace ni son extension Chrome ni son serveur. Il ne fait aucun achat, vente ni publication Discord/pump.fun. Une alerte est envoyée au bot Telegram configuré uniquement si un achat antérieur confirmé de DECU ou LE L est vérifié pour ce token. Les erreurs et les cas sans preuve restent locaux.
 
@@ -29,7 +29,7 @@ py -m pip install -r requirements-discord.txt
 py scripts\discord_solana_watch.py
 ```
 
-Le lanceur `LANCER_ANALYSE_DISCORD.bat` exécute la même commande. Le terminal doit afficher **Version analyse Discord : 2026.10.31.3** et **Filtre Telegram : achat antérieur vérifié de DECU ou LE L uniquement**.
+Le lanceur `LANCER_ANALYSE_DISCORD.bat` exécute la même commande. Le terminal doit afficher **Version analyse Discord : 2026.10.31.4** et **Filtre Telegram : achat antérieur vérifié de DECU ou LE L uniquement**.
 
 3. Dans un deuxième terminal du projet, lancer le lecteur seul :
 
@@ -71,7 +71,7 @@ Les messages sont envoyés par le bot existant au destinataire existant : il ne 
 
 Pour garder seulement les rapports locaux : `py scripts\discord_solana_watch.py --no-telegram`.
 
-## Narrative IA après l’alerte — version 2026.10.31.3
+## Narrative IA après l’alerte — version 2026.10.31.4
 
 L’alerte d’achat vérifié conserve son propre worker et sa propre session HTTP. **Aucun appel IA ni téléchargement d’image n’est effectué avant la confirmation d’envoi de cette alerte.** Un worker distinct prépare ensuite la narrative et l’envoie en réponse au bon message Telegram. L’image éventuelle est envoyée en réponse à cette narrative, seulement après confirmation du message texte.
 
@@ -218,3 +218,24 @@ Les sources alternatives `--source bot`, `--source browser` et `--source jsonl` 
 ## Vérification
 
 Tests automatisés : déduplication persistante, reconnexion au journal, lignes partielles, respect de l’heure du signal, calculs de pourcentages, loyers SOL, transferts, cotations non-SOL, erreurs fournisseurs et absence de RPC d’écriture. Le parseur a aussi été confronté aux deux transactions réelles MACBOOK déjà étudiées. Cela ne constitue pas une validation sur ton salon Discord réel : celle-ci se fait à la prochaine alerte captée sur ton PC.
+
+## Correctif de lecture Solana v1 — 2026.10.31.4
+
+La lecture `getTransaction` accepte maintenant les transactions legacy, v0 et v1. La version précédente limitait la requête à v0 ; une transaction v1 était refusée par le RPC avec le code **-32015**, puis l’analyse du wallet devenait indisponible.
+
+Le cas public signalé par l’utilisateur a été reproduit :
+https://solscan.io/tx/5oiP9vYXXGZFdE9NAMQWPA5mig3EFSdBmTzQAaxJVbBcgdWpvkYBLXrHWs28Ker8KpKRh6PVYz1vEbX1pWUN3eGi
+
+Achat confirmé par DECU le **31 octobre 2026 à 19:16:19, heure de Paris**, de **22 741 914,376767 tokens** du mint `YdnQNdhWq76CYpx8UVA5W6DYD7yur91D9NAZLoCpump`. Le débit SOL corrigé des loyers et frais réseau est de **5,01 SOL** ; il peut inclure pourboires et frais groupés. Une fois la transaction récupérée, elle satisfait les règles strictes existantes de preuve de swap, sans ajout du routeur FLASH à la liste de confiance ni assouplissement du filtre.
+
+Les codes RPC sont désormais visibles sans recopier les messages privés du fournisseur. Une transaction d’une version future non prise en charge est comptée comme indisponible ; elle n’efface plus un achat déjà vérifié dans les autres transactions. Une panne de transport interrompt la poursuite des lectures et signale le caractère partiel du résultat.
+
+Pour réanalyser uniquement le signal déjà enregistré de ce token, arrêter l’ancien module d’analyse, copier les scripts corrigés et lancer dans le dossier du Scout :
+
+```bat
+py scripts\discord_solana_watch.py --retry-mint YdnQNdhWq76CYpx8UVA5W6DYD7yur91D9NAZLoCpump
+```
+
+Le CA et l’heure originale du signal sont conservés : l’heure courante ne remplace pas l’heure Discord. La surveillance des prochains signaux continue ensuite normalement. Si une alerte initiale existe déjà, son identifiant reste utilisé pour l’édition ; les critères d’achat antérieur et les protections contre les doublons sont inchangés.
+
+Pour les autres cas en erreur/incomplets, `--retry-errors` reste disponible. La correction v1 n’augmente pas automatiquement la limite de 300 signatures par wallet ; le terminal affiche maintenant les signatures parcourues, transactions lues/indisponibles et mouvements non attribués afin de distinguer une couverture limitée d’un achat non prouvé.
