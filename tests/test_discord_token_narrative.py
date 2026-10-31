@@ -180,6 +180,29 @@ class NarrativeTest(unittest.TestCase):
   self.assertEqual(settings.max_callouts,15)
   self.assertNotIn('private-key',repr(settings));self.assertEqual(config.read_text(),text)
 
+ def test_reuses_original_scout_model_without_executing_it_and_respects_overrides(self):
+  config=self.root/'scout_config.json'
+  config.write_text(json.dumps({'anthropic_api_key':'private-key'}))
+  scripts=self.root/'scripts';scripts.mkdir()
+  (scripts/'alert_scout.py').write_text('raise RuntimeError("must never execute")\nMODEL = "claude-opus-5-5"\n')
+  with patch.dict(w.os.environ,{},clear=True):
+   self.assertEqual(w.configured_narrative(config).model,'claude-opus-5-5')
+   config.write_text(json.dumps({'anthropic_api_key':'private-key','callout_narrative_model':'configured-model'}))
+   self.assertEqual(w.configured_narrative(config).model,'configured-model')
+  with patch.dict(w.os.environ,{'ANTHROPIC_MODEL':'env-model'},clear=True):
+   self.assertEqual(w.configured_narrative(config).model,'env-model')
+
+ def test_http_404_diagnostic_does_not_expose_provider_response(self):
+  client=MagicMock()
+  failure=RuntimeError('secret-key and source text in provider error')
+  failure.status_code=404
+  client.messages.create.side_effect=failure
+  service=n.NarrativeService(n.Settings(api_key='secret-key'),self.root,client=client)
+  with self.assertRaises(n.NarrativeError) as raised:service.prepare(sources_result())
+  self.assertIn('HTTP 404',str(raised.exception))
+  self.assertIn('ANTHROPIC_BASE_URL',str(raised.exception))
+  self.assertNotIn('secret-key',str(raised.exception))
+
  def test_count_keeps_source_text_media_and_author_across_duplicate_views(self):
   pump=MagicMock()
   identity='11111111-1111-4111-8111-111111111111'

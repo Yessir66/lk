@@ -95,7 +95,9 @@ Réglages facultatifs à ajouter dans la configuration existante (conserver les 
 }
 ```
 
-Ne pas remplacer le fichier entier par cet extrait : il ne contient pas tes clés. `callout_narrative_count` accepte 10 à 20. `ANTHROPIC_MODEL` peut remplacer le nom du modèle. Le modèle par défaut est Sonnet 4.5 ; il doit être accessible à ton compte Anthropic. L’ancien modèle Opus peut être sélectionné explicitement si souhaité.
+Ne pas remplacer le fichier entier par cet extrait : il ne contient pas tes clés. `callout_narrative_count` accepte 10 à 20. Depuis la version 2026.10.31.6, le modèle est choisi dans cet ordre : `ANTHROPIC_MODEL`, `callout_narrative_model`, constante littérale `MODEL` du fichier local `scripts/alert_scout.py`, puis Sonnet 4.5 si aucun modèle Scout n’est lisible. Le Scout est lu sans être exécuté. Ne pas ajouter le champ facultatif du modèle si l’on veut réutiliser automatiquement celui du Scout. Le terminal affiche le modèle sélectionné ; sa disponibilité dépend du compte et du serveur API utilisés.
+
+Après un échec de narrative, arrêter uniquement le terminal d’analyse avec Ctrl+C puis relancer `py scripts\discord_solana_watch.py --retry-narrative`. Cette option reprend les narratives échouées et conserve les identifiants des alertes Telegram déjà envoyées. Une réponse HTTP 404 peut concerner le modèle ou la route API ; le diagnostic indique ces deux pistes sans afficher la réponse du serveur ni les clés.
 
 ### Sources et sélection
 

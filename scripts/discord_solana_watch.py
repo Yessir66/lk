@@ -15,7 +15,7 @@ from curl_cffi import requests
 from discord_token_analysis import Analyzer, Store, ReadRPC, RemoteError, candidates, write_reports, valid_address, wallet_diagnostic, paris
 
 ROOT = Path(__file__).resolve().parents[1]
-WATCH_VERSION = '2026.10.31.5'
+WATCH_VERSION = '2026.10.31.6'
 
 
 class StateLock:
@@ -120,6 +120,20 @@ def configured_telegram(config_path):
     return TelegramSender(token.strip(), str(chat).strip())
 
 
+def scout_narrative_model(config_path):
+    # Read the original Scout's literal constant without importing/running its server.
+    import ast
+    try:
+        tree=ast.parse((config_path.parent/'scripts'/'alert_scout.py').read_text(encoding='utf-8-sig'))
+        for node in tree.body:
+            if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='MODEL' for t in node.targets):
+                if isinstance(node.value,ast.Constant) and isinstance(node.value.value,str):
+                    return node.value.value
+    except (OSError,SyntaxError,ValueError):
+        pass
+    return 'claude-sonnet-4-5'
+
+
 def configured_narrative(config_path):
     config={}
     if config_path.is_file():
@@ -131,8 +145,8 @@ def configured_narrative(config_path):
     if not key and not auth:return None
     from discord_token_narrative import Settings
     count=config.get('callout_narrative_count',20)
-    model=os.getenv('ANTHROPIC_MODEL') or config.get('callout_narrative_model','claude-sonnet-4-5')
-    if not isinstance(count,int) or isinstance(count,bool) or not 10<=count<=20 or not isinstance(model,str) or not 1<=len(model)<=120:
+    model=os.getenv('ANTHROPIC_MODEL') or config.get('callout_narrative_model') or scout_narrative_model(config_path)
+    if not isinstance(count,int) or isinstance(count,bool) or not 10<=count<=20 or not isinstance(model,str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,120}',model):
         raise RemoteError('Réglages narrative invalides : count 10–20, model non vide')
     return Settings(api_key=key,auth_token=auth,model=model,max_callouts=count)
 
@@ -374,6 +388,8 @@ def run(args):
         NarrativeQueue(store,Path(args.output)/'narrative_media',include_history=args.narrative_history,retry_failed=args.retry_narrative,recover=True)
     print('Analyse en lecture seule sur Solana et Discord : aucun achat ni vente.', flush=True)
     print('Version analyse Discord : ' + WATCH_VERSION, flush=True)
+    if narrative_settings:
+        print('Modèle narrative IA : ' + narrative_settings.model, flush=True)
     print('Bilans Telegram activés via la configuration scout.' if sender else 'Bilans Telegram désactivés ou non configurés ; rapports locaux uniquement.', flush=True)
     if sender:
         print('Filtre Telegram : achat antérieur vérifié de DECU ou LE L uniquement. Erreurs et cas ambigus : rapports locaux.', flush=True)

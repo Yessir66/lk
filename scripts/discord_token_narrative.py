@@ -233,7 +233,12 @@ class NarrativeService:
             data=json.loads(raw)
         except NarrativeError: raise
         except Exception as exc:
-            raise NarrativeError('Narrative IA indisponible ('+type(exc).__name__+')') from None
+            status=getattr(exc,'status_code',None)
+            detail=f' ; HTTP {status}' if isinstance(status,int) else ''
+            if status==404:
+                detail+=' ; modèle inaccessible ou route API introuvable : vérifier callout_narrative_model et ANTHROPIC_BASE_URL'
+            # Do not log provider response bodies: they can contain request data or credentials.
+            raise NarrativeError('Narrative IA indisponible ('+type(exc).__name__+detail+')') from None
         draft=validate_draft(data,sources,links,images)
         return {'draft':draft,'sources':sources,'links':links,'images':images,'selected_count':len(sources),
                 'model':self.settings.model,'generated_at':time.time(),
