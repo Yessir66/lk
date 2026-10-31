@@ -1,13 +1,14 @@
 # Analyse des signaux Discord : DECU, LE L et callouts pump.fun
 
-Ce module complète **alert_scout**, décrit dans le document fourni par l’utilisateur (`alert_scout_pour_ia.md`, instantané c50ebba de la branche claude/quirky-archimedes-6j2dkq). Il ne remplace ni son extension Chrome ni son serveur. Il ne fait aucun achat, vente, publication ou envoi Telegram/Discord.
+Ce module complète **alert_scout**, décrit dans le document fourni par l’utilisateur (`alert_scout_pour_ia.md`, instantané c50ebba de la branche claude/quirky-archimedes-6j2dkq). Il ne remplace ni son extension Chrome ni son serveur. Il ne fait aucun achat, vente ni publication Discord/pump.fun. Les bilans sont envoyés au bot Telegram déjà configuré dans `scout_config.json`.
 
 ## Installation sur le PC où alert_scout fonctionne déjà
 
-Copier uniquement les deux nouveaux fichiers dans le dossier `scripts` existant :
+Copier les trois fichiers du module dans le dossier `scripts` existant :
 
 - `scripts/discord_solana_watch.py`
 - `scripts/discord_token_analysis.py`
+- `scripts/discord_token_telegram.py`
 
 Copier aussi `requirements-discord.txt`, `LANCER_ANALYSE_DISCORD.bat` et ce guide à la racine du projet. **Ne pas remplacer ni supprimer le dossier `scripts` existant : il contient `alert_scout.py`, absent de cette branche.** Conserver l’extension, `scout_config.json` et tout `data`.
 
@@ -34,13 +35,31 @@ Le lanceur `LANCER_ANALYSE_DISCORD.bat` exécute la même commande.
 start "" "data\discord_solana\reports\index.html"
 ```
 
-La page se recharge toutes les dix secondes. Elle affiche les CA en attente, les bilans et les erreurs. Un fichier JSON par CA contient le détail des transactions et des callouts retrouvés. Les informations sont locales ; les notifications Telegram de l’ancien scout continuent indépendamment.
+La page se recharge toutes les dix secondes. Elle affiche les CA en attente, les bilans et les erreurs. Un fichier JSON par CA contient le détail des transactions et des callouts retrouvés. Les rapports locaux restent disponibles ; un bilan récapitulatif par token est aussi envoyé sur ton bot Telegram. Les notifications de l’ancien scout continuent indépendamment.
 
 Si scout est dans un autre dossier :
 
 ```bat
 py scripts\discord_solana_watch.py --scout-journal "C:\CHEMIN\VERS\PROJET\data\scout\journal.jsonl" --scout-config "C:\CHEMIN\VERS\PROJET\scout_config.json"
 ```
+
+## Bilans sur Telegram
+
+Le module réutilise **`telegram_bot_token`** et **`telegram_chat_id`** de `scout_config.json`. Les variables `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`, si définies, les remplacent pour cette exécution. Aucune clé n’est affichée ou copiée dans le journal. Ne pas partager ce fichier de configuration.
+
+À la fin de l’analyse, un message récapitule le CA, les heures de création et de signal, les bilans DECU et LE L (montants, quantités, ventes, pourcentages), le compteur de callouts et les limites constatées. Les pourcentages portent sur les quantités de tokens, pas sur le rendement. Si une analyse échoue, un message d’indisponibilité est envoyé plutôt qu’un faux résultat à zéro.
+
+Les messages sont envoyés par le bot existant au destinataire existant : il ne s’agit pas d’un envoi à Trojan. Les réponses HTML de Telegram ne sont pas utilisées pour interpréter les données du token : le texte du bilan est envoyé en texte brut.
+
+- **Au premier lancement de cette version, les bilans déjà terminés ne sont pas tous renvoyés.** Les prochains tokens sont notifiés automatiquement. Pour envoyer également les anciens rapports une fois, ajouter `--telegram-history`.
+- Un identifiant de message est mémorisé pour chaque token. Au redémarrage, les messages confirmés ne sont pas renvoyés. Si `--retry-errors` produit ensuite un bilan corrigé, le message existant est édité.
+- Les notifications utilisent une file séparée : un quota Telegram ne bloque pas la réception Discord ou l’analyse.
+- Un HTTP 429 explicitement refusé est retenté après le délai demandé. Un timeout ou un arrêt pendant un nouvel envoi laisse la livraison **incertaine** ; aucun renvoi automatique n’est tenté pour éviter un doublon. Vérifier Telegram et le terminal dans ce cas.
+- Après correction d’un envoi explicitement refusé (par exemple un bot bloqué), `--retry-telegram` permet de réessayer. Les livraisons incertaines ne sont pas relancées par cette option.
+- La destination est liée à l’historique local. Pour changer de bot/destinataire, utiliser un autre `--state` afin de ne pas confondre les identifiants des messages.
+- Si la configuration Telegram est absente, le terminal indique **rapports locaux uniquement**. Si elle est partielle, il indique les champs à compléter. Le bot doit avoir été démarré dans Telegram et être autorisé à écrire au destinataire.
+
+Pour garder seulement les rapports locaux : `py scripts\discord_solana_watch.py --no-telegram`.
 
 ## Comment le signal est récupéré
 

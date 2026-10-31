@@ -423,7 +423,7 @@ def _write_reports(store, folder):
         elif error:
             body += f'<p class="warning">{esc(error)}</p>'
         blocks.append('<article>' + body + '</article>')
-    page = '''<!doctype html><html lang="fr"><meta charset="utf-8"><meta http-equiv="refresh" content="10"><title>Discord Solana · DECU / LE L</title><style>body{background:#101416;color:#e6ece8;font:15px system-ui;max-width:1100px;margin:32px auto;padding:16px}article{border:1px solid #39453d;padding:20px;margin:20px 0;border-radius:12px}h2{font-size:15px;overflow-wrap:anywhere}a{color:#b5e578}.warning{color:#ffb985}p{overflow-wrap:anywhere}</style><h1>Signaux Discord · DECU / LE L</h1><p>Lecture seule. Bilans arrêtés à l’heure du message Discord, pas à l’heure d’ouverture de cette page. Aucun achat, vente ou message envoyé. Actualisation toutes les 10 secondes.</p>'''
+    page = '''<!doctype html><html lang="fr"><meta charset="utf-8"><meta http-equiv="refresh" content="10"><title>Discord Solana · DECU / LE L</title><style>body{background:#101416;color:#e6ece8;font:15px system-ui;max-width:1100px;margin:32px auto;padding:16px}article{border:1px solid #39453d;padding:20px;margin:20px 0;border-radius:12px}h2{font-size:15px;overflow-wrap:anywhere}a{color:#b5e578}.warning{color:#ffb985}p{overflow-wrap:anywhere}</style><h1>Signaux Discord · DECU / LE L</h1><p>Lecture seule. Bilans arrêtés à l’heure du message Discord, pas à l’heure d’ouverture de cette page. Aucun achat, vente ou message Discord. Bilans Telegram si configurés. Actualisation toutes les 10 secondes.</p>'''
     target = folder / 'index.html'
     temp = folder / 'index.tmp'
     temp.write_text(page + ''.join(blocks) + '</html>', encoding='utf-8')

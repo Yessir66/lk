@@ -17,6 +17,32 @@ from discord_token_analysis import Analyzer, Store, ReadRPC, RemoteError, candid
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class StateLock:
+    def __init__(self, path):
+        self.path = Path(str(path) + '.watch.lock')
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.file = self.path.open('a+b')
+        self.file.seek(0)
+        try:
+            if os.name == 'nt':
+                import msvcrt
+                if self.path.stat().st_size == 0:
+                    self.file.write(b'0'); self.file.flush(); self.file.seek(0)
+                msvcrt.locking(self.file.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self.file.close()
+            raise RemoteError('Cette analyse Discord est déjà lancée pour ce journal ; fermer son ancien terminal') from None
+        return self
+
+    def __exit__(self, *args):
+        self.file.close()
+
+
 def scout_source(path):
     return 'scout:' + str(Path(path).resolve())
 
@@ -74,6 +100,23 @@ def configured_rpc(config_path):
     key = os.getenv('HELIUS_API_KEY') or config.get('helius_api_key')
     return (os.getenv('SOLANA_RPC_URL') or config.get('rpc_url')
             or ('https://mainnet.helius-rpc.com/?api-key=' + key if key else 'https://api.mainnet-beta.solana.com'))
+
+
+def configured_telegram(config_path):
+    config = {}
+    if config_path.is_file():
+        try:
+            config = json.loads(config_path.read_text(encoding='utf-8-sig'))
+        except (ValueError, OSError):
+            raise RemoteError('Configuration scout illisible') from None
+    token = os.getenv('TELEGRAM_BOT_TOKEN') or config.get('telegram_bot_token')
+    chat = os.getenv('TELEGRAM_CHAT_ID') or config.get('telegram_chat_id')
+    if not token and not chat:
+        return None
+    if not isinstance(token, str) or not token.strip() or not isinstance(chat, (str, int)) or not str(chat).strip():
+        raise RemoteError('Telegram : renseigner telegram_bot_token et telegram_chat_id dans scout_config.json')
+    from discord_token_telegram import TelegramSender
+    return TelegramSender(token.strip(), str(chat).strip())
 
 
 def channel_id(value):
@@ -262,6 +305,9 @@ def parse_args(argv=None):
     parser.add_argument('--state', type=Path, default=ROOT/'data/discord_solana/state.sqlite3')
     parser.add_argument('--output', type=Path, default=ROOT/'data/discord_solana/reports')
     parser.add_argument('--retry-errors', action='store_true', help='Retenter les analyses en erreur, en lecture seule')
+    parser.add_argument('--no-telegram', action='store_true', help='Conserver uniquement les rapports locaux')
+    parser.add_argument('--telegram-history', action='store_true', help='Envoyer aussi les bilans déjà terminés avant cette mise à jour')
+    parser.add_argument('--retry-telegram', action='store_true', help='Retenter les envois explicitement refusés ; pas les livraisons incertaines')
     args = parser.parse_args(argv)
     if not .1 <= args.rpc_rps <= 50 or not 1 <= args.poll <= 60 or not 1 <= args.max_signatures <= 10000 or not 1 <= args.max_callout_pages <= 200:
         parser.error('Limites RPC/poll/pagination invalides')
@@ -283,9 +329,14 @@ def run(args):
     store, stop, reader = Store(args.state), threading.Event(), None
     if args.retry_errors:
         store.retry_errors()
-    print('Surveillance en lecture seule : aucun achat, vente ou message Discord/Telegram.', flush=True)
+    sender = None if args.no_telegram else configured_telegram(args.scout_config)
+    if sender:
+        from discord_token_telegram import Outbox
+        Outbox(store, sender.destination, include_history=args.telegram_history, retry_failed=args.retry_telegram, recover=True)
+    print('Analyse en lecture seule sur Solana et Discord : aucun achat ni vente.', flush=True)
+    print('Bilans Telegram activés via la configuration scout.' if sender else 'Bilans Telegram désactivés ou non configurés ; rapports locaux uniquement.', flush=True)
     print('Rapports : ' + str((args.output/'index.html').resolve()), flush=True)
-    thread = None
+    thread = notifications = None
     try:
         if args.source == 'scout':
             source = initialize_scout(store, args.scout_journal, args.from_start)
@@ -309,6 +360,10 @@ def run(args):
         thread = threading.Thread(target=analyze_worker, args=(args, stop), daemon=True)
         write_reports(store, args.output)
         thread.start()
+        if sender:
+            from discord_token_telegram import notification_worker
+            notifications = threading.Thread(target=notification_worker, args=(args, stop, sender), daemon=True)
+            notifications.start()
         if args.source == 'jsonl':
             # Explicit import processes the supplied file; the mint primary key deduplicates replays.
             with args.messages_file.open(encoding='utf-8-sig') as stream:
@@ -319,10 +374,20 @@ def run(args):
                 if not thread.is_alive():
                     raise RemoteError('Le worker d’analyse est arrêté ; relancer pour reprendre les CA mémorisés')
                 stop.wait(.5)
+            if sender:
+                from discord_token_telegram import Outbox
+                outbox = Outbox(store, sender.destination)
+                outbox.queue()
+                while store.db.execute("SELECT 1 FROM telegram_reports WHERE state IN ('pending','sending','editing') LIMIT 1").fetchone():
+                    if not notifications.is_alive():
+                        raise RemoteError('Notifications Telegram arrêtées ; rapports locaux conservés')
+                    stop.wait(.5)
         else:
             while not stop.is_set():
                 if not thread.is_alive():
                     raise RemoteError('Le worker d’analyse est arrêté ; relancer pour reprendre les CA mémorisés')
+                if notifications and not notifications.is_alive():
+                    raise RemoteError('Notifications Telegram arrêtées ; rapports locaux conservés')
                 try:
                     if args.source == 'scout':
                         if poll_scout(store, args.scout_journal):
@@ -348,12 +413,16 @@ def run(args):
             reader.close()
         if thread:
             thread.join(timeout=20)
+        if notifications:
+            notifications.join(timeout=17)
         store.db.close()
 
 
 if __name__ == '__main__':
     try:
-        run(parse_args())
+        args = parse_args()
+        with StateLock(args.state):
+            run(args)
     except KeyboardInterrupt:
         print('Arrêt demandé. Les CA déjà enregistrés restent mémorisés.')
     except RemoteError as exc:
