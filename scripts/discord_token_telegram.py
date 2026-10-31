@@ -61,6 +61,10 @@ def summary(result):
         initial, all_buys = wallet.get('sold_percent_initial_buy'), wallet.get('sold_percent_all_buys')
         lines += ['Vendu / premier achat : ' + (number(initial, 2) + ' %' if initial is not None else 'indisponible'),
                   'Vendu / cumul acheté : ' + (number(all_buys, 2) + ' %' if all_buys is not None else 'indisponible')]
+        if wallet.get('history_scope')=='token_accounts':
+            observed=wallet.get('sold_percent_first_observed_buy')
+            if observed is not None:lines.append('Vendu / 1er achat retrouvé (comptes observés) : '+number(observed,2)+' %')
+            lines.append('Périmètre : comptes associés et comptes token actuels ; autres anciens comptes fermés potentiellement absents.')
         if wallet.get('history_limited'):
             lines.append('⚠️ Historique incomplet : totaux partiels, ratio sur le cumul potentiellement biaisé.')
         if wallet.get('first_buy_order_ambiguous'):

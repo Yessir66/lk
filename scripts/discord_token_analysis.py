@@ -185,7 +185,7 @@ class ReadRPC:
         self.next_at = 0
 
     def call(self, method, params):
-        if method not in ('getSignaturesForAddress', 'getTransaction'):
+        if method not in ('getSignaturesForAddress', 'getTransaction', 'getTokenAccountsByOwner'):
             raise ValueError('RPC autorisé en lecture seule uniquement')
         time.sleep(max(0, self.next_at - time.monotonic()))
         self.next_at = time.monotonic() + self.interval
@@ -296,6 +296,11 @@ def wallet_diagnostic(result,name):
           +f' ; {snapshot.get("transactions_missing",0)} indisponibles'
           +f' ; {snapshot.get("buys",0)} achats reconnus'
           +f' ; {len(snapshot.get("unclassified_movements",[]))} mouvements non attribués')
+    text+=f' ; {snapshot.get("signatures_after_signal",0)} après le signal / {snapshot.get("signatures_failed_skipped",0)} échouées ignorées'
+    if snapshot.get('history_scope')=='token_accounts':text+=' ; recherche ciblée : comptes du token'
+    if snapshot.get('oldest_signature_at') is not None and snapshot['oldest_signature_at']>result.get('signal_at',0):
+        text+=' ; FENÊTRE DU SIGNAL NON ATTEINTE'
+    if snapshot.get('source_notes'):text+=' ; '+snapshot['source_notes'][0]
     if snapshot.get('read_errors'):text+=' ; '+snapshot['read_errors'][0]['reason']
     if snapshot.get('same_second_as_signal'):text+=' ; transaction dans la seconde du signal : ordre incertain'
     return text
@@ -349,30 +354,71 @@ def parse_trade(tx, wallet, mint, signature):
             'quotes': quotes if is_swap else {}}
 
 
-def wallet_snapshot(rpc, wallet, mint, created, cutoff, max_signatures=300):
+def associated_accounts(wallet,mint,token_program=None):
+    from solders.pubkey import Pubkey
+    owner=Pubkey.from_string(wallet);coin=Pubkey.from_string(mint)
+    associated=Pubkey.from_string('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL')
+    programs=[token_program] if token_program in TOKEN_PROGRAMS else sorted(TOKEN_PROGRAMS)
+    return [str(Pubkey.find_program_address([bytes(owner),bytes(Pubkey.from_string(program)),bytes(coin)],associated)[0]) for program in programs]
+
+
+def token_account_sources(rpc,wallet,mint,token_program=None):
+    addresses,notes=[],[]
+    try:addresses.extend(associated_accounts(wallet,mint,token_program))
+    except ImportError:notes.append('Solders absent : installer requirements-discord.txt pour retrouver aussi les comptes associés fermés')
+    try:
+        accounts=rpc.call('getTokenAccountsByOwner',[wallet,{'mint':mint},{'encoding':'jsonParsed','commitment':'confirmed'}])
+        if not isinstance(accounts,dict) or not isinstance(accounts.get('value'),list):
+            raise RemoteError('RPC comptes token : format de réponse inattendu')
+        addresses.extend(row['pubkey'] for row in accounts.get('value',[]) if valid_address(row.get('pubkey')))
+    except RemoteError as exc:notes.append(str(exc))
+    return list(dict.fromkeys(addresses)),notes
+
+
+def signature_window(rpc,addresses,created,cutoff,max_transactions,max_history=30000,page_size=100):
+    candidates,seen,scanned,failed,after= [],set(),0,0,0
+    coverage={};oldest=None;newest=None
+    for address in addresses:
+        before=None;reached=False;truncated=False
+        while scanned<max_history and len(candidates)<max_transactions:
+            limit=min(page_size,max_history-scanned,max(1,max_transactions-len(candidates)) if page_size<=100 else page_size)
+            options={'limit':limit,'commitment':'confirmed'}
+            if before:options['before']=before
+            page=rpc.call('getSignaturesForAddress',[address,options]);scanned+=len(page)
+            if not page:reached=True;break
+            older=False
+            for row in page:
+                at=row.get('blockTime')
+                if at is not None:
+                    oldest=at if oldest is None else min(oldest,at)
+                    newest=at if newest is None else max(newest,at)
+                    older=older or at<created
+                if row.get('err') is not None:
+                    failed+=1;continue
+                if at is not None and at>cutoff:
+                    after+=1;continue
+                if at is not None and at<created:continue
+                if row['signature'] not in seen:
+                    if len(candidates)>=max_transactions:
+                        truncated=True;continue
+                    seen.add(row['signature']);candidates.append(row)
+            next_before=page[-1]['signature']
+            if older or len(page)<limit:reached=not truncated;break
+            if next_before==before:break
+            before=next_before
+        coverage[address]=reached
+    return candidates,{'signatures_scanned':scanned,'signatures_failed_skipped':failed,'signatures_after_signal':after,
+        'oldest_signature_at':oldest,'newest_signature_at':newest,'account_coverage':coverage,
+        'history_boundary_reached':len(coverage)==len(addresses) and all(coverage.values())}
+
+
+def wallet_snapshot(rpc, wallet, mint, created, cutoff, max_signatures=300, *, token_history=False, token_program=None, max_history=30000):
     created = int(created)  # Solana blockTime has one-second precision.
-    signatures, before, boundary, scanned = [], None, False, 0
-    while scanned < max_signatures:
-        limit = min(100, max_signatures - scanned)
-        options = {'limit': limit, 'commitment': 'confirmed'}
-        if before:
-            options['before'] = before
-        page = rpc.call('getSignaturesForAddress', [wallet, options])
-        scanned += len(page)
-        if not page:
-            boundary = True
-            break
-        older = False
-        for row in page:
-            at = row.get('blockTime')
-            if at is not None and at < created:
-                older = True
-            if at is None or created <= at <= cutoff:
-                signatures.append(row)
-        before = page[-1]['signature']
-        if older or len(page) < limit:
-            boundary = True
-            break
+    addresses,source_notes=token_account_sources(rpc,wallet,mint,token_program) if token_history else ([],[])
+    targeted=bool(addresses)
+    if not addresses:addresses=[wallet]
+    signatures,window=signature_window(rpc,addresses,created,cutoff,max_signatures,max_history,page_size=1000 if targeted else 100)
+    boundary,scanned=window['history_boundary_reached'],window['signatures_scanned']
     trades, missing, read_errors, fetched = [], 0, [], 0
     for position,row in enumerate(signatures):
         if row.get('err') is not None:
@@ -411,17 +457,20 @@ def wallet_snapshot(rpc, wallet, mint, created, cutoff, max_signatures=300):
     for t in buys + sells:
         for asset, amount in t['quotes'].items():
             totals[t['kind']][asset] += Decimal(amount)
-    return {'wallet': wallet, 'available': not read_errors or fetched > 0,
+    return {'wallet': wallet, 'available': not read_errors or fetched > 0,**window,
             'reason':read_errors[0]['reason'] if read_errors else None,'read_errors':read_errors,
             'transactions_fetched':fetched,'history_boundary_reached': boundary,
-            'history_limited': not boundary or missing > 0 or attribution_limited, 'transactions_missing': missing,
+            'history_limited': targeted or not boundary or missing > 0 or attribution_limited, 'transactions_missing': missing,
+            'history_scope':'token_accounts' if targeted else 'wallet','source_accounts':addresses,'source_notes':source_notes,
+            'coverage_note':'Comptes associés standards et comptes token actuels ; anciens comptes non associés fermés potentiellement absents.' if targeted else 'Historique public du wallet parcouru dans les limites configurées.',
             'trade_attribution_limited': attribution_limited,
             'signatures_scanned': scanned, 'signatures_examined': len(signatures), 'buys': len(buys), 'sells': len(sells),
             'first_buy_order_ambiguous': first_ambiguous,
             'first_buy': first, 'bought_raw': str(total_bought), 'sold_raw': str(total_sold),
             'bought_quantity': str(Decimal(total_bought) / 10**first['decimals']) if first else None,
             'sold_quantity': str(Decimal(total_sold) / 10**first['decimals']) if first else None,
-            'sold_percent_initial_buy': str(Decimal(total_sold) * 100 / first['raw']) if first and boundary and not missing and not first_ambiguous and not attribution_limited else None,
+            'sold_percent_initial_buy': str(Decimal(total_sold) * 100 / first['raw']) if first and not targeted and boundary and not missing and not first_ambiguous and not attribution_limited else None,
+            'sold_percent_first_observed_buy':str(Decimal(total_sold)*100/first['raw']) if first and boundary and not missing and not first_ambiguous and not attribution_limited else None,
             'sold_percent_all_buys': str(Decimal(total_sold) * 100 / total_bought) if total_bought else None,
             'quote_totals': {kind: {a: str(v) for a, v in values.items()} for kind, values in totals.items()},
             'unclassified_movements': [t for t in trades if t['kind'].startswith('transfer_')],
@@ -479,9 +528,10 @@ def count_callouts(pump, mint, created, cutoff, max_pages=40):
 
 
 class Analyzer:
-    def __init__(self, rpc, pump=None, max_signatures=300, max_pages=40):
+    def __init__(self, rpc, pump=None, max_signatures=300, max_pages=40, max_history=30000):
         self.rpc, self.pump = rpc, pump or Pump('browser')
         self.max_signatures, self.max_pages = max_signatures, max_pages
+        self.max_history=max_history
 
     def analyze(self, signal):
         started, begin = time.monotonic(), time.time()
@@ -504,7 +554,8 @@ class Analyzer:
         for name, wallet in WATCHED.items():
             stage = time.monotonic()
             try:
-                result['wallets'][name] = wallet_snapshot(self.rpc, wallet, mint, created or 0, cutoff, self.max_signatures)
+                result['wallets'][name] = wallet_snapshot(self.rpc, wallet, mint, created or 0, cutoff, self.max_signatures,
+                    token_history=True,token_program=coin.get('token_program'),max_history=self.max_history)
             except RemoteError as exc:
                 result['wallets'][name] = {'wallet': wallet, 'available': False, 'reason': str(exc)}
             timings[name + '_ms'] = round((time.monotonic() - stage) * 1000)
@@ -568,6 +619,10 @@ def _write_reports(store, folder):
                 body += f'<p>Total achats : {esc(snapshot["quote_totals"]["buy"])} · Total ventes : {esc(snapshot["quote_totals"]["sell"])}</p>'
                 body += f'<p>Quantités : {esc(snapshot["bought_quantity"])} tokens achetés · {esc(snapshot["sold_quantity"])} tokens vendus.</p>'
                 body += f'<p>Quantité vendue / premier achat : <strong>{esc(snapshot["sold_percent_initial_buy"])} %</strong> · / tous les achats : {esc(snapshot["sold_percent_all_buys"])} %</p>'
+                if snapshot.get('history_scope')=='token_accounts':
+                    body += '<p>'+esc(snapshot.get('coverage_note'))+'</p>'
+                    if snapshot.get('sold_percent_first_observed_buy') is not None:
+                        body += '<p>Vendu / premier achat retrouvé sur les comptes observés : '+esc(snapshot['sold_percent_first_observed_buy'])+' %</p>'
                 if snapshot['history_limited']:
                     body += '<p class="warning">Historique incomplet : achats, ventes et pourcentages peuvent être sous-estimés ou biaisés.</p>'
                 if snapshot['unclassified_movements']:

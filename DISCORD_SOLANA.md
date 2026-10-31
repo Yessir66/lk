@@ -1,4 +1,4 @@
-# Alertes Discord filtrées : DECU, LE L — version 2026.10.31.4
+# Alertes Discord filtrées : DECU, LE L — version 2026.10.31.5
 
 Ce module complète **alert_scout**, décrit dans le document fourni par l’utilisateur (`alert_scout_pour_ia.md`, instantané c50ebba de la branche claude/quirky-archimedes-6j2dkq). Il ne remplace ni son extension Chrome ni son serveur. Il ne fait aucun achat, vente ni publication Discord/pump.fun. Une alerte est envoyée au bot Telegram configuré uniquement si un achat antérieur confirmé de DECU ou LE L est vérifié pour ce token. Les erreurs et les cas sans preuve restent locaux.
 
@@ -29,7 +29,7 @@ py -m pip install -r requirements-discord.txt
 py scripts\discord_solana_watch.py
 ```
 
-Le lanceur `LANCER_ANALYSE_DISCORD.bat` exécute la même commande. Le terminal doit afficher **Version analyse Discord : 2026.10.31.4** et **Filtre Telegram : achat antérieur vérifié de DECU ou LE L uniquement**.
+Le lanceur `LANCER_ANALYSE_DISCORD.bat` exécute la même commande. Le terminal doit afficher **Version analyse Discord : 2026.10.31.5** et **Filtre Telegram : achat antérieur vérifié de DECU ou LE L uniquement**.
 
 3. Dans un deuxième terminal du projet, lancer le lecteur seul :
 
@@ -71,7 +71,7 @@ Les messages sont envoyés par le bot existant au destinataire existant : il ne 
 
 Pour garder seulement les rapports locaux : `py scripts\discord_solana_watch.py --no-telegram`.
 
-## Narrative IA après l’alerte — version 2026.10.31.4
+## Narrative IA après l’alerte — version 2026.10.31.5
 
 L’alerte d’achat vérifié conserve son propre worker et sa propre session HTTP. **Aucun appel IA ni téléchargement d’image n’est effectué avant la confirmation d’envoi de cette alerte.** Un worker distinct prépare ensuite la narrative et l’envoie en réponse au bon message Telegram. L’image éventuelle est envoyée en réponse à cette narrative, seulement après confirmation du message texte.
 
@@ -199,7 +199,7 @@ Le module réutilise seulement l’URL RPC / la clé Helius de ton `scout_config
 
 Le RPC est limité à **2 requêtes/s par défaut**. Ce quota est propre au processus et s’ajoute aux requêtes de l’ancien scout. Avec un abonnement Helius à 10/s, régler par exemple **l’ancien scout à `rps: 7`** et ce module à **2/s**, pour garder une marge. Il faut compter aussi les autres programmes utilisant la même clé. Les deux processus ne partagent pas automatiquement leur limiteur. En mode lecteur seul, les analyses et lectures RPC de l’ancien scout ne sont plus exécutées ; tenir compte surtout des autres programmes actifs avec la même clé.
 
-Par défaut, le scan est limité à **300 signatures par wallet** et **40 pages par catégorie de callouts**. Augmenter uniquement si le rapport indique un historique tronqué et si le quota le permet :
+Par défaut, le scan analyse jusqu’à **300 transactions candidates réussies par wallet**, parcourt jusqu’à **30 000 lignes de signatures** et lit **40 pages par catégorie de callouts**. Les transactions après le signal et les échecs sont exclus avant le décompte des transactions candidates. Le budget d’historique est réglable avec `--max-history-signatures`. Augmenter uniquement si le rapport indique un historique tronqué et si le quota le permet :
 
 ```bat
 py scripts\discord_solana_watch.py --max-signatures 1000 --max-callout-pages 80 --retry-errors
@@ -239,3 +239,28 @@ py scripts\discord_solana_watch.py --retry-mint YdnQNdhWq76CYpx8UVA5W6DYD7yur91D
 Le CA et l’heure originale du signal sont conservés : l’heure courante ne remplace pas l’heure Discord. La surveillance des prochains signaux continue ensuite normalement. Si une alerte initiale existe déjà, son identifiant reste utilisé pour l’édition ; les critères d’achat antérieur et les protections contre les doublons sont inchangés.
 
 Pour les autres cas en erreur/incomplets, `--retry-errors` reste disponible. La correction v1 n’augmente pas automatiquement la limite de 300 signatures par wallet ; le terminal affiche maintenant les signatures parcourues, transactions lues/indisponibles et mouvements non attribués afin de distinguer une couverture limitée d’un achat non prouvé.
+
+## Recherche ciblée des comptes du token — 2026.10.31.5
+
+Le diagnostic « 300 signatures parcourues, 0 transactions lues » ne suffisait pas à atteindre l’heure du signal : le budget était consommé par les transactions échouées et postérieures au signal. Le correctif sépare les budgets de pagination d’historique et de transactions candidates. Les échecs et les transactions trop récentes ne consomment plus les 300 lectures candidates ; la pagination reste bornée par `--max-history-signatures` (30 000 par défaut).
+
+L’analyse utilise désormais les **comptes du token**, plutôt que toutes les opérations récentes du wallet. `getTokenAccountsByOwner` retrouve ses comptes actuels, et **Solders**, utilisé uniquement pour dériver des adresses publiques, calcule ses comptes associés standards SPL / Token-2022. Ces adresses sont consultées même quand le compte a été fermé après une vente. Aucune clé privée ni opération de signature n’est utilisée. Sans Solders et sans compte actuel, le module se replie sur le scan du wallet et signale cette limite.
+
+Le test public sur le token DECU signalé a retrouvé l’achat réel `5oiP9vY...` via son compte associé `6eEWQuE5LszMFLFCewUfa8ahoBEy4stWuv6TtmT5uy33`, après un parcours de 1 847 signatures dont 1 813 échecs. Le cutoff de ce test était une minute après l’achat, **pas une heure Discord devinée** ; la commande `--retry-mint` reprend l’heure réellement enregistrée sur le PC utilisateur. Un quota du RPC public a rendu une partie du test partielle, sans effacer l’achat confirmé déjà récupéré. Cela ne garantit pas un même délai sur le PC utilisateur.
+
+### Périmètre des pourcentages
+
+La recherche ciblée couvre les comptes associés et les comptes token actuels. **D’anciens comptes non associés déjà fermés peuvent manquer.** Le rapport précise donc ce périmètre et ne présente pas le premier achat observé comme un premier achat absolu de tout le wallet. Si la lecture des comptes observés est complète, il peut afficher « Vendu / 1er achat retrouvé (comptes observés) ». Le cumul reste celui des transactions retrouvées. Si les lectures sont incomplètes ou ambiguës, le pourcentage de référence reste indisponible.
+
+Cette réserve n’empêche pas une alerte lorsque l’achat positif est réellement prouvé : le filtre strict, le contrôle du propriétaire, la réussite de la transaction et l’antériorité au signal sont inchangés. L’absence de résultat sur une lecture partielle n’est jamais une preuve d’absence d’achat.
+
+### Installation du correctif
+
+Arrêter le module d’analyse, remplacer les trois scripts fournis (`discord_token_analysis.py`, `discord_solana_watch.py`, `discord_token_telegram.py`) et `requirements-discord.txt`, conserver `data` et la configuration, puis lancer :
+
+```bat
+py -m pip install -r requirements-discord.txt
+py scripts\discord_solana_watch.py --retry-mint YdnQNdhWq76CYpx8UVA5W6DYD7yur91D9NAZLoCpump
+```
+
+Le lecteur Discord existant peut rester ouvert. Vérifier **2026.10.31.5**. Les diagnostics précisent le mode ciblé, les lignes après le signal, les échecs ignorés et une éventuelle « FENÊTRE DU SIGNAL NON ATTEINTE ». Pour approfondir explicitement une recherche encore tronquée : `--max-history-signatures 100000`. Cela ajoute des requêtes et ne garantit pas que le fournisseur serve tout l’historique.

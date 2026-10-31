@@ -12,10 +12,10 @@ import time
 from urllib.parse import urlparse
 
 from curl_cffi import requests
-from discord_token_analysis import Analyzer, Store, ReadRPC, RemoteError, candidates, write_reports, valid_address, wallet_diagnostic
+from discord_token_analysis import Analyzer, Store, ReadRPC, RemoteError, candidates, write_reports, valid_address, wallet_diagnostic, paris
 
 ROOT = Path(__file__).resolve().parents[1]
-WATCH_VERSION = '2026.10.31.4'
+WATCH_VERSION = '2026.10.31.5'
 
 
 class StateLock:
@@ -282,7 +282,7 @@ class BrowserReader:
 def analyze_worker(args, stop):
     store = Store(args.state)
     rpc = ReadRPC(args.rpc, store, args.rpc_rps)
-    analyzer = Analyzer(rpc, max_signatures=args.max_signatures, max_pages=args.max_callout_pages)
+    analyzer = Analyzer(rpc, max_signatures=args.max_signatures, max_pages=args.max_callout_pages,max_history=args.max_history_signatures)
     try:
         store.recover()
         while not stop.is_set():
@@ -290,7 +290,7 @@ def analyze_worker(args, stop):
             if not signal:
                 stop.wait(.5)
                 continue
-            print(f'ANALYSE EN COURS : {signal["mint"]}', flush=True)
+            print(f'ANALYSE EN COURS : {signal["mint"]} ; signal Discord conservé : {paris(signal["signal_at"])} (Paris)', flush=True)
             write_reports(store, args.output)
             try:
                 result = analyzer.analyze(signal)
@@ -323,6 +323,7 @@ def parse_args(argv=None):
     parser.add_argument('--rpc-rps', type=float, default=2)
     parser.add_argument('--poll', type=float, default=2)
     parser.add_argument('--max-signatures', type=int, default=300)
+    parser.add_argument('--max-history-signatures',type=int,default=30000,help='Budget de lignes d’historique à parcourir, indépendant des transactions à lire')
     parser.add_argument('--max-callout-pages', type=int, default=40)
     parser.add_argument('--state', type=Path, default=ROOT/'data/discord_solana/state.sqlite3')
     parser.add_argument('--output', type=Path, default=ROOT/'data/discord_solana/reports')
@@ -335,7 +336,7 @@ def parse_args(argv=None):
     parser.add_argument('--narrative-history', action='store_true', help='Préparer aussi une narrative pour les anciennes alertes envoyées')
     parser.add_argument('--retry-narrative', action='store_true', help='Retenter les narratives en échec ; peut refaire un appel IA facturé')
     args = parser.parse_args(argv)
-    if not .1 <= args.rpc_rps <= 50 or not 1 <= args.poll <= 60 or not 1 <= args.max_signatures <= 10000 or not 1 <= args.max_callout_pages <= 200:
+    if not .1 <= args.rpc_rps <= 50 or not 1 <= args.poll <= 60 or not 1 <= args.max_signatures <= 10000 or not 1 <= args.max_callout_pages <= 200 or not 100<=args.max_history_signatures<=1000000:
         parser.error('Limites RPC/poll/pagination invalides')
     if args.source in ('bot', 'browser') and not args.channel:
         parser.error('--channel est requis ; le nom solana seul ne suffit pas')
