@@ -392,7 +392,11 @@ def count_callouts(pump, mint, created, cutoff, max_pages=40):
             t = timestamp(at)
             identity = str(call['calloutId'])
             if created <= t <= cutoff:
-                found[identity] = {'id': identity, 'at': t, 'wallet': author, 'caller': name}
+                entry = found.setdefault(identity, {'id': identity, 'at': t})
+                for key, value in {'wallet': author, 'caller': name, 'text': call.get('thesis'),
+                                   'media_url': call.get('mediaUrl')}.items():
+                    if value:
+                        entry[key] = value
         except (KeyError, TypeError, ValueError):
             pass
     # Include the legacy top list as an independent cross-check (capped at 100).
@@ -525,6 +529,8 @@ def _write_reports(store, folder):
                 if snapshot['same_second_as_signal']:
                     body += '<p class="warning">Transaction dans la seconde du signal : ordre exact indéterminable avec les seules heures de bloc.</p>'
             body += f'<p><a href="{esc(mint)}.json">Données et transactions détaillées</a></p><p>{esc(result["callouts"]["note"])}</p>'
+            if (folder/(mint+'.narrative.json')).is_file():
+                body += f'<p><a href="{esc(mint)}.narrative.json">Narrative IA et callouts sélectionnés</a></p>'
             if result['callouts']['errors']:
                 body += '<p class="warning">' + esc('; '.join(result['callouts']['errors'])) + '</p>'
         elif error:

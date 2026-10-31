@@ -101,13 +101,41 @@ class TelegramSender:
         self.destination = hashlib.sha256((token + ':' + self.chat).encode()).hexdigest()
         self.http = requests.Session(impersonate='chrome')
 
-    def send(self, text, message_id=None):
+    def clone(self):
+        return TelegramSender(self.token,self.chat)
+
+    def send(self, text, message_id=None, *, reply_to=None):
         method = 'editMessageText' if message_id is not None else 'sendMessage'
         payload = {'chat_id': self.chat, 'text': text, 'link_preview_options': {'is_disabled': True}}
         if message_id is not None:
             payload['message_id'] = message_id
+        if reply_to is not None:
+            payload['reply_parameters']={'message_id':reply_to,'allow_sending_without_reply':False}
+        return self._request(method,payload,message_id=message_id)
+
+    def send_reply(self,text,reply_to):
+        return self.send(text,reply_to=reply_to)
+
+    def send_photo(self,path,caption,reply_to,mime):
+        from curl_cffi import CurlMime
+        from pathlib import Path
         try:
-            response = self.http.post(f'https://api.telegram.org/bot{self.token}/{method}', json=payload, timeout=15, allow_redirects=False)
+            data=Path(path).read_bytes()
+        except OSError:
+            raise TelegramFailure('Image narrative locale indisponible') from None
+        if len(data)>1500*1024:raise TelegramFailure('Image narrative trop volumineuse')
+        multipart=CurlMime()
+        try:
+            multipart.addpart(name='photo',filename=Path(path).name,content_type=mime,data=data)
+            return self._request('sendPhoto',{'chat_id':self.chat,'caption':caption,
+                'reply_parameters':{'message_id':reply_to,'allow_sending_without_reply':False}},multipart=multipart)
+        finally:multipart.close()
+
+    def _request(self,method,payload,message_id=None,multipart=None):
+        options=({'json':payload} if multipart is None else
+                 {'data':{k:json.dumps(v) if isinstance(v,(dict,list)) else str(v) for k,v in payload.items()},'multipart':multipart})
+        try:
+            response = self.http.post(f'https://api.telegram.org/bot{self.token}/{method}', timeout=15, allow_redirects=False,**options)
         except Exception:
             raise TelegramFailure('Telegram : réponse réseau inconnue', ambiguous=True) from None
         if response.status_code >= 500:

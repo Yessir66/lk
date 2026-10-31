@@ -1,15 +1,16 @@
-# Alertes Discord filtrées : DECU, LE L — version 2026.10.31.2
+# Alertes Discord filtrées : DECU, LE L — version 2026.10.31.3
 
 Ce module complète **alert_scout**, décrit dans le document fourni par l’utilisateur (`alert_scout_pour_ia.md`, instantané c50ebba de la branche claude/quirky-archimedes-6j2dkq). Il ne remplace ni son extension Chrome ni son serveur. Il ne fait aucun achat, vente ni publication Discord/pump.fun. Une alerte est envoyée au bot Telegram configuré uniquement si un achat antérieur confirmé de DECU ou LE L est vérifié pour ce token. Les erreurs et les cas sans preuve restent locaux.
 
 ## Installation sur le PC où alert_scout fonctionne déjà
 
-Copier les quatre fichiers du module dans le dossier `scripts` existant :
+Copier les cinq fichiers du module dans le dossier `scripts` existant :
 
 - `scripts/discord_solana_watch.py`
 - `scripts/discord_token_analysis.py`
 - `scripts/discord_token_telegram.py`
 - `scripts/alert_scout_lecture_discord.py`
+- `scripts/discord_token_narrative.py`
 
 Copier aussi `requirements-discord.txt`, `LANCER_ANALYSE_DISCORD.bat`, `LANCER_LECTURE_DISCORD.bat` et ce guide à la racine du projet. **Ne pas remplacer ni supprimer le dossier `scripts` existant : il contient `alert_scout.py`, absent de cette branche.** Conserver l’extension, `scout_config.json` et tout `data`.
 
@@ -28,7 +29,7 @@ py -m pip install -r requirements-discord.txt
 py scripts\discord_solana_watch.py
 ```
 
-Le lanceur `LANCER_ANALYSE_DISCORD.bat` exécute la même commande. Le terminal doit afficher **Version analyse Discord : 2026.10.31.2** et **Filtre Telegram : achat antérieur vérifié de DECU ou LE L uniquement**.
+Le lanceur `LANCER_ANALYSE_DISCORD.bat` exécute la même commande. Le terminal doit afficher **Version analyse Discord : 2026.10.31.3** et **Filtre Telegram : achat antérieur vérifié de DECU ou LE L uniquement**.
 
 3. Dans un deuxième terminal du projet, lancer le lecteur seul :
 
@@ -69,6 +70,66 @@ Les messages sont envoyés par le bot existant au destinataire existant : il ne 
 - Si la configuration Telegram est absente, le terminal indique **rapports locaux uniquement**. Si elle est partielle, il indique les champs à compléter. Le bot doit avoir été démarré dans Telegram et être autorisé à écrire au destinataire.
 
 Pour garder seulement les rapports locaux : `py scripts\discord_solana_watch.py --no-telegram`.
+
+## Narrative IA après l’alerte — version 2026.10.31.3
+
+L’alerte d’achat vérifié conserve son propre worker et sa propre session HTTP. **Aucun appel IA ni téléchargement d’image n’est effectué avant la confirmation d’envoi de cette alerte.** Un worker distinct prépare ensuite la narrative et l’envoie en réponse au bon message Telegram. L’image éventuelle est envoyée en réponse à cette narrative, seulement après confirmation du message texte.
+
+Le module utilise **Anthropic**, avec la clé `anthropic_api_key` de `scout_config.json` ou `ANTHROPIC_API_KEY` ; `ANTHROPIC_AUTH_TOKEN` reste aussi utilisable si aucune clé API n’est définie. Le texte de la clé et les secrets Telegram/Helius ne sont pas transmis dans le prompt ni stockés dans les rapports.
+
+Mettre à jour les dépendances après copie des cinq scripts :
+
+```bat
+py -m pip install -r requirements-discord.txt
+```
+
+Avec la clé déjà utilisée par ton ancien Scout, la narrative est activée automatiquement pour **les prochaines alertes admissibles**. Le terminal affiche **Narrative IA : après confirmation de l’alerte initiale, en réponse Telegram.** Sans clé, sans SDK ou en cas d’échec du modèle, les alertes d’achat continuent ; le problème de narrative reste indiqué localement.
+
+Réglages facultatifs à ajouter dans la configuration existante (conserver les autres champs et les virgules JSON) :
+
+```json
+{
+  "callout_narrative": true,
+  "callout_narrative_count": 20,
+  "callout_narrative_model": "claude-sonnet-4-5"
+}
+```
+
+Ne pas remplacer le fichier entier par cet extrait : il ne contient pas tes clés. `callout_narrative_count` accepte 10 à 20. `ANTHROPIC_MODEL` peut remplacer le nom du modèle. Le modèle par défaut est Sonnet 4.5 ; il doit être accessible à ton compte Anthropic. L’ancien modèle Opus peut être sélectionné explicitement si souhaité.
+
+### Sources et sélection
+
+Les textes et images des callouts sont conservés lors du comptage existant : aucune nouvelle collecte de callouts n’est ajoutée sur le chemin de l’alerte initiale. Seuls des callouts **datés entre la création du token et l’heure du signal Discord** sont admissibles. Réponses et updates ne sont pas utilisées comme s’il s’agissait de callouts initiaux.
+
+La sélection classe les textes les plus longs (jusqu’à 2 000 caractères chacun), retire les copies et quasi-copies, privilégie des auteurs distincts et retient jusqu’à 20 textes informatifs d’au moins 60 caractères. La diversité des auteurs et les filtres de répétition restent des heuristiques, pas une garantie de véracité. S’il y a moins de dix textes exploitables, la synthèse précise cette limite ; s’il n’y en a aucun, aucun appel IA ni réponse inventée n’est produit.
+
+La réponse explique le thème/meme, l’origine et le déclencheur **évoqués par les auteurs**, puis les points à vérifier. Elle cite 1 à 3 callouts via les liens réels `pump.fun/coin/<CA>?highlight_callout=<ID>`. Les affirmations des auteurs ne sont pas une confirmation d’affiliation, de partenariat ou de soutien officiel. Le modèle ne reçoit ni outil de navigation ni accès à tes données privées. Les textes et images sont explicitement traités comme des données non fiables, jamais comme des instructions.
+
+Des liens HTTPS présents dans les sources peuvent être repris comme références **non vérifiées**. Le programme ne consulte pas automatiquement les sites, posts X ou liens Telegram externes pour les valider. Les IDs de sources, liens et images renvoyés par le modèle sont contrôlés ; les références inconnues entraînent un échec local, pas une publication.
+
+### Images
+
+Jusqu’à **deux images réellement attachées aux callouts sélectionnés** peuvent être téléchargées pour être montrées au modèle. Le modèle peut en choisir **une seule**, avec une explication de son utilité. Aucun logo n’est ajouté par défaut et aucune image n’est générée ou présentée comme officielle.
+
+Les téléchargements sont limités aux CDN publics autorisés, en HTTPS sans identifiants, sans redirection vers un domaine privé. PNG, JPEG, GIF et WebP sont reconnus par signature ; HTML, SVG et vidéo sont exclus. Chaque image est limitée à 1,5 Mio et six secondes de téléchargement. Une image refusée ou indisponible est omise : le texte reste analysable. Une image trop grande en pixels ou illisible peut toutefois être refusée par Anthropic et faire échouer cette génération.
+
+### Délais, coût et reprises
+
+La narrative arrive **après** l’alerte, avec le temps d’attente dans sa propre file, les téléchargements et le temps de génération. Prévoir généralement des dizaines de secondes supplémentaires ; ce n’est pas un délai garanti. Les requêtes initiales Solana et Telegram restent indépendantes, mais les limites générales du bot Telegram peuvent encore retarder ses messages.
+
+Un appel Anthropic est effectué par token admissible ayant des sources exploitables, pas par nouveau token Discord. L’appel est facturé selon ton compte, le modèle, les textes et les images ; le programme ne promet pas un coût fixe. Le détail `usage` est conservé dans le rapport quand l’API le fournit. Aucun appel IA réel facturé ni message Telegram réel n’a été effectué depuis l’environnement de développement.
+
+Les sources sélectionnées, le modèle, la réponse et les références sont conservés dans `data/discord_solana/reports/<CA>.narrative.json`. Les images sont mises en cache dans le sous-dossier `narrative_media`. L’index HTML propose un lien vers ce relevé.
+
+La génération n’est pas relancée automatiquement après une interruption ou un échec : cela évite de multiplier les appels facturés. Les envois Telegram confirmés ne sont pas renvoyés au redémarrage. Un timeout pendant l’envoi laisse une livraison incertaine, sans renvoi automatique ; l’image n’est pas envoyée si la réception du texte n’est pas confirmée.
+
+Options explicites :
+
+- `--no-narrative` : conserver les alertes et désactiver l’IA.
+- `--retry-narrative` : retenter une génération ou un envoi explicitement refusé. Une génération retentée peut être facturée ; les livraisons incertaines ne sont pas renvoyées automatiquement.
+- `--narrative-history` : inclure les anciennes alertes déjà envoyées. Les anciens rapports qui ne contiennent pas les textes doivent d’abord être réanalysés avec `--retry-errors` ; cela ne crée pas une preuve absente.
+
+La synthèse ne modifie ni le filtre d’achat DECU/LE L ni les ordres de Trojan. Elle fournit une lecture des propos collectés, pas une vérification indépendante du projet ou une recommandation de trading.
 
 ## Critère strict d’alerte et délais
 

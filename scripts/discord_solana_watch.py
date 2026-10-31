@@ -15,7 +15,7 @@ from curl_cffi import requests
 from discord_token_analysis import Analyzer, Store, ReadRPC, RemoteError, candidates, write_reports, valid_address
 
 ROOT = Path(__file__).resolve().parents[1]
-WATCH_VERSION = '2026.10.31.2'
+WATCH_VERSION = '2026.10.31.3'
 
 
 class StateLock:
@@ -118,6 +118,23 @@ def configured_telegram(config_path):
         raise RemoteError('Telegram : renseigner telegram_bot_token et telegram_chat_id dans scout_config.json')
     from discord_token_telegram import TelegramSender
     return TelegramSender(token.strip(), str(chat).strip())
+
+
+def configured_narrative(config_path):
+    config={}
+    if config_path.is_file():
+        try:config=json.loads(config_path.read_text(encoding='utf-8-sig'))
+        except (ValueError,OSError):raise RemoteError('Configuration scout illisible') from None
+    if config.get('callout_narrative',True) is False:return None
+    key=os.getenv('ANTHROPIC_API_KEY') or config.get('anthropic_api_key')
+    auth=None if key else os.getenv('ANTHROPIC_AUTH_TOKEN')
+    if not key and not auth:return None
+    from discord_token_narrative import Settings
+    count=config.get('callout_narrative_count',20)
+    model=os.getenv('ANTHROPIC_MODEL') or config.get('callout_narrative_model','claude-sonnet-4-5')
+    if not isinstance(count,int) or isinstance(count,bool) or not 10<=count<=20 or not isinstance(model,str) or not 1<=len(model)<=120:
+        raise RemoteError('Réglages narrative invalides : count 10–20, model non vide')
+    return Settings(api_key=key,auth_token=auth,model=model,max_callouts=count)
 
 
 def channel_id(value):
@@ -311,6 +328,9 @@ def parse_args(argv=None):
     parser.add_argument('--no-telegram', action='store_true', help='Conserver uniquement les rapports locaux')
     parser.add_argument('--telegram-history', action='store_true', help='Envoyer aussi les bilans déjà terminés avant cette mise à jour')
     parser.add_argument('--retry-telegram', action='store_true', help='Retenter les envois explicitement refusés ; pas les livraisons incertaines')
+    parser.add_argument('--no-narrative', action='store_true', help='Désactiver la synthèse IA sans modifier les alertes')
+    parser.add_argument('--narrative-history', action='store_true', help='Préparer aussi une narrative pour les anciennes alertes envoyées')
+    parser.add_argument('--retry-narrative', action='store_true', help='Retenter les narratives en échec ; peut refaire un appel IA facturé')
     args = parser.parse_args(argv)
     if not .1 <= args.rpc_rps <= 50 or not 1 <= args.poll <= 60 or not 1 <= args.max_signatures <= 10000 or not 1 <= args.max_callout_pages <= 200:
         parser.error('Limites RPC/poll/pagination invalides')
@@ -336,13 +356,23 @@ def run(args):
     if sender:
         from discord_token_telegram import Outbox
         Outbox(store, sender.destination, include_history=args.telegram_history, retry_failed=args.retry_telegram, recover=True)
+    try:
+        narrative_settings=None if args.no_narrative or not sender else configured_narrative(args.scout_config)
+    except RemoteError as exc:
+        print(str(exc)+' ; narrative désactivée, alertes initiales conservées.',flush=True)
+        narrative_settings=None
+    if narrative_settings:
+        from discord_token_narrative import NarrativeQueue
+        NarrativeQueue(store,Path(args.output)/'narrative_media',include_history=args.narrative_history,retry_failed=args.retry_narrative,recover=True)
     print('Analyse en lecture seule sur Solana et Discord : aucun achat ni vente.', flush=True)
     print('Version analyse Discord : ' + WATCH_VERSION, flush=True)
     print('Bilans Telegram activés via la configuration scout.' if sender else 'Bilans Telegram désactivés ou non configurés ; rapports locaux uniquement.', flush=True)
     if sender:
         print('Filtre Telegram : achat antérieur vérifié de DECU ou LE L uniquement. Erreurs et cas ambigus : rapports locaux.', flush=True)
+    print('Narrative IA : après confirmation de l’alerte initiale, en réponse Telegram.' if narrative_settings else
+          'Narrative IA inactive : --no-narrative, configuration désactivée ou clé Anthropic absente.',flush=True)
     print('Rapports : ' + str((args.output/'index.html').resolve()), flush=True)
-    thread = notifications = None
+    thread = notifications = narratives = None
     try:
         if args.source == 'scout':
             source = initialize_scout(store, args.scout_journal, args.from_start)
@@ -370,6 +400,10 @@ def run(args):
             from discord_token_telegram import notification_worker
             notifications = threading.Thread(target=notification_worker, args=(args, stop, sender), daemon=True)
             notifications.start()
+        if narrative_settings:
+            from discord_token_narrative import narrative_worker
+            narratives=threading.Thread(target=narrative_worker,args=(args,stop,sender.clone(),narrative_settings),daemon=True)
+            narratives.start()
         if args.source == 'jsonl':
             # Explicit import processes the supplied file; the mint primary key deduplicates replays.
             with args.messages_file.open(encoding='utf-8-sig') as stream:
@@ -387,6 +421,15 @@ def run(args):
                 while store.db.execute("SELECT 1 FROM telegram_reports WHERE state IN ('pending','sending','editing') LIMIT 1").fetchone():
                     if not notifications.is_alive():
                         raise RemoteError('Notifications Telegram arrêtées ; rapports locaux conservés')
+                    stop.wait(.5)
+            if narratives:
+                from discord_token_narrative import NarrativeQueue
+                narrative_queue=NarrativeQueue(store,Path(args.output)/'narrative_media')
+                narrative_queue.queue()
+                while (store.db.execute("SELECT 1 FROM narrative_jobs WHERE state IN ('pending','building') LIMIT 1").fetchone()
+                       or store.db.execute("SELECT 1 FROM narrative_parts WHERE state IN ('pending','sending') LIMIT 1").fetchone()):
+                    if not narratives.is_alive():
+                        raise RemoteError('Worker narrative arrêté ; alerte initiale conservée')
                     stop.wait(.5)
         else:
             while not stop.is_set():
@@ -421,6 +464,8 @@ def run(args):
             thread.join(timeout=20)
         if notifications:
             notifications.join(timeout=17)
+        if narratives:
+            narratives.join(timeout=2)
         store.db.close()
 
 
