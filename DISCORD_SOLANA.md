@@ -1,16 +1,17 @@
-# Analyse des signaux Discord : DECU, LE L et callouts pump.fun
+# Alertes Discord filtrées : DECU, LE L — version 2026.10.31.2
 
-Ce module complète **alert_scout**, décrit dans le document fourni par l’utilisateur (`alert_scout_pour_ia.md`, instantané c50ebba de la branche claude/quirky-archimedes-6j2dkq). Il ne remplace ni son extension Chrome ni son serveur. Il ne fait aucun achat, vente ni publication Discord/pump.fun. Les bilans sont envoyés au bot Telegram déjà configuré dans `scout_config.json`.
+Ce module complète **alert_scout**, décrit dans le document fourni par l’utilisateur (`alert_scout_pour_ia.md`, instantané c50ebba de la branche claude/quirky-archimedes-6j2dkq). Il ne remplace ni son extension Chrome ni son serveur. Il ne fait aucun achat, vente ni publication Discord/pump.fun. Une alerte est envoyée au bot Telegram configuré uniquement si un achat antérieur confirmé de DECU ou LE L est vérifié pour ce token. Les erreurs et les cas sans preuve restent locaux.
 
 ## Installation sur le PC où alert_scout fonctionne déjà
 
-Copier les trois fichiers du module dans le dossier `scripts` existant :
+Copier les quatre fichiers du module dans le dossier `scripts` existant :
 
 - `scripts/discord_solana_watch.py`
 - `scripts/discord_token_analysis.py`
 - `scripts/discord_token_telegram.py`
+- `scripts/alert_scout_lecture_discord.py`
 
-Copier aussi `requirements-discord.txt`, `LANCER_ANALYSE_DISCORD.bat` et ce guide à la racine du projet. **Ne pas remplacer ni supprimer le dossier `scripts` existant : il contient `alert_scout.py`, absent de cette branche.** Conserver l’extension, `scout_config.json` et tout `data`.
+Copier aussi `requirements-discord.txt`, `LANCER_ANALYSE_DISCORD.bat`, `LANCER_LECTURE_DISCORD.bat` et ce guide à la racine du projet. **Ne pas remplacer ni supprimer le dossier `scripts` existant : il contient `alert_scout.py`, absent de cette branche.** Conserver l’extension, `scout_config.json` et tout `data`.
 
 Dans un terminal ouvert dans ce dossier :
 
@@ -20,22 +21,30 @@ py -m pip install -r requirements-discord.txt
 
 `tzdata` permet d’afficher les heures de Paris sous Windows. Aucune clé Discord, Telegram ou OpenAI supplémentaire n’est nécessaire.
 
-1. Laisser tourner `alert_scout.py` comme d’habitude, avec l’onglet Discord ouvert sur le salon **solana** et l’extension déjà configurée pour ce salon.
-2. Ouvrir un deuxième terminal dans le même dossier et lancer :
+1. **Arrêter l’ancien `alert_scout.py` et l’ancien module d’analyse.** Garder l’onglet Discord et l’extension configurée uniquement pour le salon **solana**. Ne plus lancer directement `alert_scout.py` en parallèle : ses anciennes fiches Telegram ne sont pas filtrées.
+2. Lancer d’abord le module d’analyse dans un terminal du projet :
 
 ```bat
 py scripts\discord_solana_watch.py
 ```
 
-Le lanceur `LANCER_ANALYSE_DISCORD.bat` exécute la même commande.
+Le lanceur `LANCER_ANALYSE_DISCORD.bat` exécute la même commande. Le terminal doit afficher **Version analyse Discord : 2026.10.31.2** et **Filtre Telegram : achat antérieur vérifié de DECU ou LE L uniquement**.
 
-3. Ouvrir le rapport local :
+3. Dans un deuxième terminal du projet, lancer le lecteur seul :
+
+```bat
+py scripts\alert_scout_lecture_discord.py
+```
+
+Ou ouvrir `LANCER_LECTURE_DISCORD.bat`. Ce lanceur charge ton `alert_scout.py` existant, conserve son serveur et l’extension, mais remplace son analyse par l’enregistrement du signal. Les fiches, récits, verdicts et notifications Telegram de l’ancien scout sont désactivés **en mémoire**, sans modifier son fichier ni les clés dans `scout_config.json`. L’ancien token Telegram reste disponible pour le module d’alertes filtrées. Le lecteur retrouve la véritable heure Discord depuis le snowflake du message ; il ne se fie pas à un éventuel remplacement par l’heure de lecture.
+
+4. Ouvrir le rapport local :
 
 ```bat
 start "" "data\discord_solana\reports\index.html"
 ```
 
-La page se recharge toutes les dix secondes. Elle affiche les CA en attente, les bilans et les erreurs. Un fichier JSON par CA contient le détail des transactions et des callouts retrouvés. Les rapports locaux restent disponibles ; un bilan récapitulatif par token est aussi envoyé sur ton bot Telegram. Les notifications de l’ancien scout continuent indépendamment.
+La page se recharge toutes les dix secondes. Elle affiche les CA en attente, les bilans et les erreurs. Un fichier JSON par CA contient le détail des transactions et des callouts retrouvés. Les rapports locaux sont conservés pour tous les tokens ; seuls les tokens admissibles produisent une alerte Telegram. Les anciennes notifications non filtrées sont arrêtées par le lanceur lecteur seul.
 
 Si scout est dans un autre dossier :
 
@@ -47,11 +56,11 @@ py scripts\discord_solana_watch.py --scout-journal "C:\CHEMIN\VERS\PROJET\data\s
 
 Le module réutilise **`telegram_bot_token`** et **`telegram_chat_id`** de `scout_config.json`. Les variables `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`, si définies, les remplacent pour cette exécution. Aucune clé n’est affichée ou copiée dans le journal. Ne pas partager ce fichier de configuration.
 
-À la fin de l’analyse, un message récapitule le CA, les heures de création et de signal, les bilans DECU et LE L (montants, quantités, ventes, pourcentages), le compteur de callouts et les limites constatées. Les pourcentages portent sur les quantités de tokens, pas sur le rendement. Si une analyse échoue, un message d’indisponibilité est envoyé plutôt qu’un faux résultat à zéro.
+À la fin de l’analyse, **si et seulement si une preuve positive d’achat antérieur est disponible**, un message récapitule le CA, les heures de création et de signal, les bilans DECU et LE L (montants, quantités, ventes, pourcentages), le compteur de callouts et les limites constatées. Les pourcentages portent sur les quantités de tokens, pas sur le rendement. Une analyse en erreur, un transfert, un ancien bilan sans preuve de swap ou une absence de données ne déclenche aucun message Telegram. Les erreurs restent dans le terminal et le rapport local.
 
-Les messages sont envoyés par le bot existant au destinataire existant : il ne s’agit pas d’un envoi à Trojan. Les réponses HTML de Telegram ne sont pas utilisées pour interpréter les données du token : le texte du bilan est envoyé en texte brut.
+Les messages sont envoyés par le bot existant au destinataire existant : il ne s’agit pas d’un envoi à Trojan. Le texte du bilan est envoyé en texte brut, sans interprétation HTML.
 
-- **Au premier lancement de cette version, les bilans déjà terminés ne sont pas tous renvoyés.** Les prochains tokens sont notifiés automatiquement. Pour envoyer également les anciens rapports une fois, ajouter `--telegram-history`.
+- **Au premier lancement de cette version, les bilans déjà terminés ne sont pas tous renvoyés.** Les prochains tokens qui passent le filtre d’achat vérifié sont notifiés automatiquement. Pour envoyer également les anciens rapports une fois, ajouter `--telegram-history`.
 - Un identifiant de message est mémorisé pour chaque token. Au redémarrage, les messages confirmés ne sont pas renvoyés. Si `--retry-errors` produit ensuite un bilan corrigé, le message existant est édité.
 - Les notifications utilisent une file séparée : un quota Telegram ne bloque pas la réception Discord ou l’analyse.
 - Un HTTP 429 explicitement refusé est retenté après le délai demandé. Un timeout ou un arrêt pendant un nouvel envoi laisse la livraison **incertaine** ; aucun renvoi automatique n’est tenté pour éviter un doublon. Vérifier Telegram et le terminal dans ce cas.
@@ -60,6 +69,30 @@ Les messages sont envoyés par le bot existant au destinataire existant : il ne 
 - Si la configuration Telegram est absente, le terminal indique **rapports locaux uniquement**. Si elle est partielle, il indique les champs à compléter. Le bot doit avoir été démarré dans Telegram et être autorisé à écrire au destinataire.
 
 Pour garder seulement les rapports locaux : `py scripts\discord_solana_watch.py --no-telegram`.
+
+## Critère strict d’alerte et délais
+
+L’identité est vérifiée par **l’adresse du wallet**, pas seulement son alias. Un achat doit être une transaction réussie et confirmée par le RPC, signée par ce wallet, avec une contrepartie payée et un transfert du token relié à un programme de swap reconnu. Le transfert sous ce programme doit expliquer intégralement la variation du solde du token. Un swap sans rapport dans la même transaction ne suffit pas.
+
+La liste de programmes actuellement reconnue couvre pump.fun, PumpSwap, Jupiter v4/v6, Raydium AMM/CPMM, Meteora DLMM/pools et Orca Whirlpool. Un autre routeur peut être reconnu s’il invoque un de ces programmes dans une hiérarchie CPI exploitable. Si les instructions manquent, si l’attribution est ambiguë ou si le protocole n’est pas pris en charge, aucune alerte n’est envoyée sur cette base. Les transferts taxés dont les montants ne peuvent pas être réconciliés peuvent également être écartés.
+
+Pour l’antériorité, les heures de bloc sont à la seconde : **la borne de fin de la seconde du bloc doit être antérieure ou égale au signal** (`blockTime + 1 <= t_alert`). Un achat dans la même seconde que le signal est donc écarté en l’absence d’un autre achat antérieur vérifié. Cette prudence peut manquer de vrais achats ; aucune promesse de zéro erreur ou de détection exhaustive n’est faite.
+
+Un achat confirmé suffit même si le wallet a ensuite vendu tout ou partie avant le signal : le bilan indique les ventes retrouvées. Si l’utilisateur souhaite exiger une position encore ouverte, il s’agit d’un filtre supplémentaire, non activé ici. Un achat d’un wallet ne prouve pas la qualité ou la rentabilité du token.
+
+Sans achat positif vérifié, la collecte des callouts est évitée pour ne pas retarder les signaux suivants. Le rapport local reste disponible. Les anciens résultats sans la nouvelle preuve ne sont pas utilisés pour émettre une alerte ; `--retry-errors` permet explicitement de les réanalyser.
+
+À 2 requêtes RPC/s, pour le **message complet** et sans file d’attente, ordres de grandeur théoriques :
+
+| Cas | Budget estimatif signal → Telegram |
+|---|---|
+| Cache chaud, peu de nouvelles transactions et peu de pages | Environ 10–30 s |
+| 20–100 transactions non cachées et quelques pages de callouts | Environ 30–90 s |
+| Plusieurs centaines de transactions et beaucoup de pages | Plusieurs minutes ; autour de 5–7 min au plafond actuel si les services répondent vite, davantage avec incidents |
+
+Ces fourchettes ne sont pas des mesures sur le PC utilisateur. Une file d’attente peut prolonger chaque délai. Le scan maximal représente jusqu’à environ 600 lectures de transactions, plus les pages de signatures et jusqu’à 81 requêtes de callouts ; les délais réseau s’ajoutent aux attentes de quota.
+
+Les fichiers JSON enregistrent les étapes dans `timings_ms` : lecture après signal, attente en file, métadonnées, chaque wallet, callouts et analyse totale. Après le premier envoi réussi, la table SQLite `telegram_reports` conserve `sent_at` et `signal_to_sent_ms`. Le terminal affiche **signal→confirmation Telegram** : c’est la réponse du serveur Telegram observée par le programme, pas l’heure de lecture sur le téléphone. Les éditions ultérieures ne remplacent pas la mesure du premier envoi.
 
 ## Comment le signal est récupéré
 
@@ -103,7 +136,7 @@ Si l’API pump.fun répond 403/429 ou échoue, le rapport indique une indisponi
 
 Le module réutilise seulement l’URL RPC / la clé Helius de ton `scout_config.json`, sans l’afficher ni la recopier. Les variables `SOLANA_RPC_URL`, `HELIUS_API_KEY`, ou `--rpc` permettent aussi de sélectionner un accès. Aucune clé privée de wallet n’est lue.
 
-Le RPC est limité à **2 requêtes/s par défaut**. Ce quota est propre au processus et s’ajoute aux requêtes de l’ancien scout. Avec un abonnement Helius à 10/s, régler par exemple **l’ancien scout à `rps: 7`** et ce module à **2/s**, pour garder une marge. Il faut compter aussi les autres programmes utilisant la même clé. Les deux processus ne partagent pas automatiquement leur limiteur.
+Le RPC est limité à **2 requêtes/s par défaut**. Ce quota est propre au processus et s’ajoute aux requêtes de l’ancien scout. Avec un abonnement Helius à 10/s, régler par exemple **l’ancien scout à `rps: 7`** et ce module à **2/s**, pour garder une marge. Il faut compter aussi les autres programmes utilisant la même clé. Les deux processus ne partagent pas automatiquement leur limiteur. En mode lecteur seul, les analyses et lectures RPC de l’ancien scout ne sont plus exécutées ; tenir compte surtout des autres programmes actifs avec la même clé.
 
 Par défaut, le scan est limité à **300 signatures par wallet** et **40 pages par catégorie de callouts**. Augmenter uniquement si le rapport indique un historique tronqué et si le quota le permet :
 

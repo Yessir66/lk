@@ -15,6 +15,7 @@ from curl_cffi import requests
 from discord_token_analysis import Analyzer, Store, ReadRPC, RemoteError, candidates, write_reports, valid_address
 
 ROOT = Path(__file__).resolve().parents[1]
+WATCH_VERSION = '2026.10.31.2'
 
 
 class StateLock:
@@ -279,6 +280,8 @@ def analyze_worker(args, stop):
                 store.finish(signal['mint'], result=result)
                 c = result['callouts']['count']
                 print(f'RAPPORT PRÊT : {signal["mint"]} ; callouts publics retrouvés : {c if c is not None else "indisponible"}', flush=True)
+                if not result.get('alert_eligible'):
+                    print('AUCUNE ALERTE TELEGRAM : aucun achat antérieur vérifié de DECU ou LE L.', flush=True)
             except Exception as exc:
                 message = str(exc) if isinstance(exc, RemoteError) else 'Analyse indisponible (' + type(exc).__name__ + ')'
                 store.finish(signal['mint'], error=message)
@@ -334,7 +337,10 @@ def run(args):
         from discord_token_telegram import Outbox
         Outbox(store, sender.destination, include_history=args.telegram_history, retry_failed=args.retry_telegram, recover=True)
     print('Analyse en lecture seule sur Solana et Discord : aucun achat ni vente.', flush=True)
+    print('Version analyse Discord : ' + WATCH_VERSION, flush=True)
     print('Bilans Telegram activés via la configuration scout.' if sender else 'Bilans Telegram désactivés ou non configurés ; rapports locaux uniquement.', flush=True)
+    if sender:
+        print('Filtre Telegram : achat antérieur vérifié de DECU ou LE L uniquement. Erreurs et cas ambigus : rapports locaux.', flush=True)
     print('Rapports : ' + str((args.output/'index.html').resolve()), flush=True)
     thread = notifications = None
     try:

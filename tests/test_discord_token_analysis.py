@@ -19,9 +19,14 @@ OWNER = a.WATCHED['DECU']
 def tx(delta, quote, at=1200, slot=10, signer=True, swap=True, rent=0):
     old, new = (0, delta) if delta>0 else (-delta, 0)
     b=lambda raw: [dict(accountIndex=1, owner=OWNER, mint=MINT, uiTokenAmount={'amount':str(raw),'decimals':6})]
-    return dict(blockTime=at, slot=slot, transaction={'message':{'accountKeys':[dict(pubkey=OWNER,signer=signer),dict(pubkey='token-account',signer=False)]}},
+    transfer={'programId':'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA','stackHeight':2,
+              'parsed':{'type':'transferChecked','info':{'mint':MINT,'source':'pool-token-account' if delta>0 else 'token-account',
+                        'destination':'token-account' if delta>0 else 'pool-token-account','tokenAmount':{'amount':str(abs(delta))}}}}
+    return dict(blockTime=at, slot=slot, transaction={'message':{'accountKeys':[dict(pubkey=OWNER,signer=signer),dict(pubkey='token-account',signer=False)],
+                    'instructions':[{'programId':'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4' if swap else '11111111111111111111111111111111'}]}},
                 meta=dict(err=None,fee=5000,preBalances=[10**12,2039280-rent],postBalances=[10**12+int(quote*10**9)-5000-rent,2039280],
-                          preTokenBalances=b(old),postTokenBalances=b(new),logMessages=['Program log: Instruction: Swap'] if swap else []))
+                          preTokenBalances=b(old),postTokenBalances=b(new),innerInstructions=[{'index':0,'instructions':[transfer]}],
+                          logMessages=['Program log: Instruction: Swap'] if swap else []))
 
 
 class AnalysisTest(unittest.TestCase):
@@ -214,6 +219,29 @@ class AnalysisTest(unittest.TestCase):
         self.assertIsNone(result['created_at'])
         self.assertIsNone(result['callouts']['count'])
         self.assertEqual(result['metadata_error'],'HTTP 403')
+
+    def test_unrelated_swap_and_a_separate_token_gift_do_not_count_as_a_buy(self):
+        trade=tx(100,-1)
+        trade['transaction']['message']['instructions'].append({'programId':'11111111111111111111111111111111'})
+        trade['meta']['innerInstructions'][0]['index']=1
+        parsed=a.parse_trade(trade,OWNER,MINT,'ambiguous')
+        self.assertEqual(parsed['kind'],'transfer_in_or_unknown')
+        self.assertIsNone(parsed['swap_proof_version'])
+
+    def test_swap_must_explain_the_entire_owned_target_token_delta(self):
+        trade=tx(100,-1)
+        trade['meta']['innerInstructions'][0]['instructions'][0]['parsed']['info']['tokenAmount']['amount']='50'
+        self.assertEqual(a.parse_trade(trade,OWNER,MINT,'mixed')['kind'],'transfer_in_or_unknown')
+
+    def test_custom_router_only_trusts_the_active_known_swap_subtree(self):
+        trade=tx(100,-1)
+        trade['transaction']['message']['instructions'][0]['programId']='unknown-router'
+        transfer=trade['meta']['innerInstructions'][0]['instructions'][0]
+        transfer['stackHeight']=3
+        trade['meta']['innerInstructions'][0]['instructions'].insert(0,{'programId':'6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P','stackHeight':2})
+        self.assertEqual(a.parse_trade(trade,OWNER,MINT,'nested')['kind'],'buy')
+        transfer['stackHeight']=2
+        self.assertEqual(a.parse_trade(trade,OWNER,MINT,'after-swap')['kind'],'transfer_in_or_unknown')
 
 
 if __name__=='__main__':unittest.main()

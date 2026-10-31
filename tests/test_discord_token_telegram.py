@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
-from discord_token_analysis import Store
+from discord_token_analysis import Store, WATCHED
 import discord_token_telegram as t
 import discord_solana_watch as w
 
@@ -17,6 +17,8 @@ def report(count=12):
  wallet=dict(available=True,buys=2,sells=1,first_buy={'at':1793291920,'quantity':'100','quotes':{'SOL':'2'}},
              quote_totals={'buy':{'SOL':'5'},'sell':{'SOL':'1'}},bought_quantity='200',sold_quantity='50',
              sold_percent_initial_buy='50',sold_percent_all_buys='25',history_limited=False)
+ wallet.update(wallet=WATCHED['DECU'],trades=[{'kind':'buy','swap_proof_version':1,'wallet':WATCHED['DECU'],
+                       'mint':MINT,'signature':'confirmed-buy','raw':100000000,'at':1793291920}])
  return dict(mint=MINT,name='HYPER INU',symbol='HI',signal_at=1793296320,created_at=1793291863,
              wallets={'DECU':wallet,'LE L':dict(available=False,reason='RPC indisponible')},
              callouts={'count':count,'errors':[],'coverage':{'LATEST':{'exhausted':True},'CLOSED_PNL':{'exhausted':True}}})
@@ -131,13 +133,14 @@ class TelegramTest(unittest.TestCase):
     with w.StateLock(path):pass
   with w.StateLock(path):pass
 
- def test_error_notification_is_edited_when_analysis_later_succeeds(self):
+ def test_errors_remain_local_and_only_a_later_verified_buy_notifies(self):
   self.store.enqueue(MINT,'scout','message',1793296320)
   self.store.finish(MINT,error='RPC indisponible')
   self.box.queue();self.box.deliver_one(self.sender,100)
-  self.assertIn('ANALYSE DU SIGNAL INDISPONIBLE',self.sender.send.call_args.args[0])
+  self.sender.send.assert_not_called()
+  self.assertEqual(self.state()[0],'filtered')
   self.add();self.box.deliver_one(self.sender,200)
-  self.assertEqual(self.sender.send.call_args.args[1],123)
+  self.assertIsNone(self.sender.send.call_args.args[1])
   self.assertIn('12 callouts',self.sender.send.call_args.args[0])
 
  def test_ambiguous_edit_can_retry_the_same_message_without_new_send(self):
@@ -150,6 +153,43 @@ class TelegramTest(unittest.TestCase):
   self.box.deliver_one(self.sender,230)
   self.assertEqual(self.sender.send.call_args.args[1],123)
   self.assertEqual(self.state()[0],'sent')
+
+ def test_no_alert_without_positive_proof_even_if_report_says_buys(self):
+  data=report();data['wallets']['DECU']['trades']=[]
+  self.store.enqueue(MINT,'scout','m',data['signal_at']);self.store.finish(MINT,result=data)
+  self.box.queue();self.box.deliver_one(self.sender,100)
+  self.sender.send.assert_not_called()
+  self.assertEqual(self.state()[0],'filtered')
+
+ def test_same_second_or_later_buy_does_not_trigger_alert(self):
+  for at in (1793296320,1793296321):
+   data=report();data['wallets']['DECU']['trades'][0]['at']=at
+   self.store.enqueue(MINT,'scout','m',data['signal_at']);self.store.finish(MINT,result=data)
+   self.box.queue();self.box.deliver_one(self.sender,100)
+  self.sender.send.assert_not_called()
+
+ def test_either_wallet_can_trigger_with_a_proven_earlier_buy(self):
+  data=report();wallet=data['wallets'].pop('DECU');data['wallets']['LE L']=wallet
+  wallet['wallet']=WATCHED['LE L'];wallet['trades'][0]['wallet']=WATCHED['LE L']
+  self.store.enqueue(MINT,'scout','m',data['signal_at']);self.store.finish(MINT,result=data)
+  self.box.queue();self.box.deliver_one(self.sender,100)
+  self.sender.send.assert_called_once()
+  self.assertIn('ACHAT ANTÉRIEUR CONFIRMÉ : LE L',self.sender.send.call_args.args[0])
+
+ def test_unknown_or_wrong_wallet_cannot_qualify_from_alias_only(self):
+  data=report();data['wallets']['DECU']['wallet']=WATCHED['LE L']
+  self.store.enqueue(MINT,'scout','m',data['signal_at']);self.store.finish(MINT,result=data)
+  self.box.queue();self.box.deliver_one(self.sender,100)
+  self.sender.send.assert_not_called()
+
+ def test_preexisting_unqualified_pending_message_is_blocked_at_dispatch(self):
+  data=report();data['wallets']['DECU']['trades']=[]
+  self.store.enqueue(MINT,'scout','m',data['signal_at']);self.store.finish(MINT,result=data)
+  self.store.db.execute("INSERT INTO telegram_reports (mint,text,state) VALUES (?,?,'pending')",(MINT,'old unfiltered summary'))
+  self.store.db.commit()
+  self.box.deliver_one(self.sender,100)
+  self.sender.send.assert_not_called()
+  self.assertEqual(self.state()[0],'filtered')
 
 
 if __name__=='__main__':unittest.main()

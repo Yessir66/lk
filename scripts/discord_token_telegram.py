@@ -6,7 +6,7 @@ import math
 import time
 
 from curl_cffi import requests
-from discord_token_analysis import Store, WATCHED, paris
+from discord_token_analysis import Store, WATCHED, paris, verified_buy_wallets
 
 
 def number(value, decimals=4):
@@ -32,7 +32,8 @@ def amounts(values):
 
 
 def summary(result):
-    lines = ['🔎 BILAN DU SIGNAL DISCORD',
+    qualifying = verified_buy_wallets(result)
+    lines = ['🔔 ACHAT ANTÉRIEUR CONFIRMÉ : ' + ', '.join(qualifying),
              (str(result.get('name') or 'Token')[:70] + ' · $' + str(result.get('symbol') or '?')[:20]),
              str(result['mint']), '', 'Signal : ' + paris(result['signal_at']) + ' (Paris)',
              'Création : ' + (paris(result['created_at']) if result.get('created_at') is not None else 'indisponible')]
@@ -78,6 +79,8 @@ def summary(result):
         lines.append('⚠️ Heure de création non vérifiée : métadonnées indisponibles.')
     lines += ['Réponses/updates/reposts exclus ; publications masquées ou supprimées potentiellement absentes.',
               '', 'Bilan arrêté au signal. Pourcentages = quantités de tokens, pas rendement ni capital récupéré.']
+    if result.get('analysis_started_at') is not None and result.get('analyzed_at') is not None:
+        lines.append('Préparation du bilan après signal : ' + number(max(0, result['analyzed_at'] - result['signal_at']), 1) + ' s (hors envoi Telegram).')
     text = '\n'.join(lines)
     # Telegram counts UTF-16 units. Keep one message even with unusually long metadata.
     if len(text.encode('utf-16-le')) // 2 > 3900:
@@ -137,6 +140,9 @@ class Outbox:
             CREATE TABLE IF NOT EXISTS telegram_reports (mint TEXT PRIMARY KEY, text TEXT, state TEXT,
                 message_id INTEGER, retry_at REAL DEFAULT 0, error TEXT);
         ''')
+        for column in ('sent_at', 'signal_to_sent_ms'):
+            if column not in {r[1] for r in self.db.execute('PRAGMA table_info(telegram_reports)')}:
+                self.db.execute('ALTER TABLE telegram_reports ADD COLUMN ' + column + ' REAL')
         saved = self.db.execute("SELECT value FROM telegram_meta WHERE key='destination'").fetchone()
         if saved and saved[0] != destination:
             raise TelegramFailure('Destination Telegram modifiée : utiliser un autre --state pour éviter de mélanger les historiques')
@@ -156,14 +162,18 @@ class Outbox:
 
     def queue(self):
         for mint, data, error, at in self.db.execute("SELECT mint,result,error,signal_at FROM signals WHERE state IN ('done','error')").fetchall():
-            text = (summary(json.loads(data)) if data else
-                    '\n'.join(['⚠️ ANALYSE DU SIGNAL INDISPONIBLE', mint, 'Signal : ' + paris(at) + ' (Paris)',
-                               str(error or 'Données indisponibles')[:250],
-                               'Aucun achat ni pourcentage ne peut être confirmé. Détail dans le rapport local.']))
+            result = json.loads(data) if data else None
             old = self.db.execute('SELECT text,state FROM telegram_reports WHERE mint=?', (mint,)).fetchone()
+            if not result or not verified_buy_wallets(result):
+                if old is None:
+                    self.db.execute("INSERT OR IGNORE INTO telegram_reports (mint,state) VALUES (?,'filtered')", (mint,))
+                elif old[1] not in ('uncertain', 'sending', 'editing', 'skipped'):
+                    self.db.execute("UPDATE telegram_reports SET state='filtered',error='Aucun achat antérieur vérifié' WHERE mint=?", (mint,))
+                continue
+            text = summary(result)
             if old is None:
                 self.db.execute("INSERT OR IGNORE INTO telegram_reports (mint,text,state) VALUES (?,?,'pending')", (mint, text))
-            elif old[1] in ('sent', 'pending') and old[0] != text:
+            elif old[1] in ('sent', 'pending', 'filtered') and old[0] != text:
                 self.db.execute("UPDATE telegram_reports SET text=?,state='pending',retry_at=0 WHERE mint=?", (text, mint))
         self.db.commit()
 
@@ -172,12 +182,23 @@ class Outbox:
         if not row:
             return False
         mint, text, message_id = row
+        signal = self.db.execute('SELECT result,signal_at FROM signals WHERE mint=?', (mint,)).fetchone()
+        if not signal or not signal[0] or not verified_buy_wallets(json.loads(signal[0])):
+            self.db.execute("UPDATE telegram_reports SET state='filtered' WHERE mint=?", (mint,))
+            self.db.commit()
+            return True
         self.db.execute('UPDATE telegram_reports SET state=? WHERE mint=?', ('editing' if message_id else 'sending', mint))
         self.db.commit()
         try:
             sent_id = sender.send(text, message_id)
-            self.db.execute("UPDATE telegram_reports SET state='sent',message_id=?,error=NULL WHERE mint=?", (sent_id, mint))
-            print('BILAN TELEGRAM ' + ('MIS À JOUR : ' if message_id else 'ENVOYÉ : ') + mint, flush=True)
+            delivered = time.time()
+            elapsed_ms = round(max(0, delivered - signal[1]) * 1000)
+            if message_id is None:
+                self.db.execute("UPDATE telegram_reports SET state='sent',message_id=?,sent_at=?,signal_to_sent_ms=?,error=NULL WHERE mint=?", (sent_id, delivered, elapsed_ms, mint))
+            else:
+                self.db.execute("UPDATE telegram_reports SET state='sent',message_id=?,error=NULL WHERE mint=?", (sent_id, mint))
+            print('ALERTE TELEGRAM ' + ('MISE À JOUR : ' if message_id else 'ENVOYÉE : ') + mint
+                  + f' ; signal→confirmation Telegram : {elapsed_ms} ms', flush=True)
         except TelegramFailure as exc:
             if message_id and exc.ambiguous:
                 state, retry = 'pending', now + 30

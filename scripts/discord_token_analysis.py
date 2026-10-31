@@ -3,6 +3,7 @@ from collections import defaultdict
 from decimal import Decimal
 import html
 import json
+import math
 from pathlib import Path
 import re
 import sqlite3
@@ -67,6 +68,19 @@ QUOTES = {SOL: 'SOL', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 'USDC',
 BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 ADDRESS = re.compile(r'(?<![1-9A-HJ-NP-Za-km-z])[1-9A-HJ-NP-Za-km-z]{32,44}(?![1-9A-HJ-NP-Za-km-z])')
 TRADE_LOG = re.compile(r'Instruction: (?:Buy\w*|Sell\w*|\w*Swap\w*|\w*Route\w*)', re.I)
+SWAP_PROGRAMS = {
+    '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',
+    'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA',
+    'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4',
+    'JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB',
+    '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',
+    'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C',
+    'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo',
+    'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB',
+    'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',
+}
+TOKEN_PROGRAMS = {'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+                  'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'}
 
 
 def valid_address(value):
@@ -104,6 +118,8 @@ class Store:
                 signal_at REAL, state TEXT, result TEXT, error TEXT);
             CREATE TABLE IF NOT EXISTS transactions (signature TEXT PRIMARY KEY, data TEXT);
         ''')
+        if 'received_at' not in {row[1] for row in self.db.execute('PRAGMA table_info(signals)')}:
+            self.db.execute('ALTER TABLE signals ADD COLUMN received_at REAL')
         self.db.commit()
 
     def cursor(self, source):
@@ -117,17 +133,17 @@ class Store:
     def enqueue(self, mint, source, message_id, signal_at):
         if not valid_address(mint):
             return False
-        change = self.db.execute('INSERT OR IGNORE INTO signals VALUES (?,?,?,?,?,NULL,NULL)',
-                                 (mint, source, str(message_id), signal_at, 'pending')).rowcount
+        change = self.db.execute('INSERT OR IGNORE INTO signals (mint,source,message_id,signal_at,state,received_at) VALUES (?,?,?,?,?,?)',
+                                 (mint, source, str(message_id), signal_at, 'pending', time.time())).rowcount
         self.db.commit()
         return bool(change)
 
     def next(self):
-        row = self.db.execute("SELECT mint,source,message_id,signal_at FROM signals WHERE state='pending' ORDER BY signal_at LIMIT 1").fetchone()
+        row = self.db.execute("SELECT mint,source,message_id,signal_at,received_at FROM signals WHERE state='pending' ORDER BY signal_at LIMIT 1").fetchone()
         if row:
             self.db.execute("UPDATE signals SET state='running' WHERE mint=?", (row[0],))
             self.db.commit()
-            return dict(zip(('mint', 'source', 'message_id', 'signal_at'), row))
+            return dict(zip(('mint', 'source', 'message_id', 'signal_at', 'received_at'), row))
 
     def finish(self, mint, result=None, error=None):
         self.db.execute('UPDATE signals SET state=?,result=?,error=? WHERE mint=?',
@@ -142,7 +158,8 @@ class Store:
         self.db.execute("UPDATE signals SET state='pending',error=NULL WHERE state='error'")
         for mint, data in self.db.execute("SELECT mint,result FROM signals WHERE state='done'").fetchall():
             result = json.loads(data)
-            incomplete = (result.get('metadata_error') or result.get('callouts', {}).get('errors') or result.get('callouts', {}).get('count') is None
+            incomplete = (result.get('alert_policy_version') != 1 or result.get('metadata_error') or result.get('callouts', {}).get('errors')
+                          or (result.get('callouts', {}).get('count') is None and not result.get('callouts', {}).get('not_requested'))
                           or any(not w.get('available') or w.get('history_limited') for w in result.get('wallets', {}).values()))
             if incomplete:
                 self.db.execute("UPDATE signals SET state='pending' WHERE mint=?", (mint,))
@@ -185,6 +202,72 @@ class ReadRPC:
         return result
 
 
+def swap_matches_target(tx, wallet, mint, delta):
+    """Match the entire owned-token delta to transfers inside a known swap subtree."""
+    message, meta = tx['transaction']['message'], tx['meta']
+    keys = [k.get('pubkey') if isinstance(k, dict) else k for k in message.get('accountKeys', [])]
+    target_accounts = {keys[b['accountIndex']] for side in ('preTokenBalances', 'postTokenBalances')
+                       for b in meta.get(side, []) if b.get('owner') == wallet and b.get('mint') == mint}
+    matched = 0
+    roots = message.get('instructions', [])
+    for group in meta.get('innerInstructions') or []:
+        index = group.get('index', -1)
+        if not isinstance(index, int) or not 0 <= index < len(roots):
+            continue
+        known_root = roots[index].get('programId') in SWAP_PROGRAMS
+        stack = {}
+        for instruction in group.get('instructions', []):
+            height = instruction.get('stackHeight')
+            if isinstance(height, int):
+                stack = {h: p for h, p in stack.items() if h < height}
+                stack[height] = instruction.get('programId')
+            elif not known_root:
+                stack.clear()
+                continue
+            trusted = known_root or any(p in SWAP_PROGRAMS for p in stack.values())
+            parsed = instruction.get('parsed') or {}
+            info = parsed.get('info') or {}
+            if (not trusted or instruction.get('programId') not in TOKEN_PROGRAMS
+                    or parsed.get('type') not in ('transfer', 'transferChecked')):
+                continue
+            if info.get('mint', mint) != mint:
+                continue
+            source, dest = info.get('source'), info.get('destination')
+            if source not in target_accounts and dest not in target_accounts:
+                continue
+            try:
+                raw = int((info.get('tokenAmount') or {}).get('amount', info.get('amount')))
+            except (TypeError, ValueError):
+                continue
+            if raw < 0:
+                continue
+            matched += raw * (int(dest in target_accounts) - int(source in target_accounts))
+    return matched == delta and matched != 0
+
+
+def verified_buy_wallets(result):
+    """Fail closed on old summaries, wrong wallets, ambiguous seconds and missing proof."""
+    mint, cutoff = result.get('mint'), result.get('signal_at')
+    if not valid_address(mint) or not isinstance(cutoff, (int, float)) or not math.isfinite(cutoff):
+        return []
+    found = []
+    for name, address in WATCHED.items():
+        wallet = result.get('wallets', {}).get(name, {})
+        if not wallet.get('available') or wallet.get('wallet') != address:
+            continue
+        for trade in wallet.get('trades', []):
+            at = trade.get('at')
+            if (trade.get('kind') == 'buy' and trade.get('swap_proof_version') == 1
+                    and trade.get('wallet') == address and trade.get('mint') == mint
+                    and trade.get('signature') and trade.get('raw', 0) > 0
+                    and isinstance(at, (int, float)) and math.isfinite(at) and at + 1 <= cutoff):
+                if result.get('created_at') is not None and at < int(result['created_at']):
+                    continue
+                found.append(name)
+                break
+    return found
+
+
 def parse_trade(tx, wallet, mint, signature):
     """Require a signed swap with an economic counterpart; transfers remain separate."""
     meta = tx.get('meta') or {}
@@ -222,9 +305,12 @@ def parse_trade(tx, wallet, mint, signature):
         quote_delta['SOL'] = Decimal(native) / 10**9
     direction = -1 if delta > 0 else 1
     quotes = {k: str(abs(v)) for k, v in quote_delta.items() if v * direction > Decimal('0.000001')}
-    is_swap = signer and bool(TRADE_LOG.search('\n'.join(meta.get('logMessages') or []))) and bool(quotes)
+    is_swap = (signer and bool(TRADE_LOG.search('\n'.join(meta.get('logMessages') or [])))
+               and bool(quotes) and swap_matches_target(tx, wallet, mint, delta))
     kind = ('buy' if delta > 0 else 'sell') if is_swap else ('transfer_in_or_unknown' if delta > 0 else 'transfer_out_or_unknown')
     return {'signature': signature, 'at': tx.get('blockTime'), 'slot': tx.get('slot'),
+            'wallet': wallet, 'mint': mint, 'swap_proof_version': 1 if is_swap else None,
+            'unverified_swap_candidate': bool(signer and quotes and TRADE_LOG.search('\n'.join(meta.get('logMessages') or [])) and not is_swap),
             'transaction_index': tx.get('transactionIndex'), 'kind': kind,
             'raw': abs(delta), 'decimals': decimals, 'quantity': str(Decimal(abs(delta)) / 10**decimals),
             'quotes': quotes if is_swap else {}}
@@ -277,18 +363,20 @@ def wallet_snapshot(rpc, wallet, mint, created, cutoff, max_signatures=300):
     first = buys[0] if buys else None
     first_slot = [t for t in buys if t['slot'] == first['slot']] if first else []
     first_ambiguous = len(first_slot) > 1 and any(t['transaction_index'] is None for t in first_slot)
+    attribution_limited = any(t.get('unverified_swap_candidate') for t in trades)
     totals = {kind: defaultdict(Decimal) for kind in ('buy', 'sell')}
     for t in buys + sells:
         for asset, amount in t['quotes'].items():
             totals[t['kind']][asset] += Decimal(amount)
     return {'wallet': wallet, 'available': True, 'history_boundary_reached': boundary,
-            'history_limited': not boundary or missing > 0, 'transactions_missing': missing,
+            'history_limited': not boundary or missing > 0 or attribution_limited, 'transactions_missing': missing,
+            'trade_attribution_limited': attribution_limited,
             'signatures_scanned': scanned, 'signatures_examined': len(signatures), 'buys': len(buys), 'sells': len(sells),
             'first_buy_order_ambiguous': first_ambiguous,
             'first_buy': first, 'bought_raw': str(total_bought), 'sold_raw': str(total_sold),
             'bought_quantity': str(Decimal(total_bought) / 10**first['decimals']) if first else None,
             'sold_quantity': str(Decimal(total_sold) / 10**first['decimals']) if first else None,
-            'sold_percent_initial_buy': str(Decimal(total_sold) * 100 / first['raw']) if first and boundary and not missing and not first_ambiguous else None,
+            'sold_percent_initial_buy': str(Decimal(total_sold) * 100 / first['raw']) if first and boundary and not missing and not first_ambiguous and not attribution_limited else None,
             'sold_percent_all_buys': str(Decimal(total_sold) * 100 / total_bought) if total_bought else None,
             'quote_totals': {kind: {a: str(v) for a, v in values.items()} for kind, values in totals.items()},
             'unclassified_movements': [t for t in trades if t['kind'].startswith('transfer_')],
@@ -347,6 +435,8 @@ class Analyzer:
         self.max_signatures, self.max_pages = max_signatures, max_pages
 
     def analyze(self, signal):
+        started, begin = time.monotonic(), time.time()
+        timings = {}
         mint, cutoff = signal['mint'], signal['signal_at']
         metadata_error = None
         try:
@@ -359,14 +449,29 @@ class Analyzer:
             coin, created, metadata_error = {}, None, str(exc)
         if created is not None and created > cutoff:
             raise RemoteError('Le signal précède la création du token : CA ou horodatage à vérifier')
+        timings['metadata_ms'] = round((time.monotonic() - started) * 1000)
         result = dict(signal, name=coin.get('name'), symbol=coin.get('symbol'), created_at=created,
-                      analyzed_at=time.time(), metadata_error=metadata_error, wallets={})
+                      analysis_started_at=begin, metadata_error=metadata_error, wallets={}, alert_policy_version=1)
         for name, wallet in WATCHED.items():
+            stage = time.monotonic()
             try:
                 result['wallets'][name] = wallet_snapshot(self.rpc, wallet, mint, created or 0, cutoff, self.max_signatures)
             except RemoteError as exc:
                 result['wallets'][name] = {'wallet': wallet, 'available': False, 'reason': str(exc)}
-        result['callouts'] = count_callouts(self.pump, mint, created or 0, cutoff, self.max_pages)
+            timings[name + '_ms'] = round((time.monotonic() - stage) * 1000)
+        result['alert_wallets'] = verified_buy_wallets(result)
+        result['alert_eligible'] = bool(result['alert_wallets'])
+        stage = time.monotonic()
+        result['callouts'] = (count_callouts(self.pump, mint, created or 0, cutoff, self.max_pages) if result['alert_eligible'] else
+                              {'count': None, 'kind': 'public_lower_bound', 'not_requested': True, 'coverage': {},
+                               'errors': [], 'callouts': [], 'note': 'Non demandé : aucun achat antérieur vérifié de DECU ou LE L.'})
+        timings['callouts_ms'] = round((time.monotonic() - stage) * 1000)
+        timings['analysis_ms'] = round((time.monotonic() - started) * 1000)
+        received = signal.get('received_at')
+        if received is not None:
+            timings['queue_ms'] = round(max(0, begin - received) * 1000)
+            timings['signal_to_journal_read_ms'] = round(max(0, received - cutoff) * 1000)
+        result.update(analyzed_at=time.time(), timings_ms=timings)
         return result
 
 
@@ -395,6 +500,8 @@ def _write_reports(store, folder):
             count = result['callouts']['count']
             born = paris(result['created_at']) if result.get('created_at') is not None else 'Indisponible'
             body += f'<h3>{esc(result.get("name"))} · ${esc(result.get("symbol"))}</h3><p>Création : {esc(born)} · Callouts retrouvés : <strong>{esc(count)}</strong> (minimum public).</p>'
+            body += ('<p>Alerte Telegram admissible : ' + esc(', '.join(verified_buy_wallets(result))) + '</p>'
+                     if verified_buy_wallets(result) else '<p>Aucune alerte Telegram : aucun achat antérieur vérifié de DECU ou LE L.</p>')
             if result.get('metadata_error'):
                 body += '<p class="warning">Métadonnées indisponibles : l’heure de création n’a pas été vérifiée ; les wallets restent consultés dans l’historique borné avant le signal.</p>'
             for name, snapshot in result['wallets'].items():
