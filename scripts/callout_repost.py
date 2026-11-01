@@ -23,12 +23,23 @@ EXECUTION_VERSION = 1
 
 
 ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == 'scripts' else Path(__file__).resolve().parent
-# Only these three profiles may trigger new purchases and publications.
-CALLERS = {
+# Publication permissions are separate from the selected purchase sources.
+REPOST_CALLERS = {
     'CkPFGv2Wv1vwdWjtXioEgb8jhZQfs3eVZez3QCetu7xD': 'lynk0x_',
     '8NFh9y6qmMigMvRtT2KhrnCDo4BE2jMYcondAzmXZ26E': 'YourMistyy',
     'CxgPWvH2GoEDENELne2XKAR2z2Fr4shG2uaeyqZceGve': 'narc',
 }
+BUY_ONLY_CALLERS = {
+    'ApRnQN2HkbCn7W2WWiT2FEKvuKJp9LugRyAE1a9Hdz1': 'ApRnQN2H',
+    'CwUHN4zTn5wiEYoZjsP4FrDvAT9heDWewCTQjhgwhJqS': 'CwUHN4zT',
+}
+CALLERS = {**REPOST_CALLERS, **BUY_ONLY_CALLERS}
+
+
+def can_publish(job):
+    return (job.get('source_author') in REPOST_CALLERS
+            and job.get('source_author') in CALLERS and not job.get('publication_disabled'))
+
 # Use the stable wallet identity, including if the profile changes its name.
 BUY_DELAY_OVERRIDES = {'8NFh9y6qmMigMvRtT2KhrnCDo4BE2jMYcondAzmXZ26E': 5}
 
@@ -116,12 +127,16 @@ class Journal:
                        detected_at=call.get('_detected_at', now), queued_at=now,
                        buy_at=created + buy_delay, source_author=author, source_thesis=call.get('thesis') or '',
                        source_media=call.get('mediaUrl'), content_ready=False, workflow_version=2,
+                       publication_disabled=author not in REPOST_CALLERS,
                        stop_loss=str(stop_loss) if stop_loss is not None else None,
                        name=call.get('name'), symbol=call.get('symbol'), entry_mc=call.get('marketCap')))
         return True
 
     def apply_policy(self):
         for job in self.jobs():
+            if job.get('source_author') not in REPOST_CALLERS:
+                job['publication_disabled'] = True
+                self.save(job)
             if job.get('source_author') not in CALLERS:
                 job['publication_disabled'] = True
                 if job['state'] == 'new':
@@ -140,7 +155,7 @@ class Journal:
         if not row:
             return False
         job = json.loads(row[0])
-        if job.get('publication_disabled') or job.get('source_author') not in CALLERS or event.get('source_call_id') != job['call_id']:
+        if not can_publish(job) or event.get('source_call_id') != job['call_id']:
             return False
         source = event['update']
         created = timestamp(source['createdAt'])
@@ -551,7 +566,7 @@ class Engine:
             return
         for update in self.journal.updates():
             job = jobs.get(update['mint'])
-            if not job or job.get('publication_disabled') or job.get('source_author') not in CALLERS:
+            if not job or not can_publish(job):
                 continue
             if update['state'] not in ('new', 'publishing', 'uncertain') or update.get('retry_at', 0) > now or now < update['due'] or job['state'] != 'posted':
                 continue
@@ -752,6 +767,11 @@ class Engine:
             print(f'  Dernière erreur : {job["last_error"]}', flush=True)
 
     def advance(self, job, now):
+        # Recheck the immutable author policy, including restored/old jobs without flags.
+        if not can_publish(job) and job['state'] in ('publishing', 'uncertain'):
+            job.update(state='review', publication_disabled=True, failure_reason='publication_disabled')
+            self.journal.save(job)
+            return
         if job.get('executor') == 'trojan' and getattr(self.args, 'executor', 'jupiter') != 'trojan' and job['state'] in ('new', 'trojan_waiting'):
             job.update(state='review', failure_reason='executor_changed')
             self.journal.save(job)
@@ -762,7 +782,8 @@ class Engine:
             if now - job['created'] > self.args.max_age:
                 self.expire_entry(job)
             elif not self.args.live:
-                print(f'SIMULATION : achat {self.args.usd} USD pour {job["caller"]}, publication au plus tôt à {job["due"]:.0f} : {job["text"]} ; TP prévu +{getattr(self.args, "take_profit", 50)}%, vente totale', flush=True)
+                publication = f'publication au plus tôt à {job["due"]:.0f}' if can_publish(job) else 'achats uniquement, aucune republication'
+                print(f'SIMULATION : achat {self.args.usd} USD pour {job["caller"]}, {publication} ; TP prévu +{getattr(self.args, "take_profit", 50)}%, vente totale', flush=True)
                 job['state'] = 'simulated'
             else:
                 # Preparation never broadcasts. Persist the signature BEFORE any send.
@@ -793,7 +814,7 @@ class Engine:
                 if job.get('first_send_at') is not None:
                     print(f'LATENCE CONFIRMATION : {max(0, now - job["first_send_at"]):.2f}s depuis le premier envoi (confirmation observée par le bot).', flush=True)
                 self.journal.save(job)
-                if not job.get('publication_disabled') and now >= job['due']:
+                if can_publish(job) and now >= job['due']:
                     self.advance(job, now)
                 return
             elif status:
@@ -819,7 +840,7 @@ class Engine:
             self.journal.save(job)
             return
         if job['state'] == 'confirmed' and now >= job['due']:
-            if job.get('publication_disabled'):
+            if not can_publish(job):
                 return
             if not self.execution.holds(job['mint']):
                 job['retry_at'] = now + 3

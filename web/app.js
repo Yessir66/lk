@@ -82,7 +82,7 @@ async function request(path, data) {
   if (!response.ok) throw Error(body.error || "Erreur de connexion locale.");
   return body;
 }
-function hydrate(config, callers) {
+function hydrate(config, callers, buyOnlyCallers = []) {
   for (const name of [
     "profile",
     "usd",
@@ -102,7 +102,7 @@ function hydrate(config, callers) {
   $("callers").innerHTML = callers
     .map(
       (name) =>
-        `<label class="caller-item" title="${esc(name)}"><input type="checkbox" name="caller" value="${esc(name)}" ${config.callers.includes(name) ? "checked" : ""}><span>${esc(name)}</span></label>`,
+        `<label class="caller-item" title="${esc(name)}${buyOnlyCallers.includes(name) ? ' : achats uniquement' : ' : achats et republications'}"><input type="checkbox" name="caller" value="${esc(name)}" ${config.callers.includes(name) ? "checked" : ""}><span>${esc(name)}${buyOnlyCallers.includes(name) ? '<br><small>Achats seuls</small>' : ''}</span></label>`,
     )
     .join("");
   updateSelection();
@@ -473,7 +473,7 @@ async function refresh() {
     $("build-label").textContent = "Serveur " + next.build + " · " + next.project_folder + " · PID " + next.pid;
     state = next;
     if (!hydrated) {
-      hydrate(next.config, next.callers);
+      hydrate(next.config, next.callers, next.buy_only_callers);
       hydrated = true;
     }
     phaseUI(next);

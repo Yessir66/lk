@@ -164,8 +164,9 @@ class WorkflowTest(unittest.TestCase):
         reader=hub.SharedReader(pump,'owner',0,0,queue.Queue(),queue.Queue())
         reader.refresh(0)
         pump.following.assert_not_called()
-        self.assertEqual(reader.follows,r.CALLERS)
-        self.assertEqual(set(r.CALLERS.values()),{'lynk0x_','YourMistyy','narc'})
+        self.assertEqual(reader.follows,r.REPOST_CALLERS)
+        self.assertEqual(reader.targets,r.CALLERS)
+        self.assertEqual(set(r.REPOST_CALLERS.values()),{'lynk0x_','YourMistyy','narc'})
 
     def test_watcher_uses_author_only_and_rejects_other_wallet(self):
         self.confirmed()

@@ -9,7 +9,7 @@ import threading
 import time
 
 from callout_alerts import Pump, RemoteError, RateBackoff, Store, TelegramUserSender, WALLET, timestamp
-from callout_repost import CALLERS, ROOT, Execution, Journal, Engine, parse_args, show_status, check_swap, RunnerLock
+from callout_repost import CALLERS, REPOST_CALLERS, BUY_ONLY_CALLERS, ROOT, Execution, Journal, Engine, parse_args, show_status, check_swap, RunnerLock
 
 
 class SharedReader:
@@ -33,7 +33,7 @@ class SharedReader:
 
     def refresh(self, now):
         try:
-            follows = dict(CALLERS) if self.configured_only else self.pump.following(self.owner)
+            follows = {w:n for w,n in CALLERS.items() if w in REPOST_CALLERS} if self.configured_only else self.pump.following(self.owner)
             self.follows = follows
             self.targets = dict(follows)
             if self.repost:
@@ -43,7 +43,7 @@ class SharedReader:
             self.others = deque(w for w in self.targets if w not in high)
             self.next_refresh = now + 600
             self.refresh_backoff.success()
-            print(f'Lecture partagée : {len(follows)} abonnements Telegram, {len(CALLERS) if self.repost else 0} callers de republication.', flush=True)
+            print(f'Lecture partagée : {len(follows)} abonnements Telegram, {len(CALLERS) if self.repost else 0} callers d’achat dont {sum(w in REPOST_CALLERS for w in CALLERS) if self.repost else 0} avec republication.', flush=True)
         except RemoteError as exc:
             # Trading targets are independent of a temporarily unavailable following list.
             if self.repost:
@@ -81,7 +81,7 @@ class SharedReader:
                 if author not in self.targets:
                     continue
                 created = timestamp(call['createdAt'])
-                if author not in self.follows or created < self.alert_since or identity in self.seen_alerts:
+                if author in BUY_ONLY_CALLERS or author not in self.follows or created < self.alert_since or identity in self.seen_alerts:
                     continue
                 enriched = dict(call, author_name=self.follows[author])
                 self.alerts_queue.put(enriched)

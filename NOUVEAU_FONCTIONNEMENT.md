@@ -1,6 +1,8 @@
 > Depuis la version **2026.10.29.3**, l’exécution par défaut passe par **Trojan**. Voir [TROJAN.md](TROJAN.md) pour l’installation, les délais 5/12 secondes, la confirmation et les limites. Les paramètres de sorties locales décrits ci-dessous concernent uniquement le mode **Jupiter**.
 
-# Fonctionnement actuel : trois callers, délais d’achat et updates
+> Depuis **2026.11.01.1**, deux profils supplémentaires peuvent être cochés pour les **achats uniquement**, sans alertes source Telegram, republications ou updates. Les trois profils ci-dessous gardent leur fonctionnement. Voir [AJOUT_CALLERS_ACHATS_SEULS.md](AJOUT_CALLERS_ACHATS_SEULS.md) pour les wallets, l’installation et la sélection.
+
+# Fonctionnement : callers, délais d’achat et updates
 
 Cette version remplace la liste de trading précédente par ces trois profils, identifiés par leurs wallets :
 

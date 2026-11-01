@@ -565,7 +565,7 @@ class RepostTest(unittest.TestCase):
         self.assertEqual(self.job()['source_thesis'], 'Original thesis')
 
     def test_ten_callers_and_exact_dollar_conversion(self):
-        self.assertEqual(len(r.CALLERS), 3)
+        self.assertEqual(len(r.CALLERS), 5)
         self.assertEqual(r.lamports_for(2, 200), 10_000_000)
         self.assertEqual(r.lamports_for(2, 150), 13_333_333)
         for invalid in (0, -1, 'NaN', 'Infinity'):

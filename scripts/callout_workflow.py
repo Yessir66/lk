@@ -6,7 +6,7 @@ import time
 
 from callout_alerts import Pump, RemoteError, RateBackoff
 from callout_content import ContentService
-from callout_repost import CALLERS, ROOT
+from callout_repost import CALLERS, ROOT, can_publish
 
 
 class UpdateWatcher:
@@ -18,7 +18,7 @@ class UpdateWatcher:
 
     def set_jobs(self, jobs):
         targets = [dict(j) for j in jobs if j.get('workflow_version') == 2
-                   and j.get('source_author') in CALLERS and not j.get('publication_disabled')
+                   and can_publish(j)
                    and j['state'] in ('posted', 'simulated') and re.fullmatch(r'[0-9a-fA-F-]{36}', j['call_id'])]
         with self.lock:
             self.targets = targets
@@ -82,7 +82,7 @@ class Workflow:
         jobs = self.journal.jobs()
         self.watcher.set_jobs(jobs)
         for job in jobs:
-            if job.get('workflow_version') != 2 or job.get('source_author') not in CALLERS or job.get('content_ready') or job['state'] in ('failed', 'review'):
+            if job.get('workflow_version') != 2 or not can_publish(job) or job.get('content_ready') or job['state'] in ('failed', 'review'):
                 if job['state'] in ('failed', 'review') or job.get('publication_disabled'):
                     self.content.forget('initial:' + job['call_id'])
                 continue
@@ -108,7 +108,7 @@ class Workflow:
                     self.content.forget('update:' + update['key'])
                 continue
             job = indexed.get(update['mint'])
-            if not job:
+            if not job or not can_publish(job):
                 continue
             key = 'update:' + update['key']
             result = self.content.take(key)

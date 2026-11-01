@@ -16,16 +16,18 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import webbrowser
 
-from callout_repost import CALLERS, ROOT
+from callout_repost import CALLERS, BUY_ONLY_CALLERS, ROOT
 import callout_repost as repost_module
 from callout_hub import retained_path
 
-BUILD_VERSION = '2026.10.29.3'
+BUILD_VERSION = '2026.11.01.1'
 API_SCHEMA = 3
 EXPECTED_WALLETS = {
     'CkPFGv2Wv1vwdWjtXioEgb8jhZQfs3eVZez3QCetu7xD',
     '8NFh9y6qmMigMvRtT2KhrnCDo4BE2jMYcondAzmXZ26E',
     'CxgPWvH2GoEDENELne2XKAR2z2Fr4shG2uaeyqZceGve',
+    'ApRnQN2HkbCn7W2WWiT2FEKvuKJp9LugRyAE1a9Hdz1',
+    'CwUHN4zTn5wiEYoZjsP4FrDvAT9heDWewCTQjhgwhJqS',
 }
 
 
@@ -303,6 +305,7 @@ class Dashboard:
             pnl = sum(number(j['mark_usd']) - number(j.get('mark_cost_usd', j.get('cost_usd'))) for j in marked) if marked and len(marked) == len(positions) else None
             return {**installation_info(), 'phase': self.phase, 'running': bool(self.process and self.process.poll() is None),
                     'config': config, 'callers': list(CALLERS.values()), 'started_at': self.started_at,
+                    'buy_only_callers': list(BUY_ONLY_CALLERS.values()),
                     'health': self.health, 'feed_received': self.feed_count, 'feed': list(self.feed), 'logs': list(self.logs),
                     'caller_feed': list(self.caller_feed), 'caller_wallets': dict(CALLERS),
                     'jobs': jobs, 'journal_error': error,
