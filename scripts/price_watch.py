@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """
-Be told when a coin you just saw suddenly rises: each coin is watched for --watch minutes and a Telegram alert goes
-out (your alert bot: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID) when
+Be told when a coin you hand it suddenly rises or falls: each CA you give it is watched for --watch minutes and a
+Telegram alert goes out (your alert bot: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID) when
   - it rises by --spike % (default 40) within --spike-window s (default 10): the big candle after a slow bleed;
-  - its price reaches one of --levels (default 2,3,5,10) times its price when the watch started (~ your entry).
-A rise alert is sent again 30 s later at the earliest, unless the price has risen by --spike % again meanwhile; each
-level once.
+  - it falls by --drop % (default 30) within --drop-window s (default 10): the dump;
+  - its price reaches one of --levels (default 2,3,5,10) times its price when you added it (~ your entry), or falls
+    to one of --drop-levels (default 0.5,0.25) times that price (-50 %, -75 %).
+A rise (fall) alert is sent again 30 s later at the earliest, unless the price has risen (fallen) by --spike %
+(--drop %) again meanwhile; each level once.
 
-  price_watch.py [<CA> ...] [--watch 30] [--spike 40] [--spike-window 10] [--levels 2,3,5,10]
-                 [--rpc-http URL] [--rpc-ws URL]
+  price_watch.py [<CA> ...] [--watch 30] [--spike 40] [--spike-window 10] [--drop 30] [--drop-window 10]
+                 [--levels 2,3,5,10] [--drop-levels 0.5,0.25] [--rpc-http URL] [--rpc-ws URL]
 
-Alone, it watches the CAs given and those pasted in its window (Enter after each); "suivis" lists them.
-wallet_follow.py imports it to watch each coin its callers buy (and the CAs typed in its window): download this file
-next to it. Same options there.
+Only the coins you hand it are watched: the CAs on the command line and those pasted in its window (Enter after each;
+a CA already watched gets --watch more minutes); "retire <CA>" stops watching one, "suivis" lists them.
+wallet_follow.py imports it so that the CAs typed in its window are watched the same way: download this file next to
+it. Same options there.
 Price: a coin still on its pump.fun bonding curve is read live from the curve account (accountSubscribe over the
 WebSocket, `pip install websockets`, every trade within ~1 s; the account is also read over HTTP as a backstop, every
 2 s while the WebSocket is down); the curve is priced in SOL or in the coin written in it (PUMP on some curves),
@@ -43,7 +46,10 @@ WATCH_MIN = float(arg("--watch", "30"))                  # 0: off
 SPIKE = float(arg("--spike", "40")) / 100                # 0: off
 WINDOW = float(arg("--spike-window", "10"))              # s
 LEVELS = sorted(float(x) for x in arg("--levels", "2,3,5,10").split(",") if x.strip())
-COOLDOWN = 30                                            # s between two rise alerts of a coin, unless still rising
+DROP = float(arg("--drop", "30")) / 100                  # 0: off
+DROP_WINDOW = float(arg("--drop-window", "10"))          # s
+DROP_LEVELS = sorted((float(x) for x in arg("--drop-levels", "0.5,0.25").split(",") if x.strip()), reverse=True)
+COOLDOWN = 30                                            # s between two rise (fall) alerts, unless still rising (falling)
 PUMP = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"     # pump.fun's bonding-curve program
 CURVE_TAG = hashlib.sha256(b"account:BondingCurve").digest()[:8]
 SOL = "So11111111111111111111111111111111111111112"
@@ -197,9 +203,41 @@ def telegram_send(text):
 
 
 def describe():
-    rules = ([f"+{SPIKE * 100:g} % en {WINDOW:g} s ou moins"] if SPIKE else []) + \
-            ([f"x{'/x'.join(f'{x:g}' for x in LEVELS)} depuis le début du suivi"] if LEVELS else [])
-    return " ou ".join(rules) or "aucune règle (--spike 0 et --levels vide)"
+    moves = ([f"+{SPIKE * 100:g} % en {WINDOW:g} s"] if SPIKE else []) + \
+            ([f"-{DROP * 100:g} % en {DROP_WINDOW:g} s"] if DROP else [])
+    levels = [f"x{x:g}" for x in LEVELS] + [f"-{(1 - x) * 100:g} %" for x in DROP_LEVELS]
+    return ", ".join(moves + ([f"{'/'.join(levels)} depuis l'ajout"] if levels else [])) or "aucune règle"
+
+
+def sudden(h, t, w, pct, up):
+    """For the last price of h (time-sorted (t, price)): (change, s it took, the low it rose from / the high it fell
+    from) when it is pct above the low (up) or below the high of the last w s, else None. The time it took counts
+    from when the price left that low's (high's) neighbourhood: 0 when it moved in one trade."""
+    s = 0
+    while s + 1 < len(h) and h[s + 1][0] <= t - w:   # the price in force at the start of the window
+        s += 1
+    pts = [h[k] for k in range(s, len(h))]
+    sign = 1 if up else -1
+    i = min(range(len(pts)), key=lambda j: (sign * pts[j][1], -j))   # the low (high), its latest occurrence
+    ref, p = pts[i][1], pts[-1][1]
+    if i == len(pts) - 1 or not (p >= ref * (1 + pct) if up else p <= ref * (1 - pct)):
+        return None
+    near = ref * (1 + sign * pct / 2)
+    j = max(k for k in range(len(pts) - 1) if sign * pts[k][1] <= sign * near)
+    return p / ref - 1, t - pts[j + 1][0], ref
+
+
+def cooled(c, key, t, p, pct, up):
+    """Whether a rise (fall) alert may go out: none in the last COOLDOWN s, or the price has moved by pct again since."""
+    last = c[key]
+    if last and t - last[0] < COOLDOWN and not (p >= last[1] * (1 + pct) if up else p <= last[1] * (1 - pct)):
+        return False
+    c[key] = (t, p)
+    return True
+
+
+def took(s):
+    return "d'un coup" if s < 1 else f"en {s:.0f} s"
 
 
 # ---------- the watcher
@@ -218,18 +256,26 @@ class Watcher:
         threading.Thread(target=self._poll_thread, daemon=True).start()
         return self
 
-    def add(self, mint, why, name=None):
-        """Watch mint for self.minutes from now (again, if already watched). why: shown in the alerts."""
+    def add(self, mint):
+        """Watch mint for self.minutes from now; False if it was watched already (it then gets the time again)."""
         with self.lock:
             c = self.coins.get(mint)
             if c:
                 c["until"] = time.time() + self.minutes * 60
                 return False
-            self.coins[mint] = c = {"mint": mint, "why": why, "name": name, "src": None, "until":
-                                    time.time() + self.minutes * 60, "p0": None, "hist": collections.deque(),
-                                    "level": 0, "spike": None, "slot": 0}
+            self.coins[mint] = c = {"mint": mint, "name": None, "src": None, "until": time.time() + self.minutes * 60,
+                                    "p0": None, "hist": collections.deque(), "level": 0, "dlevel": 1, "spike": None,
+                                    "drop": None, "slot": 0}
         threading.Thread(target=self._init, args=(c,), daemon=True).start()
         return True
+
+    def remove(self, mint):
+        """Stop watching mint; False if it was not watched."""
+        with self.lock:
+            c = self.coins.pop(mint, None)
+        if c:
+            self._end(c)
+        return bool(c)
 
     def listing(self):
         with self.lock:
@@ -239,12 +285,12 @@ class Watcher:
         out = []
         for c in coins:
             if not c["p0"]:
-                out.append(f"  {self._name(c)} : pas encore de prix ({c['why']})")
+                out.append(f"  {self._name(c)} : pas encore de prix ({c['mint']})")
                 continue
             p = c["hist"][-1][1]
-            out.append(f"  {self._name(c)} : MC {fmt_usd(self._mc(c, p))} (x{p / c['p0']:.2f} depuis le début, plus "
-                       f"haut x{c['hi'] / c['p0']:.2f}), encore {fmt_dur(max(0, c['until'] - time.time()))} "
-                       f"({c['why']})")
+            out.append(f"  {self._name(c)} : MC {fmt_usd(self._mc(c, p))} (x{p / c['p0']:.2f} depuis l'ajout, plus "
+                       f"haut x{c['hi'] / c['p0']:.2f}, plus bas x{c['lo'] / c['p0']:.2f}), encore "
+                       f"{fmt_dur(max(0, c['until'] - time.time()))} ({c['mint']})")
         return out
 
     # --- start of a watch: on the bonding curve or not
@@ -299,8 +345,9 @@ class Watcher:
                     if c.get(k):
                         c[k] *= s
                 c["hist"] = collections.deque((t, p * s) for t, p in c["hist"])
-                if c["spike"]:
-                    c["spike"] = (c["spike"][0], c["spike"][1] * s)
+                for k in ("spike", "drop"):
+                    if c[k]:
+                        c[k] = (c[k][0], c[k][1] * s)
                 c.update(src="jup", unit="usd")
             self._call(self._unsub, c["mint"])
             return say(f"\n{now_str()} {self._name(c)} quitte la courbe pump.fun : suivi par Jupiter")
@@ -318,57 +365,57 @@ class Watcher:
                 c.update(p0=p, t0=t, hi=p, hi_t=t, lo=p)
             h = c["hist"]
             h.append((t, p))
-            while len(h) > 1 and h[1][0] <= t - WINDOW:   # keep the price in force at the start of the window
+            while len(h) > 1 and h[1][0] <= t - max(WINDOW, DROP_WINDOW):   # keep the price in force at its start
                 h.popleft()
             if p > c["hi"]:
                 c["hi"], c["hi_t"] = p, t
             c["lo"] = min(c["lo"], p)
-            i = min(range(len(h)), key=lambda j: (h[j][1], -j))   # the window's low, its latest occurrence
-            lo = h[i][1]
-            rise = None
-            if SPIKE and p >= lo * (1 + SPIKE) and i + 1 < len(h):
-                last = c["spike"]
-                if not last or t - last[0] >= COOLDOWN or p >= last[1] * (1 + SPIKE):
-                    c["spike"] = (t, p)
-                    # how long the rise took: since the price left the low's neighbourhood (0: in one trade)
-                    j = max(k for k in range(len(h) - 1) if h[k][1] <= lo * (1 + SPIKE / 2))
-                    rise = (p / lo - 1, t - h[j + 1][0], lo)
+            ev = {"rise": SPIKE and sudden(h, t, WINDOW, SPIKE, True), "drop": DROP and sudden(h, t, DROP_WINDOW, DROP,
+                                                                                               False)}
+            for k, key, pct, up in (("rise", "spike", SPIKE, True), ("drop", "drop", DROP, False)):
+                if ev[k] and not cooled(c, key, t, p, pct, up):
+                    ev[k] = None
             level = max((x for x in LEVELS if p >= c["p0"] * x), default=0)
-            if level > c["level"]:
-                c["level"] = level
-            else:
-                level = 0
-            if rise or level:
-                alert = (dict(c), p, t, rise, level)
+            ev["level"] = level if level > c["level"] else 0
+            c["level"] = max(c["level"], level)
+            dlevel = min((x for x in DROP_LEVELS if p <= c["p0"] * x), default=1)
+            ev["dlevel"] = dlevel if dlevel < c["dlevel"] else 0
+            c["dlevel"] = min(c["dlevel"], dlevel)
+            if any(ev.values()):
+                alert = (dict(c), p, t, ev)
         if alert:
             threading.Thread(target=self._alert, args=alert, daemon=True).start()
 
     # --- alerts
 
-    def _alert(self, c, p, t, rise, level):
+    def _alert(self, c, p, t, ev):
         if not c["name"]:   # Jupiter may list a brand new coin only after a while
             info = token_info(c["mint"]) or {}
             if info.get("symbol"):
                 c["name"] = coin_name(info)
                 if c["mint"] in self.coins:
                     self.coins[c["mint"]]["name"] = c["name"]
-        name, mint = self._name(c), c["mint"]
-        parts = ([f"x{level:g} depuis le début du suivi"] if level else []) + \
-                ([f"+{rise[0] * 100:.0f} % " + ("d'un coup" if rise[1] < 1 else f"en {rise[1]:.0f} s")] if rise else [])
+        name, mint, rise, drop = self._name(c), c["mint"], ev["rise"], ev["drop"]
+        down = bool(drop or ev["dlevel"])
+        parts = ([f"x{ev['level']:g} depuis l'ajout"] if ev["level"] else []) + \
+                ([f"+{rise[0] * 100:.0f} % {took(rise[1])}"] if rise else []) + \
+                ([f"-{(1 - ev['dlevel']) * 100:.0f} % depuis l'ajout"] if ev["dlevel"] else []) + \
+                ([f"{drop[0] * 100:.0f} % {took(drop[1])}"] if drop else [])
         mc, mc0 = self._mc(c, p), self._mc(c, c["p0"])
-        say(f"\n{now_str()} HAUSSE {name} : {' · '.join(parts)} | MC {fmt_usd(mc)} (départ {fmt_usd(mc0)} il y a "
-            f"{fmt_dur(t - c['t0'])}, x{p / c['p0']:.2f}) | {mint}")
-        self.log({"type": "price_alert", "mint": mint, "name": c["name"], "why": c["why"], "level": level or None,
-                  "rise": rise and round(rise[0], 4), "rise_s": rise and round(rise[1], 1), "x_since_start":
-                  round(p / c["p0"], 4), "mcap": mc, "mcap_start": mc0, "watched_s": round(t - c["t0"], 1),
-                  "source": c["src"], "t": t})
+        say(f"\n{now_str()} {'CHUTE' if down else 'HAUSSE'} {name} : {' · '.join(parts)} | MC {fmt_usd(mc)} "
+            f"({fmt_usd(mc0)} à l'ajout il y a {fmt_dur(t - c['t0'])}, x{p / c['p0']:.2f}) | {mint}")
+        self.log({"type": "price_alert", "mint": mint, "name": c["name"], "level": ev["level"] or None,
+                  "rise": rise and round(rise[0], 4), "rise_s": rise and round(rise[1], 1),
+                  "drop_level": ev["dlevel"] or None, "drop": drop and round(drop[0], 4),
+                  "drop_s": drop and round(drop[1], 1), "x_since_added": round(p / c["p0"], 4), "mcap": mc,
+                  "mcap_added": mc0, "watched_s": round(t - c["t0"], 1), "source": c["src"], "t": t})
         if not self.telegram:
             return
-        lines = [("🎯 " if level else "") + ("🚀 " if rise else "") + f"<b>{html.escape(name)}</b> : " +
-                 " · ".join(f"<b>{html.escape(x)}</b>" for x in parts),
-                 f"📈 MC <b>{fmt_usd(mc)}</b> (x{p / c['p0']:.2f}) · départ {fmt_usd(mc0)} il y a {fmt_dur(t - c['t0'])}"
-                 + (f" · creux {fmt_usd(self._mc(c, rise[2]))} juste avant" if rise else ""),
-                 f"👤 {html.escape(c['why'])}",
+        icons = "".join(i for i, on in (("🎯", ev["level"]), ("🚀", rise), ("📉", ev["dlevel"]), ("🔻", drop)) if on)
+        lines = [f"{icons} <b>{html.escape(name)}</b> : " + " · ".join(f"<b>{html.escape(x)}</b>" for x in parts),
+                 f"{'📉' if down else '📈'} MC <b>{fmt_usd(mc)}</b> (x{p / c['p0']:.2f}) · {fmt_usd(mc0)} à l'ajout il y "
+                 f"a {fmt_dur(t - c['t0'])}" + (f" · creux {fmt_usd(self._mc(c, rise[2]))} juste avant" if rise else "")
+                 + (f" · sommet {fmt_usd(self._mc(c, drop[2]))} juste avant" if drop else ""),
                  f"📄 CA : <code>{html.escape(mint)}</code>",
                  f'<a href="https://gmgn.ai/sol/token/{mint}">GMGN</a> · <a href="https://pump.fun/coin/{mint}">pump.fun'
                  f'</a> · <a href="https://dexscreener.com/solana/{mint}">DexScreener</a>']
@@ -379,10 +426,10 @@ class Watcher:
         if not c["p0"]:
             return say(f"{now_str()} fin du suivi de {self._name(c)} : aucun prix lu")
         last = c["hist"][-1][1]
-        say(f"{now_str()} fin du suivi de {self._name(c)} : départ {fmt_usd(self._mc(c, c['p0']))}, plus haut "
+        say(f"{now_str()} fin du suivi de {self._name(c)} : {fmt_usd(self._mc(c, c['p0']))} à l'ajout, plus haut "
             f"{fmt_usd(self._mc(c, c['hi']))} (x{c['hi'] / c['p0']:.2f}) {fmt_dur(c['hi_t'] - c['t0'])} après, "
-            f"fin {fmt_usd(self._mc(c, last))} (x{last / c['p0']:.2f})")
-        self.log({"type": "watch_end", "mint": c["mint"], "name": c["name"], "why": c["why"], "x_high": round(
+            f"plus bas x{c['lo'] / c['p0']:.2f}, fin {fmt_usd(self._mc(c, last))} (x{last / c['p0']:.2f})")
+        self.log({"type": "watch_end", "mint": c["mint"], "name": c["name"], "x_high": round(
             c["hi"] / c["p0"], 4), "high_after_s": round(c["hi_t"] - c["t0"], 1), "x_end": round(last / c["p0"], 4),
                   "x_low": round(c["lo"] / c["p0"], 4)})
 
@@ -483,6 +530,19 @@ class Watcher:
                         self._on_price(c, prices[c["mint"]], t)
 
 
+def command(w, line):
+    """Answer to a line typed in the window if it is a price-watch command (a CA, retire <CA>, suivis), else None."""
+    words = line.split()
+    if len(words) == 1 and is_address(words[0]):
+        return (f"suivi de {words[0]} pendant {w.minutes:g} min" if w.add(words[0]) else
+                f"{words[0]} déjà suivi : encore {w.minutes:g} min")
+    if len(words) == 2 and words[0].lower() in ("retire", "retirer") and is_address(words[1]):
+        return f"{words[1]} n'est plus suivi" if w.remove(words[1]) else f"{words[1]} n'était pas suivi"
+    if line.lower() in ("suivis", "liste", "list"):
+        return "\n".join(w.listing())
+    return None
+
+
 def main():
     os.makedirs(DATA, exist_ok=True)
     path = os.path.normpath(os.path.join(DATA, f"price_watch_{int(time.time())}.jsonl"))
@@ -496,23 +556,21 @@ def main():
     if not WATCH_MIN:
         sys.exit("--watch 0 : rien à surveiller")
     w = Watcher(telegram=tg, log=log).start()
-    print(f"alerte si un coin suivi fait {describe()} ; chaque coin suivi {WATCH_MIN:g} min | "
+    print(f"alerte si un coin suivi fait {describe()} ; chaque CA suivi {WATCH_MIN:g} min | "
           f"{'alertes Telegram actives' if tg else 'alertes affichées ici seulement (TELEGRAM_BOT_TOKEN et TELEGRAM_CHAT_ID pour Telegram)'}"
           f" | journal {path}", flush=True)
     for ca in sys.argv[1:]:
         if is_address(ca):
-            w.add(ca, "ajouté à la main")
+            w.add(ca)
             print(f"suivi de {ca}", flush=True)
-    print("colle un CA puis Entrée pour le surveiller, « suivis » pour la liste", flush=True)
+    print("colle un CA puis Entrée pour le surveiller, « retire <CA> » pour l'arrêter, « suivis » pour la liste",
+          flush=True)
     for line in sys.stdin:
-        cmd = line.strip()
-        if is_address(cmd):
-            print(f"suivi de {cmd} pendant {WATCH_MIN:g} min" if w.add(cmd, "ajouté à la main") else
-                  f"{cmd} déjà suivi : prolongé de {WATCH_MIN:g} min", flush=True)
-        elif cmd.lower() in ("suivis", "liste", "list"):
-            print("\n".join(w.listing()), flush=True)
-        elif cmd:
-            print("colle un CA (adresse du coin) ou tape « suivis »", flush=True)
+        answer = command(w, line.strip())
+        if answer:
+            print(answer, flush=True)
+        elif line.strip():
+            print("colle un CA (adresse du coin), « retire <CA> » ou « suivis »", flush=True)
     while True:   # no console (stdin closed): keep watching
         time.sleep(3600)
 
