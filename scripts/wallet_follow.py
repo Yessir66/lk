@@ -6,6 +6,7 @@ address (CA) to Trojan from your Telegram account; its Auto Buy buys it.
 
   wallet_follow.py [--live] [--wallets <wallet>,...] [--min-sol 0.5] [--max-age 60] [--max-coin-age 2]
                    [--max-run X] [--send-to @bot] [--alerts] [--rpc-http URL] [--rpc-ws URL]
+                   [--watch 30] [--spike 40] [--spike-window 10] [--levels 2,3,5,10]
 
 Wallets: the CALLERS below unless --wallets is given; a pump.fun profile's address is the wallet it trades with. On
 the saved callouts, the callers bought the coin from that wallet 30 s to 6 min before posting the callout, for 0.8
@@ -26,8 +27,13 @@ another bot): amount, slippage and sells are Trojan's settings. The login is the
 data/telegram.session: close that script first, a Telegram session opens in one window at a time.
 --alerts: a message through your alert bot (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID) for each buy of at least
 --min-sol: who bought, how much, the coin, its market cap, whether the CA went to Trojan.
+Rise alerts (price_watch.py, to download next to this script): each coin bought for at least --min-sol, and each
+CA typed in the window, is watched for --watch minutes (default 30, 0: off), with an alert (through the alert bot
+with --alerts, else printed here) when it rises by --spike % within --spike-window s (default 40 % in 10 s: the
+big candle after a slow bleed) or reaches --levels times its price when the watch started (default x2, x3, x5,
+x10). Price: live from the pump.fun bonding curve (~1 s), from Jupiter every 3 s for the other coins.
 While it runs, typing pause / reprise + Enter stops / resumes the sends to Trojan (detection and alerts go on);
-etat shows the counts.
+etat shows the counts; a CA + Enter watches that coin's price; suivis lists the coins watched.
 --until-pump-fun (set by callout_follow.py, which runs this script while pump.fun is closed to scripts): every
 5 min, look whether pump.fun's API answers again, and if so exit with code 3 so that callout_follow.py goes back to
 the callouts.
@@ -47,6 +53,11 @@ import threading
 import time
 import urllib.error
 import urllib.request
+
+try:
+    import price_watch   # next to this script: alerts on a sudden rise of the coins seen
+except ImportError:
+    price_watch = None
 
 DATA = os.path.join(os.path.dirname(__file__), "..", "data")
 arg = lambda k, d: sys.argv[sys.argv.index(k) + 1] if k in sys.argv else d
@@ -84,6 +95,7 @@ seen = {}            # signature -> time first seen, by either source
 tried = set()        # coins already handled
 jobs = queue.Queue() # (signature, wallet, seen at, block time) of the transactions to read
 tg = {}              # Telegram client and target bot
+watcher = None       # price_watch.Watcher: rise alerts
 state = {"paused": False, "sent": 0, "buys": 0, "tx": 0, "ws": "pas encore connecté"}
 sol_usd = {"t": 0, "v": None}
 
@@ -278,6 +290,8 @@ def on_buy(wallet, sig, block_time, mint, raw, dec, sol, seen_at):
     if skip:
         print(f"  ignoré : {skip}", flush=True)
         return log({**rec, "skipped": skip})
+    if watcher:
+        watcher.add(mint, f"acheté par {name} ({sol:.2f} SOL)")
     info = token_info(mint)
     created = (info or {}).get("createdAt") or ((info or {}).get("firstPool") or {}).get("createdAt")
     age = (time.time() - datetime.datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()) / 86400 \
@@ -359,6 +373,7 @@ def send_alert(name, mint, sol, info, age, sig, skip):
              f"💸 {sol:.2f} SOL · MC <b>{fmt_usd((info or {}).get('mcap'))}</b>{age_s}",
              f"📄 CA : <code>{html.escape(mint)}</code>",
              "✅ CA envoyé à Trojan" if not skip else f"⏸ pas envoyé à Trojan : {html.escape(skip)}",
+             *([f"👀 hausse surveillée {price_watch.WATCH_MIN:g} min"] if watcher else []),
              f'<a href="https://pump.fun/coin/{mint}">pump.fun</a> · <a href="https://dexscreener.com/solana/{mint}">'
              f'DexScreener</a> · <a href="https://solscan.io/tx/{sig}">transaction</a>']
     try:
@@ -372,10 +387,17 @@ def send_alert(name, mint, sol, info, age, sig, skip):
 
 
 def console():
-    """Commands typed in the window while the script runs: pause / reprise of the sends to Trojan, etat."""
+    """Commands typed in the window while the script runs: pause / reprise of the sends to Trojan, etat, a CA to
+    watch its price, suivis."""
     for line in sys.stdin:
-        cmd = line.strip().lower()
-        if cmd in ("pause", "stop"):
+        raw = line.strip()
+        cmd = raw.lower()
+        if watcher and price_watch.is_address(raw):
+            print(f"hausse de {raw} surveillée {price_watch.WATCH_MIN:g} min" if watcher.add(raw, "ajouté à la main")
+                  else f"{raw} déjà surveillé : prolongé de {price_watch.WATCH_MIN:g} min", flush=True)
+        elif watcher and cmd in ("suivis", "liste"):
+            print("\n".join(watcher.listing()), flush=True)
+        elif cmd in ("pause", "stop"):
             state["paused"] = True
             print("envois à Trojan EN PAUSE (la détection et les alertes continuent) ; tape « reprise » pour les "
                   "relancer", flush=True)
@@ -384,9 +406,11 @@ def console():
             print("envois à Trojan RELANCÉS", flush=True)
         elif cmd in ("etat", "état", "status"):
             print(f"envois {'EN PAUSE' if state['paused'] else 'actifs'} ; WebSocket {state['ws']} ; {state['tx']} "
-                  f"transactions vues, {state['buys']} achats de tes callers, {state['sent']} CA envoyés", flush=True)
+                  f"transactions vues, {state['buys']} achats de tes callers, {state['sent']} CA envoyés"
+                  + (f", {len(watcher.coins)} coins surveillés" if watcher else ""), flush=True)
         elif cmd:
-            print("commandes : pause, reprise, etat", flush=True)
+            print("commandes : pause, reprise, etat" + (", un CA pour surveiller sa hausse, suivis" if watcher else ""),
+                  flush=True)
 
 
 def main():
@@ -398,6 +422,12 @@ def main():
     if ALERTS and not (os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID")):
         print("alertes désactivées : définis TELEGRAM_BOT_TOKEN et TELEGRAM_CHAT_ID (ceux de ton bot d'alertes)")
         globals()["ALERTS"] = False
+    if price_watch and price_watch.WATCH_MIN > 0:
+        globals()["watcher"] = price_watch.Watcher(telegram=ALERTS, log=log).start()
+        print(f"hausses : chaque coin acheté par tes callers est surveillé {price_watch.WATCH_MIN:g} min, alerte "
+              f"{'Telegram' if ALERTS else 'ici (--alerts pour Telegram)'} s'il fait {price_watch.describe()}")
+    elif not price_watch:
+        print("pas d'alertes de hausse : télécharge price_watch.py à côté de ce script pour les avoir")
     filters = ", ".join(s for s in (f"achats d'au moins {MIN_SOL:g} SOL", MAX_COIN_AGE and
                                     f"coins de moins de {MAX_COIN_AGE:g} jours", MAX_RUN and
                                     f"prix ≤ x{MAX_RUN:g} son prix d'achat") if s)
@@ -410,7 +440,8 @@ def main():
         threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=console, daemon=True).start()
     print("pendant que le script tourne, tape « pause » ou « reprise » puis Entrée pour arrêter / relancer les envois "
-          "à Trojan, « etat » pour voir où il en est", flush=True)
+          "à Trojan, « etat » pour voir où il en est" + (", un CA pour surveiller sa hausse, « suivis » pour la liste"
+                                                        if watcher else ""), flush=True)
     k = 0
     while True:
         time.sleep(60)

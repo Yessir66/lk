@@ -58,7 +58,9 @@ CA, links. It reuses the feed read for detection (no extra pump.fun request but 
 min), and alerts are sent in the background so they never delay a buy.
 While pump.fun answers scripts with a Cloudflare challenge (HTTP 403, since October 2026), callouts cannot be
 read nor posted: the default mode then runs wallet_follow.py (to download next to this script), which sends
-to Trojan the coins the callers buy on-chain, and comes back to the callouts once pump.fun answers again.
+to Trojan the coins the callers buy on-chain, and comes back to the callouts once pump.fun answers again. With
+price_watch.py next to it too, each of those coins is watched for a sudden rise (--watch, --spike, --spike-window,
+--levels: see wallet_follow.py).
 Output: data/callout_follow_<timestamp>.jsonl, one line per callout seen, buy and sale.
 """
 import asyncio
@@ -796,7 +798,8 @@ def follow_wallets_meanwhile():
         sys.exit(f"pump.fun bloque les scripts (protection Cloudflare) : callouts illisibles. Télécharge "
                  f"wallet_follow.py dans {os.path.dirname(path)} pour suivre les achats de tes callers en attendant")
     opts = [o for o in ("--live", "--alerts") if o in sys.argv] + ["--until-pump-fun"]
-    opts += [x for o in ("--max-coin-age", "--send-to", "--rpc-http") if o in sys.argv[:-1] for x in (o, arg(o, ""))]
+    opts += [x for o in ("--max-coin-age", "--send-to", "--rpc-http", "--watch", "--spike", "--spike-window",
+                         "--levels") if o in sys.argv[:-1] for x in (o, arg(o, ""))]
     wallets = [n.strip() for n in arg("--callers", "").split(",") if is_solana(n.strip())]
     if wallets:
         opts += ["--wallets", ",".join(wallets)]
