@@ -371,10 +371,10 @@ def run_hub(args):
         mode = 'achats réels' if args.live else 'alertes seules' if args.alerts_only else 'achats simulés'
         tp = '' if args.alerts_only else f'achat après {args.buy_delay:g}s, TP +{args.take_profit}%, SL -{args.stop_loss}%, vente totale, '
         if not args.alerts_only and args.executor == 'trojan':
-            tp = f'envoi CA après {args.buy_delay:g}s (YourMistyy : 5s), montant et sorties réglés dans Trojan, '
+            tp = f'envoi CA après {args.buy_delay:g}s, montant et sorties réglés dans Trojan, '
         print(f'HUB : {label}, {mode}, {tp}flux unique toutes les {args.feed_interval}s minimum.', flush=True)
         if not args.alerts_only:
-            print('YourMistyy : achat après 5s, callout dès confirmation ; délai des updates inchangé.', flush=True)
+            print('Tous les callers : délai d’achat configuré, callout après confirmation, puis updates au délai configuré.', flush=True)
             if args.executor == 'trojan':
                 print(f'EXÉCUTION TROJAN : {args.trojan_bot}. Montant et TP/SL réglés dans Trojan. Aucune transaction Solana signée ou diffusée localement. Les anciennes positions ne reçoivent pas automatiquement les sorties Trojan.', flush=True)
         if args.executor == 'jupiter':

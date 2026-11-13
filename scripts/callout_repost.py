@@ -25,14 +25,16 @@ EXECUTION_VERSION = 1
 ROOT = Path(__file__).resolve().parents[1] if Path(__file__).resolve().parent.name == 'scripts' else Path(__file__).resolve().parent
 # Publication permissions are separate from the selected purchase sources.
 REPOST_CALLERS = {
-    'CkPFGv2Wv1vwdWjtXioEgb8jhZQfs3eVZez3QCetu7xD': 'lynk0x_',
-    '8NFh9y6qmMigMvRtT2KhrnCDo4BE2jMYcondAzmXZ26E': 'YourMistyy',
-    'CxgPWvH2GoEDENELne2XKAR2z2Fr4shG2uaeyqZceGve': 'narc',
+    'Dzv3gkwmkMkPoJwSaRCPyQZFhc8hNUL3FwaFgp3tgKUr': 'Dzv3gkwm',
+    'FniZYxox48b6FPfJC9XZVAdVT3fQ6dUiXzQ5ZBjUCyz6': 'FniZYxox',
+    'DJ78WYDTkU5Fo5oJDMyqD7KmXJKQUQMiqsuxvokUdxmh': 'DJ78WYDT',
+    '4JBkkjZhReTMCtriRoL7epbTMCoxNoX1Sab5vUvqDfMy': '4JBkkjZh',
+    '8Fxc1gYmuR1fvQsnCXHnFCmimNpUZ4r5gopuVoM1pjvg': '8Fxc1gYm',
+    '3saciJi6vUnWx1GgWPEwtgSQCscXstacqZkPZCpuxffW': '3saciJi6',
+    'GAVq4j28TVdfG138wMtgLcPQGiP2rEkzUmWmhZwUrRa8': 'GAVq4j28',
+    '2oHsGWdPkHoCfesoUfJHQfjnaethvUuYvEANQByghpXd': '2oHsGWdP',
 }
-BUY_ONLY_CALLERS = {
-    'ApRnQN2HkbCn7W2WWiT2FEKvuKJp9LugRyAE1a9Hdz1': 'ApRnQN2H',
-    'CwUHN4zTn5wiEYoZjsP4FrDvAT9heDWewCTQjhgwhJqS': 'CwUHN4zT',
-}
+BUY_ONLY_CALLERS = {}
 CALLERS = {**REPOST_CALLERS, **BUY_ONLY_CALLERS}
 
 
@@ -41,7 +43,7 @@ def can_publish(job):
             and job.get('source_author') in CALLERS and not job.get('publication_disabled'))
 
 # Use the stable wallet identity, including if the profile changes its name.
-BUY_DELAY_OVERRIDES = {'8NFh9y6qmMigMvRtT2KhrnCDo4BE2jMYcondAzmXZ26E': 5}
+BUY_DELAY_OVERRIDES = {}
 
 
 def lamports_for(usd, sol_price):
@@ -1009,7 +1011,7 @@ def run_repost(args):
     workflow = Workflow(journal, args, events, stop)
     thread = threading.Thread(target=detect, args=(events, stop, journal.since), daemon=True)
     print(f'{"RÉEL" if args.live else "SIMULATION"} : {len(CALLERS)} callers, {args.usd} USD/token, achat après {args.buy_delay}s. Profil {args.profile}', flush=True)
-    print('Exception YourMistyy : achat après 5s, callout dès confirmation ; délai des updates inchangé.', flush=True)
+    print('Tous les callers utilisent le délai d’achat configuré ; callout après confirmation, puis updates.', flush=True)
     thread.start()
     try:
         while True:

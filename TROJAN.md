@@ -1,5 +1,7 @@
 # Relais Trojan — version 2026.10.29.3
 
+> Pour la liste actuelle et l’installation du correctif **2026.11.13.1**, suivre [REMPLACEMENT_8_CALLERS.md](REMPLACEMENT_8_CALLERS.md). Les huit nouveaux callers utilisent le délai général ; l’exception de 5 secondes et les trois anciens callers cités ci-dessous ne sont plus actifs.
+
 Le mode par défaut de l’interface est maintenant **Trojan · Telegram**, destination **@solana_trojanbot**, à la demande de l’utilisateur qui a configuré et importé son wallet dans ce bot. Aucun achat de validation ni message réel n’a été envoyé depuis l’environnement de développement.
 
 ## Installation Windows

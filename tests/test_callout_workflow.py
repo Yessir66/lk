@@ -66,10 +66,10 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(self.job()['own_callout_id'], OWN)
         self.execution.pump_call.assert_called_once()
 
-    def test_yourmistyy_buys_after_5_seconds_and_posts_after_confirmation(self):
-        author = next(wallet for wallet, name in r.CALLERS.items() if name == 'YourMistyy')
+    def test_custom_5_second_delay_posts_after_confirmation(self):
+        author = next(iter(r.CALLERS))
         self.journal.add(dict(calloutId=PARENT, author=author, coinMint=r.SOL, createdAt=1000,
-                              thesis='Project context'), 1001, 60, 0, None, buy_delay=12, stop_loss=50)
+                              thesis='Project context'), 1001, 60, 0, None, buy_delay=5, stop_loss=50)
         self.assertEqual(self.job()['buy_at'], 1005)
         self.engine.step(1004.99)
         self.execution.prepare.assert_not_called()
@@ -82,8 +82,6 @@ class WorkflowTest(unittest.TestCase):
 
     def test_other_callers_keep_configured_buy_delay(self):
         for author, name in r.CALLERS.items():
-            if name == 'YourMistyy':
-                continue
             with self.subTest(caller=name):
                 self.journal.add(dict(calloutId=PARENT, author=author, coinMint=r.SOL,
                                       createdAt=1000), 1001, 60, 0, None, buy_delay=12)
@@ -166,7 +164,7 @@ class WorkflowTest(unittest.TestCase):
         pump.following.assert_not_called()
         self.assertEqual(reader.follows,r.REPOST_CALLERS)
         self.assertEqual(reader.targets,r.CALLERS)
-        self.assertEqual(set(r.REPOST_CALLERS.values()),{'lynk0x_','YourMistyy','narc'})
+        self.assertEqual(len(r.REPOST_CALLERS),8)
 
     def test_watcher_uses_author_only_and_rejects_other_wallet(self):
         self.confirmed()

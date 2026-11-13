@@ -20,14 +20,17 @@ from callout_repost import CALLERS, BUY_ONLY_CALLERS, ROOT
 import callout_repost as repost_module
 from callout_hub import retained_path
 
-BUILD_VERSION = '2026.11.01.1'
+BUILD_VERSION = '2026.11.13.1'
 API_SCHEMA = 3
 EXPECTED_WALLETS = {
-    'CkPFGv2Wv1vwdWjtXioEgb8jhZQfs3eVZez3QCetu7xD',
-    '8NFh9y6qmMigMvRtT2KhrnCDo4BE2jMYcondAzmXZ26E',
-    'CxgPWvH2GoEDENELne2XKAR2z2Fr4shG2uaeyqZceGve',
-    'ApRnQN2HkbCn7W2WWiT2FEKvuKJp9LugRyAE1a9Hdz1',
-    'CwUHN4zTn5wiEYoZjsP4FrDvAT9heDWewCTQjhgwhJqS',
+    'Dzv3gkwmkMkPoJwSaRCPyQZFhc8hNUL3FwaFgp3tgKUr',
+    'FniZYxox48b6FPfJC9XZVAdVT3fQ6dUiXzQ5ZBjUCyz6',
+    'DJ78WYDTkU5Fo5oJDMyqD7KmXJKQUQMiqsuxvokUdxmh',
+    '4JBkkjZhReTMCtriRoL7epbTMCoxNoX1Sab5vUvqDfMy',
+    '8Fxc1gYmuR1fvQsnCXHnFCmimNpUZ4r5gopuVoM1pjvg',
+    '3saciJi6vUnWx1GgWPEwtgSQCscXstacqZkPZCpuxffW',
+    'GAVq4j28TVdfG138wMtgLcPQGiP2rEkzUmWmhZwUrRa8',
+    '2oHsGWdPkHoCfesoUfJHQfjnaethvUuYvEANQByghpXd',
 }
 
 
@@ -39,8 +42,10 @@ def installation_info():
 
 def validate_installation():
     if (getattr(repost_module, 'WORKFLOW_VERSION', None) != 2
-            or getattr(repost_module, 'EXECUTION_VERSION', None) != 1 or set(CALLERS) != EXPECTED_WALLETS):
-        raise ValueError('Installation mélangée : scripts/callout_repost.py est ancien. Remplace tout le dossier scripts, '
+            or getattr(repost_module, 'EXECUTION_VERSION', None) != 1 or set(CALLERS) != EXPECTED_WALLETS
+            or set(getattr(repost_module,'REPOST_CALLERS',{})) != EXPECTED_WALLETS
+            or BUY_ONLY_CALLERS or getattr(repost_module,'BUY_DELAY_OVERRIDES',None) != {}):
+        raise ValueError('Installation mélangée : scripts/callout_repost.py est ancien. Copie tous les fichiers du correctif, '
                          'puis relance le serveur. Fichier chargé : ' + str(Path(repost_module.__file__).resolve()))
     missing = [name for name in ('callout_content.py', 'callout_workflow.py', 'callout_trojan.py') if not (ROOT/'scripts'/name).is_file()]
     if missing:
@@ -159,6 +164,10 @@ class Dashboard:
         if config_file.is_file():
             try:
                 saved = json.loads(config_file.read_text(encoding='utf-8'))
+                # A roster replacement must preserve amounts, mode, delays and executor.
+                if isinstance(saved,dict) and isinstance(saved.get('callers'),list) and saved['callers']:
+                    selected = [n for n in saved['callers'] if n in CALLERS.values()]
+                    saved['callers'] = selected or list(CALLERS.values())
                 if saved.get('workflow_version') != 2:
                     selected = [n for n in saved.get('callers', []) if n in CALLERS.values()]
                     saved.update(workflow_version=2, callers=selected or list(CALLERS.values()), delay=0,

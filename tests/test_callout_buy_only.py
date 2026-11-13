@@ -19,6 +19,12 @@ import callout_dashboard as d
 
 class BuyOnlyTest(unittest.TestCase):
     def setUp(self):
+        # Retain coverage of publication restrictions with synthetic purchase-only
+        # fixtures, even though the production roster now contains publishers only.
+        fixtures={'ApRnQN2HkbCn7W2WWiT2FEKvuKJp9LugRyAE1a9Hdz1':'FixtureBuy1',
+                  'CwUHN4zTn5wiEYoZjsP4FrDvAT9heDWewCTQjhgwhJqS':'FixtureBuy2'}
+        for mapping in (r.BUY_ONLY_CALLERS,r.CALLERS):
+            patcher=patch.dict(mapping,fixtures);patcher.start();self.addCleanup(patcher.stop)
         temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup)
         self.root=Path(temp.name)
         self.journal=r.Journal(self.root/'state',999,'owner');self.addCleanup(self.journal.db.close)

@@ -4,6 +4,8 @@
 
 # Fonctionnement : callers, délais d’achat et updates
 
+**Liste remplacée le 13 novembre 2026 : les cinq profils des versions précédentes sont retirés. Voir [REMPLACEMENT_8_CALLERS.md](REMPLACEMENT_8_CALLERS.md) pour les huit nouveaux profils, tous avec achat, callout initial et updates. Les mentions de callers et de délais particuliers ci-dessous décrivent l’ancienne configuration.**
+
 Cette version remplace la liste de trading précédente par ces trois profils, identifiés par leurs wallets :
 
 | Caller | Profil |

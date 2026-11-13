@@ -16,7 +16,7 @@ import callout_workflow as workflow
 from callout_alerts import RemoteError
 
 MINT = r.SOL
-AUTHOR = next(k for k, v in r.CALLERS.items() if v == 'YourMistyy')
+AUTHOR = next(iter(r.CALLERS))
 
 
 class TrojanTest(unittest.TestCase):
@@ -41,7 +41,7 @@ class TrojanTest(unittest.TestCase):
 
     def add(self):
         self.journal.add(dict(calloutId='source', author=AUTHOR, coinMint=MINT, createdAt=1000),
-                         1001, 60, 0, None, buy_delay=12)
+                         1001, 60, 0, None, buy_delay=5)
         job = self.job()
         job['executor'] = 'trojan'
         self.journal.save(job)

@@ -1,5 +1,7 @@
 # Deux callers supplémentaires pour les achats — 2026.11.01.1
 
+> Ancienne configuration, remplacée par [les huit nouveaux callers du 13 novembre 2026](REMPLACEMENT_8_CALLERS.md). Les deux callers de ce document ne font plus partie des sources actives.
+
 | Profil pump.fun | Nom affiché | Fonctionnement |
 |---|---|---|
 | https://pump.fun/profile/ApRnQN2HkbCn7W2WWiT2FEKvuKJp9LugRyAE1a9Hdz1 | ApRnQN2H | Achats uniquement |

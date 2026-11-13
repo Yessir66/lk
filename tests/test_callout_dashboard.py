@@ -254,8 +254,8 @@ class DashboardTest(unittest.TestCase):
     def test_caller_selection_reaches_existing_engine_mapping(self):
         original=dict(r.CALLERS)
         with patch.dict(r.CALLERS, original):
-            r.parse_args(['--callers','lynk0x_,narc'])
-            self.assertEqual(set(r.CALLERS.values()),{'lynk0x_','narc'})
+            r.parse_args(['--callers','Dzv3gkwm,FniZYxox'])
+            self.assertEqual(set(r.CALLERS.values()),{'Dzv3gkwm','FniZYxox'})
         self.assertEqual(r.CALLERS,original)
 
 
@@ -285,7 +285,7 @@ class HTTPTest(unittest.TestCase):
         self.assertEqual(self.request('GET','/api/state')[0],200)
         status, raw = self.request('GET','/api/version')
         self.assertEqual(status,200)
-        self.assertEqual(json.loads(raw)['callers'],['lynk0x_','YourMistyy','narc','ApRnQN2H','CwUHN4zT'])
+        self.assertEqual(json.loads(raw)['callers'],list(r.CALLERS.values()))
         self.assertEqual(self.request('GET','/../data/pump_wallet.txt')[0],404)
 
     def test_controls_require_local_origin_host_and_request_token(self):
