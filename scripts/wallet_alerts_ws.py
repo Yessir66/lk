@@ -15,7 +15,36 @@ from discord_token_telegram import TelegramSender, amounts
 from discord_solana_watch import StateLock
 
 ROOT=Path(__file__).resolve().parents[1]
-VERSION='2026.11.14.1'
+VERSION='2026.11.14.2'
+
+
+def failure_label(exc):
+    """Keep status codes, never exception text or provider response bodies."""
+    values=(getattr(exc,'status',None),getattr(exc,'status_code',None),
+            getattr(getattr(exc,'response',None),'status_code',None))
+    status=next((v for v in values if isinstance(v,int) and not isinstance(v,bool)),None)
+    return type(exc).__name__+(f' ; HTTP {status}' if status is not None else '')
+
+
+async def diagnose(http,ws_url,wallet):
+    from websockets.asyncio.client import connect
+    rpc=ReadRPC(http,None,rps=2)
+    try:
+        await asyncio.to_thread(rpc.call,'getSignaturesForAddress',[wallet,{'limit':1,'commitment':'confirmed'}])
+        print('RPC HTTPS : OK (lecture seule).',flush=True)
+    except Exception as exc:print('RPC HTTPS : '+failure_label(exc),flush=True)
+    try:
+        async with connect(ws_url,ssl=ssl.create_default_context(),open_timeout=15,
+                           ping_interval=20,ping_timeout=20,max_size=2**20) as ws:
+            await ws.send(json.dumps({'jsonrpc':'2.0','id':1,'method':'logsSubscribe',
+                'params':[{'mentions':[wallet]},{'commitment':'confirmed'}]}))
+            reply=json.loads(await asyncio.wait_for(ws.recv(),15))
+            if isinstance(reply.get('result'),int):print('WebSocket : OK ; abonnement confirmed accepté.',flush=True)
+            else:
+                error=reply.get('error') or {};code=error.get('code') if isinstance(error,dict) else None
+                print('WebSocket : abonnement refusé'+(f' (code RPC {code})' if isinstance(code,int) else '')+'.',flush=True)
+    except Exception as exc:print('WebSocket : '+failure_label(exc),flush=True)
+    print('Diagnostic terminé ; aucune transaction envoyée, aucun message Telegram.',flush=True)
 
 
 def settings(path):
@@ -160,7 +189,7 @@ class Service:
             except Exception as exc:
                 failures+=1
                 # Never log connection exception text: it may contain the API key in the URL.
-                print(f'WebSocket : reconnexion ({type(exc).__name__}) dans {min(30,2**min(failures,5))} s.',flush=True)
+                print(f'WebSocket : reconnexion ({failure_label(exc)}) dans {min(30,2**min(failures,5))} s.',flush=True)
                 await asyncio.sleep(min(30,2**min(failures,5)))
 
     async def backfill_wallet(self,wallet):
@@ -274,6 +303,7 @@ def main():
     parser.add_argument('--config',type=Path,default=ROOT/'wallet_alerts_config.json')
     parser.add_argument('--state',type=Path,default=ROOT/'data'/'wallet_alerts_ws'/'state.sqlite3')
     parser.add_argument('--check',action='store_true',help='Valider la configuration sans requête réseau')
+    parser.add_argument('--diagnose',action='store_true',help='Tester HTTPS et un abonnement WSS, sans surveillance ni Telegram')
     parser.add_argument('--telegram',action='store_true',help='Activer explicitement les alertes Bot API')
     parser.add_argument('--early',action='store_true',help='Mesurer aussi les notifications processed ; jamais alertées avant confirmation')
     args=parser.parse_args()
@@ -290,6 +320,11 @@ def main():
             sender=TelegramSender(token,chat)
         if args.check:
             print('Configuration valide ; aucune connexion effectuée. URL et secrets masqués.');return
+        if args.diagnose:
+            key=config.get('helius_api_key')
+            if isinstance(key,str) and key.startswith(('https://','wss://')):
+                print('ATTENTION : helius_api_key contient une URL ; ce champ attend uniquement la clé API.',flush=True)
+            asyncio.run(diagnose(http,ws,next(iter(wallets.values()))));return
         args.state.parent.mkdir(parents=True,exist_ok=True)
         with StateLock(args.state.with_suffix('.lock')):
             journal=Journal(args.state)

@@ -38,6 +38,28 @@ class WalletAlertTest(unittest.IsolatedAsyncioTestCase):
         text=w.render(dict(w.trades_in(self.tx,WALLET,SIGNATURE)[0],notification_to_decode_ms=100,source='websocket'),'DECU')
         self.assertIn(SIGNATURE,text);self.assertNotIn('api-key',text)
 
+    def test_http_and_websocket_status_diagnostics_never_expose_exception_text(self):
+        from types import SimpleNamespace
+        for status in (401,403,429):
+            error=RuntimeError('wss://provider.example/?api-key=secret')
+            error.response=SimpleNamespace(status_code=status)
+            self.assertEqual(w.failure_label(error),f'RuntimeError ; HTTP {status}')
+        self.assertEqual(w.failure_label(ValueError('private-key')),'ValueError')
+
+    async def test_diagnostic_checks_https_and_websocket_without_loading_telegram(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from types import SimpleNamespace
+        error=RuntimeError('wss://provider.example/?api-key=secret')
+        error.response=SimpleNamespace(status_code=401)
+        output=StringIO()
+        with patch.object(w,'ReadRPC') as rpc,patch('websockets.asyncio.client.connect',side_effect=error),redirect_stdout(output):
+            rpc.return_value.call.return_value=[]
+            await w.diagnose('https://provider.example/?api-key=secret','wss://provider.example/?api-key=secret',WALLET)
+            rpc.return_value.call.assert_called_once_with('getSignaturesForAddress',[WALLET,{'limit':1,'commitment':'confirmed'}])
+        self.assertIn('HTTPS : OK',output.getvalue());self.assertIn('HTTP 401',output.getvalue())
+        self.assertNotIn('secret',output.getvalue());self.sender.send.assert_not_called()
+
     def test_rejects_invalid_wallets_and_plaintext_rpc(self):
         path=self.root/'config.json'
         for data in ({'helius_api_key':'secret','wallets':{'bad':'not-wallet'}},

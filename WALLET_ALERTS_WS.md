@@ -1,4 +1,4 @@
-# Alertes de wallets par WebSocket — 2026.11.14.1
+# Alertes de wallets par WebSocket — 2026.11.14.2
 
 Programme indépendant du bot de republication. Il suit **DECU** (`4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9`) et **LE L** (`CkPFGv2Wv1vwdWjtXioEgb8jhZQfs3eVZez3QCetu7xD`) par défaut. Aucun achat, ordre Trojan, appel pump.fun, GMGN ou IA. Aucune clé privée de wallet n’est nécessaire.
 
@@ -105,4 +105,8 @@ Le service continue après déconnexion SSH et redémarre avec le VPS. Aucun por
 
 ## Validation
 
-239 tests passent dans le dépôt, dont 18 nouveaux tests WebSocket : protocole d’abonnement simulé, transaction DECU publique connue en version 1, vente, transferts non qualifiés, processed sans confirmation, doublons, rattrapage et couverture partielle, conservation des erreurs sans secrets, file Telegram indépendante et envois incertains. Aucun achat ni message Telegram réel envoyé. La connexion Helius et la latence réelle doivent encore être vérifiées sur le VPS avec la clé de l’utilisateur.
+241 tests passent dans le dépôt, dont 20 tests WebSocket : protocole d’abonnement simulé, transaction DECU publique connue en version 1, vente, transferts non qualifiés, processed sans confirmation, doublons, rattrapage et couverture partielle, conservation des erreurs sans secrets, file Telegram indépendante et envois incertains. Aucun achat ni message Telegram réel envoyé. La connexion Helius et la latence réelle doivent encore être vérifiées sur le VPS avec la clé de l’utilisateur.
+
+## Diagnostic de connexion
+
+Après Ctrl+C, lancer `.venv/bin/python scripts/wallet_alerts_ws.py --diagnose`. Cette option teste une lecture HTTPS et un abonnement WSS une seule fois, sans surveillance permanente ni Telegram. Elle affiche les codes HTTP sans URL, clé ou contenu des exceptions. `--check` valide uniquement le format local, pas l’accès au fournisseur.
