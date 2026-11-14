@@ -17,7 +17,7 @@ from discord_token_telegram import TelegramSender, amounts
 from discord_solana_watch import StateLock
 
 ROOT=Path(__file__).resolve().parents[1]
-VERSION='2026.11.14.6'
+VERSION='2026.11.14.7'
 BACKFILL_PAGE_SIZE=1000
 BACKFILL_MAX_PAGES=10
 RPC_PHASES=('rpc_lock_wait_ms','cooldown_wait_ms','scheduler_wait_ms','rate_limit_wait_ms','http_json_ms')
@@ -200,9 +200,10 @@ def notification(journal,message,subscriptions,now,*,monotonic=None,names=None):
 
 
 class Service:
-    def __init__(self,journal,wallets,rpc,ws_url,*,sender=None,early=False,max_age=120):
+    def __init__(self,journal,wallets,rpc,ws_url,*,sender=None,early=False,max_age=120,browser_events=False):
         self.journal,self.wallets,self.rpc,self.ws_url=journal,wallets,rpc,ws_url
         self.names={w:n for n,w in wallets.items()};self.sender=sender;self.early=early;self.max_age=max_age
+        self.browser_events=browser_events
         self.rpc_condition=asyncio.Condition();self.rpc_waiters=[];self.rpc_sequence=0;self.rpc_busy=False
         interval=getattr(rpc,'interval',None)
         self.rpc_interval=interval if isinstance(interval,(int,float)) and interval>0 else .5
@@ -412,6 +413,10 @@ class Service:
             self.journal.retry(wallet,signature,attempts+1,type(exc).__name__,time.time(),public_profile())
             if attempts+1>=12:self.profiles.pop(key,None)
             return True
+        if self.browser_events:
+            for trade in trades:
+                event=browser_event(trade,decoded,self.max_age)
+                if event:print('GMGN_BUY '+json.dumps(event,separators=(',',':')),flush=True)
         return True
 
     async def deliver_one(self,now):
@@ -542,6 +547,16 @@ def render(trade,name):
     return '\n'.join(lines)
 
 
+def browser_event(trade,now,max_age=120):
+    """Only verified, recent buys; transport contains public identifiers, never credentials."""
+    block=trade.get('at')
+    if (trade.get('kind')!='buy' or trade.get('swap_proof_version')!=1
+        or not valid_address(trade.get('mint')) or not isinstance(block,(int,float))
+        or not 0<=now-block<=max_age):return None
+    return {'v':1,'type':'verified_buy','mint':trade['mint'],
+            'wallet':trade['wallet'],'signature':trade['signature'],'detected_at':now}
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config',type=Path,default=ROOT/'wallet_alerts_config.json')
@@ -552,6 +567,7 @@ def main():
     parser.add_argument('--early',action='store_true',help='Mesurer aussi les notifications processed ; jamais alertées avant confirmation')
     parser.add_argument('--timing-report',action='store_true',help='Afficher les mesures enregistrées sans réseau ni modification du journal')
     parser.add_argument('--rpc-rps',type=float,default=5,help='Plafond local partagé HTTPS, défaut 5/s ; maximum 10/s')
+    parser.add_argument('--browser-events',action='store_true',help='Émettre les achats vérifiés récents pour le lanceur Chrome Windows via SSH')
     args=parser.parse_args()
     if not .5<=args.rpc_rps<=10:parser.error('--rpc-rps doit être entre 0.5 et 10')
     try:
@@ -577,7 +593,7 @@ def main():
         args.state.parent.mkdir(parents=True,exist_ok=True)
         with StateLock(args.state.with_suffix('.lock')):
             journal=Journal(args.state)
-            try:asyncio.run(Service(journal,wallets,MeasuredRPC(http,None,rps=args.rpc_rps),ws,sender=sender,early=args.early).run())
+            try:asyncio.run(Service(journal,wallets,MeasuredRPC(http,None,rps=args.rpc_rps),ws,sender=sender,early=args.early,browser_events=args.browser_events).run())
             finally:journal.db.close()
     except KeyboardInterrupt:print('Surveillance arrêtée.',flush=True)
     except Exception as exc:

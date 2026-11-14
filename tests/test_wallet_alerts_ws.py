@@ -30,6 +30,48 @@ class WalletAlertTest(unittest.IsolatedAsyncioTestCase):
         self.service=w.Service(self.journal,dict(w.WATCHED),self.rpc,'wss://unused.invalid',sender=self.sender)
         self.service.call=AsyncMock(return_value=self.tx)
 
+    def test_browser_event_contains_only_public_verified_buy_identifiers(self):
+        trade=w.trades_in(self.tx,WALLET,SIGNATURE)[0]
+        event=w.browser_event(trade,self.at+1)
+        self.assertEqual(event,dict(v=1,type='verified_buy',mint=MINT,wallet=WALLET,
+                                    signature=SIGNATURE,detected_at=self.at+1))
+        for changes in ({'kind':'sell'},{'kind':'transfer'},{'swap_proof_version':None},
+                        {'mint':'https://other.example/'},{'at':None}):
+            with self.subTest(changes=changes):
+                self.assertIsNone(w.browser_event(dict(trade,**changes),self.at+1))
+        self.assertIsNone(w.browser_event(trade,self.at+121))
+        self.assertIsNone(w.browser_event(trade,self.at-1))
+
+    async def test_browser_events_are_opt_in_and_persisted_before_emission(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        self.journal.observe(WALLET,SIGNATURE,self.at,1,'websocket',True)
+        output=StringIO()
+        with patch.object(w.time,'time',return_value=self.at+1),redirect_stdout(output):
+            await self.service.decode_one(self.at+1)
+        self.assertNotIn('GMGN_BUY ',output.getvalue())
+        self.service.browser_events=True
+        self.assertFalse(await self.service.decode_one(self.at+2))
+
+    async def test_browser_stream_emits_recent_recovered_buy_once_but_no_old_buy(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        self.service.browser_events=True
+        self.journal.observe(WALLET,SIGNATURE,self.at,1,'rattrapage',True)
+        output=StringIO()
+        with patch.object(w.time,'time',return_value=self.at+1),redirect_stdout(output):
+            await self.service.decode_one(self.at+1)
+            self.assertFalse(await self.service.decode_one(self.at+2))
+        events=[json.loads(line[len('GMGN_BUY '):]) for line in output.getvalue().splitlines() if line.startswith('GMGN_BUY ')]
+        self.assertEqual(len(events),1);self.assertEqual(events[0]['mint'],MINT)
+        self.assertEqual(self.journal.db.execute('SELECT state FROM events').fetchone()[0],'done')
+        other='A'*88
+        self.journal.observe(WALLET,other,self.at+121,1,'rattrapage',True)
+        output=StringIO()
+        with patch.object(w.time,'time',return_value=self.at+121),redirect_stdout(output):
+            await self.service.decode_one(self.at+121)
+        self.assertNotIn('GMGN_BUY ',output.getvalue())
+
     def test_example_settings_and_secrets_stay_out_of_public_output(self):
         example=Path(__file__).parents[1]/'wallet_alerts_config.example.json'
         with patch.dict(w.os.environ,{},clear=True):

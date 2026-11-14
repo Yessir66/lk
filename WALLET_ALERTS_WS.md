@@ -1,10 +1,12 @@
-# Alertes de wallets par WebSocket — 2026.11.14.6
+# Alertes de wallets par WebSocket — 2026.11.14.7
 
 Programme indépendant du bot de republication. Il suit **DECU** (`4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9`) et **LE L** (`CkPFGv2Wv1vwdWjtXioEgb8jhZQfs3eVZez3QCetu7xD`) par défaut. Aucun achat, ordre Trojan, appel pump.fun, GMGN ou IA. Aucune clé privée de wallet n’est nécessaire.
 
 Le programme reçoit des notifications Solana `logsSubscribe` en **confirmed**, puis lit chaque transaction avec `getTransaction`, version maximale 1, au même niveau de confirmation. Une alerte d’achat ou de vente demande un swap signé par le wallet, un changement de solde et une contrepartie économique avec attribution du transfert au swap. Un transfert seul ne devient pas un achat. Les programmes de swap inconnus et certains swaps complexes peuvent rester non reconnus ; les données ambiguës restent locales.
 
 Il s’agit d’une détection **après exécution de la transaction**, pas d’une prédiction ni d’un accès aux transactions avant leur diffusion. Aucune latence garantie avant mesure sur le fournisseur réel.
+
+Pour ouvrir automatiquement le graphique GMGN de chaque achat vérifié récent dans Chrome sur Windows, voir [CHARTS_GMGN.md](CHARTS_GMGN.md). Ce mode optionnel passe par SSH et n'utilise pas d'API GMGN. Telegram et les ordres restent désactivés avec le lanceur fourni.
 
 ## Installer sur le VPS Hostinger
 
