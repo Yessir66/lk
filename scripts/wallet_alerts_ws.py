@@ -15,7 +15,9 @@ from discord_token_telegram import TelegramSender, amounts
 from discord_solana_watch import StateLock
 
 ROOT=Path(__file__).resolve().parents[1]
-VERSION='2026.11.14.2'
+VERSION='2026.11.14.3'
+BACKFILL_PAGE_SIZE=1000
+BACKFILL_MAX_PAGES=10
 
 
 def failure_label(exc):
@@ -99,7 +101,7 @@ class Journal:
         self.db.execute("UPDATE alerts SET state='uncertain',error='Interruption pendant envoi ; aucun renvoi automatique' WHERE state='sending'")
         self.db.commit()
 
-    def observe(self,wallet,signature,at,slot,source,confirmed):
+    def observe(self,wallet,signature,at,slot,source,confirmed,*,commit=True):
         self.db.execute('''INSERT INTO events (wallet,signature,first_seen,confirmed_seen,slot,source,state)
           VALUES (?,?,?,?,?,?,?) ON CONFLICT(wallet,signature) DO UPDATE SET
           first_seen=MIN(events.first_seen,excluded.first_seen),
@@ -109,7 +111,7 @@ class Journal:
           state=CASE WHEN events.state='provisional' AND excluded.confirmed_seen IS NOT NULL
                      THEN 'pending' ELSE events.state END''',
           (wallet,signature,at,at if confirmed else None,slot,source,'pending' if confirmed else 'provisional'))
-        self.db.commit()
+        if commit:self.db.commit()
 
     def finish(self,wallet,signature,trades,alerts=()):
         self.db.execute("UPDATE events SET state='done',trades=?,error=NULL WHERE wallet=? AND signature=?",
@@ -195,8 +197,8 @@ class Service:
     async def backfill_wallet(self,wallet):
         db=self.journal.db;cursor=db.execute('SELECT signature FROM cursors WHERE wallet=?',(wallet,)).fetchone()
         anchor=cursor[0] if cursor else None;before=None;newest=None;found=False
-        for page in range(10):
-            options={'limit':100 if cursor else 1,'commitment':'confirmed'}
+        for page in range(BACKFILL_MAX_PAGES):
+            options={'limit':BACKFILL_PAGE_SIZE if cursor else 1,'commitment':'confirmed'}
             if before:options['before']=before
             rows=await self.call('getSignaturesForAddress',[wallet,options])
             if not rows:found=True;break
@@ -205,12 +207,14 @@ class Service:
             for row in rows:
                 if row['signature']==anchor:found=True;break
                 if row.get('err') is None:
-                    self.journal.observe(wallet,row['signature'],time.time(),row.get('slot'),'rattrapage',True)
-            if found or len(rows)<100:found=True;break
+                    self.journal.observe(wallet,row['signature'],time.time(),row.get('slot'),'rattrapage',True,commit=False)
+            db.commit()  # One disk commit per page; keep the WebSocket event loop responsive.
+            if found or len(rows)<BACKFILL_PAGE_SIZE:found=True;break
             before=rows[-1]['signature']
         if not found:
-            db.execute('INSERT INTO gaps VALUES (?,?,?)',(wallet,time.time(),'Rattrapage limité à 1000 signatures'))
-            print('HISTORIQUE PARTIEL : '+self.names[wallet]+' ; rattrapage limité à 1000 signatures.',flush=True)
+            maximum=BACKFILL_PAGE_SIZE*BACKFILL_MAX_PAGES
+            db.execute('INSERT INTO gaps VALUES (?,?,?)',(wallet,time.time(),f'Rattrapage limité à {maximum} signatures'))
+            print('HISTORIQUE PARTIEL : '+self.names[wallet]+f' ; rattrapage limité à {maximum} signatures.',flush=True)
         if newest or not cursor:db.execute('INSERT OR REPLACE INTO cursors VALUES (?,?)',(wallet,newest or ''))
         db.commit()
 
@@ -294,6 +298,9 @@ def render(trade,name):
            ('Payé : ' if verb=='ACHAT' else 'Reçu : ')+amounts(trade['quotes']),
            'Réception notification → décodage : '+str(trade['notification_to_decode_ms'])+' ms',
            'Source : '+trade['source'],'https://solscan.io/tx/'+trade['signature']]
+    delay=trade.get('block_to_decode_ms')
+    if isinstance(delay,(int,float)):
+        lines.insert(-2,'Block Solana → décodage (approximatif) : '+str(delay)+' ms')
     if trade['source']=='rattrapage':lines.append('Événement retrouvé par rattrapage, pas par notification directe.')
     return '\n'.join(lines)
 

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
 import wallet_alerts_ws as w
+import configure_wallet_alerts as configure
 from test_discord_v1_regression import FIXTURE, SIGNATURE, MINT
 
 WALLET=w.WATCHED['DECU']
@@ -67,6 +68,32 @@ class WalletAlertTest(unittest.IsolatedAsyncioTestCase):
                      {'helius_api_key':'secret','wallets':{'a':WALLET,'b':WALLET}}):
             path.write_text(json.dumps(data))
             with patch.dict(w.os.environ,{},clear=True),self.assertRaises(ValueError):w.settings(path)
+
+    def test_telegram_configuration_preserves_helius_and_never_prints_secrets(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        path=self.root/'wallet_alerts_config.json'
+        data={'helius_api_key':'helius-secret','wallets':dict(w.WATCHED)}
+        path.write_text(json.dumps(data));token='123456:abcdefghijklmnopqrs';output=StringIO()
+        with patch.object(configure,'__file__',str(self.root/'scripts'/'configure_wallet_alerts.py')),\
+             patch.object(configure.getpass,'getpass',return_value=token),\
+             patch('builtins.input',return_value='-100123456'),\
+             patch.object(sys,'argv',['configure_wallet_alerts.py','--telegram']),redirect_stdout(output):
+            configure.main()
+        saved=json.loads(path.read_text())
+        self.assertEqual(saved,dict(data,telegram_bot_token=token,telegram_chat_id='-100123456'))
+        self.assertNotIn(token,output.getvalue());self.assertNotIn('helius-secret',output.getvalue())
+        self.assertEqual(path.stat().st_mode & 0o777,0o600)
+
+    def test_invalid_telegram_token_does_not_modify_existing_configuration(self):
+        path=self.root/'wallet_alerts_config.json';original=json.dumps({'helius_api_key':'helius-secret'})
+        path.write_text(original)
+        with patch.object(configure,'__file__',str(self.root/'scripts'/'configure_wallet_alerts.py')),\
+             patch.object(configure.getpass,'getpass',return_value='not-a-bot-token'),\
+             patch('builtins.input',return_value='123'),\
+             patch.object(sys,'argv',['configure_wallet_alerts.py','--telegram']),self.assertRaises(SystemExit):
+            configure.main()
+        self.assertEqual(path.read_text(),original)
 
     def test_processed_never_enters_decoder_without_confirmed_notification(self):
         w.notification(self.journal,notice(),{1:(WALLET,'processed')},self.at+.1)
@@ -144,12 +171,13 @@ class WalletAlertTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_reconnection_paginates_to_saved_cursor_and_excludes_failed_transactions(self):
         self.journal.db.execute('INSERT INTO cursors VALUES (?,?)',(WALLET,'baseline'));self.journal.db.commit()
-        page=[{'signature':f's{i}','err':None,'slot':1} for i in range(100)]
+        page=[{'signature':f's{i}','err':None,'slot':1} for i in range(1000)]
         page[20]['err']='failed'
         self.service.call.side_effect=[page,[{'signature':'baseline','err':None,'slot':1}]]
         await self.service.backfill_wallet(WALLET)
-        self.assertEqual(self.journal.db.execute('SELECT count(*) FROM events').fetchone()[0],99)
-        self.assertEqual(self.service.call.call_args.args[1][1]['before'],'s99')
+        self.assertEqual(self.journal.db.execute('SELECT count(*) FROM events').fetchone()[0],999)
+        self.assertEqual(self.service.call.call_args.args[1][1]['before'],'s999')
+        self.assertEqual(self.service.call.call_args_list[0].args[1][1]['limit'],1000)
         self.assertEqual(self.journal.db.execute('SELECT signature FROM cursors').fetchone()[0],'s0')
 
     async def test_initially_empty_wallet_does_not_lose_first_transaction_during_outage(self):
@@ -162,7 +190,7 @@ class WalletAlertTest(unittest.IsolatedAsyncioTestCase):
     async def test_truncated_backfill_records_persistent_coverage_gap(self):
         self.journal.db.execute('INSERT INTO cursors VALUES (?,?)',(WALLET,'old'));self.journal.db.commit()
         self.service.call.side_effect=[[
-            {'signature':f'{page}-{i}','err':None,'slot':1} for i in range(100)] for page in range(10)]
+            {'signature':f'{page}-{i}','err':None,'slot':1} for i in range(1000)] for page in range(10)]
         await self.service.backfill_wallet(WALLET)
         self.assertEqual(self.journal.db.execute('SELECT count(*) FROM gaps').fetchone()[0],1)
         self.assertEqual(self.service.call.await_count,10)

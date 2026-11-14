@@ -1,4 +1,4 @@
-# Alertes de wallets par WebSocket — 2026.11.14.2
+# Alertes de wallets par WebSocket — 2026.11.14.3
 
 Programme indépendant du bot de republication. Il suit **DECU** (`4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9`) et **LE L** (`CkPFGv2Wv1vwdWjtXioEgb8jhZQfs3eVZez3QCetu7xD`) par défaut. Aucun achat, ordre Trojan, appel pump.fun, GMGN ou IA. Aucune clé privée de wallet n’est nécessaire.
 
@@ -60,14 +60,14 @@ Attendre `WEBSOCKET CONNECTÉ : 2 wallets ; 2 abonnements.` Les achats et ventes
 - Un même couple wallet/signature n’est décodé qu’une fois avec succès. Les mouvements de plusieurs tokens restent distingués. Le même token peut générer plusieurs alertes pour plusieurs véritables achats/ventes distincts.
 - Chaque trade sauvegarde réception initiale, réception confirmée, fin de décodage, délai notification→décodage et délai approximatif blockTime→décodage. Le blockTime Solana est une référence grossière à la seconde ; il ne permet pas de mesurer précisément des écarts de quelques millisecondes. Ces chiffres n’incluent pas la réception sur le téléphone Telegram.
 - `--early` ajoute des abonnements `processed` pour mesurer l’arrivée précoce, mais aucun trade n’est alerté avant lecture confirmée. Il double le nombre d’abonnements ; vérifier les limites du forfait. Les événements provisoires jamais confirmés n’envoient rien.
-- Rattrapage au branchement et toutes les 60 secondes ; premier démarrage initialise une référence sans rejouer l’historique. Après une coupure, le rattrapage remonte jusqu’au curseur sauvegardé, avec au maximum 1000 signatures par wallet. Une fenêtre trop grande est signalée et inscrite dans la table `gaps` : l’exhaustivité ne peut pas être garantie.
+- Rattrapage au branchement et toutes les 60 secondes ; premier démarrage initialise une référence sans rejouer l’historique. Après une coupure, le rattrapage remonte jusqu’au curseur sauvegardé, avec au maximum 10 000 signatures par wallet. Une fenêtre trop grande est signalée et inscrite dans la table `gaps` : l’exhaustivité ne peut pas être garantie.
 - Le rattrapage, les mouvements ambigus et les vieux trades sont conservés localement. Les événements retrouvés par rattrapage sont étiquetés comme tels. Les nouvelles notifications WebSocket ont priorité sur le décodage de l’historique.
 - Les transactions pas encore lisibles sont réessayées jusqu’à 12 fois, avec attente croissante ; ensuite elles restent `unavailable`. Le réseau se reconnecte automatiquement. HTTP 429 déclenche une pause RPC. Les URL, clés et textes des exceptions réseau ne sont jamais imprimés.
 - Le transport RPC utilise exclusivement `getSignaturesForAddress` et `getTransaction`. Les quotas Helius sont partagés avec les autres programmes qui utilisent la même clé. Un ancien bot qui reçoit 403 sur pump.fun ne gêne pas ce service indépendant.
 
 ## Alertes Telegram, après le test console
 
-Ajouter au fichier **local** `wallet_alerts_config.json` les champs `telegram_bot_token` et `telegram_chat_id` existants, ou fournir `TELEGRAM_BOT_TOKEN` et `TELEGRAM_CHAT_ID` dans l’environnement du service. Ne pas utiliser la destination Trojan : ce programme utilise la Bot API de ton bot d’alertes, sans session Telegram utilisateur et sans ordre de trading.
+La commande `.venv/bin/python scripts/configure_wallet_alerts.py --telegram` demande le token du bot avec saisie masquée puis le Chat ID, en conservant la clé Helius. Elle n’envoie aucun message. Autre possibilité : ajouter au fichier **local** `wallet_alerts_config.json` les champs `telegram_bot_token` et `telegram_chat_id` existants, ou fournir `TELEGRAM_BOT_TOKEN` et `TELEGRAM_CHAT_ID` dans l’environnement du service. Ne pas utiliser la destination Trojan : ce programme utilise la Bot API de ton bot d’alertes, sans session Telegram utilisateur et sans ordre de trading.
 
 Lancer explicitement :
 
@@ -105,7 +105,7 @@ Le service continue après déconnexion SSH et redémarre avec le VPS. Aucun por
 
 ## Validation
 
-241 tests passent dans le dépôt, dont 20 tests WebSocket : protocole d’abonnement simulé, transaction DECU publique connue en version 1, vente, transferts non qualifiés, processed sans confirmation, doublons, rattrapage et couverture partielle, conservation des erreurs sans secrets, file Telegram indépendante et envois incertains. Aucun achat ni message Telegram réel envoyé. La connexion Helius et la latence réelle doivent encore être vérifiées sur le VPS avec la clé de l’utilisateur.
+243 tests passent dans le dépôt, dont 22 tests WebSocket : protocole d’abonnement simulé, transaction DECU publique connue en version 1, vente, transferts non qualifiés, processed sans confirmation, doublons, rattrapage et couverture partielle, conservation des erreurs sans secrets, file Telegram indépendante et envois incertains. Aucun achat ni message Telegram réel envoyé. La connexion Helius et la latence réelle doivent encore être vérifiées sur le VPS avec la clé de l’utilisateur.
 
 ## Diagnostic de connexion
 
