@@ -17,7 +17,7 @@ try {
     function global:ssh.exe {
         $global:LASTEXITCODE = 0
         'WEBSOCKET CONNECTE (mock)'
-        $item = @{v=1;type='verified_buy';mint=('A'*32);wallet=('B'*32);signature=('C'*88)}
+        $item = @{v=1;type='verified_buy';mint=('A'*32);wallet=('B'*32);signature=('C'*88);detected_at=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()}
         'GMGN_BUY ' + ($item | ConvertTo-Json -Compress)
         'GMGN_BUY ' + ($item | ConvertTo-Json -Compress)
         $item.signature = 'D'*88
@@ -31,6 +31,16 @@ try {
     if ($global:GmgnOpened[1] -cne ('https://gmgn.ai/sol/token/' + ('A'*32))) { throw 'Incorrect fixed GMGN URL' }
     & (Join-Path $root 'windows/OUVRIR_CHARTS_GMGN.ps1')
     if ($global:GmgnOpened.Count -ne 4) { throw 'Restart duplicated a previously opened trade' }
+    $state = Join-Path $temp 'WalletAlertsGMGN'
+    Remove-Item -LiteralPath (Join-Path $state 'opened-buys.txt')
+    [void](New-Item -ItemType Directory -Force -Path (Join-Path $state 'nativehost'))
+    [IO.File]::WriteAllText((Join-Path $state 'nativehost/fr.walletalerts.gmgn.json'),'{}')
+    & (Join-Path $root 'windows/OUVRIR_CHARTS_GMGN.ps1') -SingleTab
+    if ($global:GmgnOpened.Count -ne 4) { throw 'Single-tab mode must never launch a new Chrome tab' }
+    $session = [IO.File]::ReadAllText((Join-Path $state 'bridge-session.txt')).Trim()
+    $events = @(Get-Content -LiteralPath (Join-Path $state ('gmgn-events-' + $session + '.jsonl')))
+    if ($events.Count -ne 2) { throw 'Expected exactly two distinct public buy events in bridge journal' }
+    foreach ($line in $events) { if (($line | ConvertFrom-Json).type -cne 'verified_buy') { throw 'Non-buy entered bridge' } }
     Write-Host 'Launcher integration OK: recent buys, duplicate suppression and persistent restart tested with mocks.'
 } finally {
     foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name,$original[$name],'Process') }

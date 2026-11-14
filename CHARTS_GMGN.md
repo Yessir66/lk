@@ -1,5 +1,7 @@
 # Graphiques GMGN sur ton PC — version 2026.11.14.7
 
+**Nouveau mode conseille pour eviter les rechargements repetes :** voir [GMGN_ONGLET_UNIQUE.md](GMGN_ONGLET_UNIQUE.md). L'extension reutilise un onglet et conserve le graphique du meme token. Le guide ci-dessous decrit l'ancien mode, avec un nouvel onglet par achat.
+
 Le VPS reconnait deja le CA de chaque achat verifie. Le lanceur Windows recoit ces achats sur une connexion SSH et ouvre directement `https://gmgn.ai/sol/token/CA` dans ton Chrome Windows. Il ouvre GMGN au demarrage pour preparer le navigateur. Il n'utilise ni API GMGN ni recherche par copier-coller.
 
 Un nouvel onglet est demande pour chaque nouvel achat verifie recent, meme si le token a deja ete achete auparavant. Un meme achat ne doit pas rouvrir un onglet apres redemarrage : le VPS garde son journal et Windows conserve les signatures deja ouvertes dans `%LOCALAPPDATA%\WalletAlertsGMGN\opened-buys.txt`. Une transaction avec plusieurs wallets suivis achetant le meme token n'ouvre qu'un onglet pour ce token et cette signature.

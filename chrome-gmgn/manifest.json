@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Wallet Alerts - GMGN onglet unique",
+  "version": "1.0.0",
+  "description": "Affiche les achats verifies dans un onglet GMGN reutilise. Aucun ordre de trading.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArCz5R50Zn/ZglN9qrQwIuxzn//JJ7DUCpVmxepKgG967bkXWFS42HYMMHwNmPlG3pKpKtHUDl6p5tsfEcxQSG/ArLTRXdORNbWsItLZi+14q0JSyml4PKnOK8RnAMKJqE6yOFypliL60SStmIFPHCNkYJGz95k82cwYUZXk2yyQALI4jkVLXgkcqjLIRdzoiCxPMKHpPRt8KBfbYO/w78vnKyz8zdkzb5BLKPPTPG2XxcOoGfzR/a2B4pKbnNRvy/5s+LGLf97FpytvqQPUuB2JqvPBddxbgSOUwuc23BHHM1DYwS34KB3ZuUCH3vowPnSLW2SOx+nvwYPSQWAXKxQIDAQAB",
+  "permissions": ["nativeMessaging", "storage", "scripting"],
+  "host_permissions": ["https://gmgn.ai/*"],
+  "background": {"service_worker": "background.js", "type": "module"},
+  "action": {"default_popup": "popup.html", "default_title": "Graphiques GMGN"}
+}

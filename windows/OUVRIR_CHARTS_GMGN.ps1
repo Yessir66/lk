@@ -1,9 +1,14 @@
 param(
-    [switch]$Test
+    [switch]$Test,
+    [switch]$SingleTab
 )
 
 $ErrorActionPreference = 'Stop'
 $prefix = 'GMGN_BUY '
+if ($env:OS -eq 'Windows_NT') {
+    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+    $OutputEncoding = [Console]::OutputEncoding
+}
 
 function Get-GmgnBuy {
     param([string]$Line)
@@ -50,10 +55,22 @@ try {
         Get-Content -LiteralPath $seenFile | ForEach-Object { [void]$seen.Add($_) }
     }
 
-    Write-Host 'GMGN : un nouvel onglet par achat verifie recent. Ventes manuelles.'
+    if ($SingleTab) {
+        if (-not (Test-Path -LiteralPath (Join-Path $localState 'nativehost\fr.walletalerts.gmgn.json'))) {
+            throw 'Lance d''abord INSTALLER_EXTENSION_GMGN.cmd et charge l''extension dans Chrome.'
+        }
+        $session = [guid]::NewGuid().ToString('N')
+        $bridgeFile = Join-Path $localState ('gmgn-events-' + $session + '.jsonl')
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        [IO.File]::WriteAllText($bridgeFile,'',$utf8)
+        [IO.File]::WriteAllText((Join-Path $localState 'bridge-session.txt'),$session,$utf8)
+        Write-Host 'GMGN : onglet unique. Garde Chrome ouvert avec l''extension active.'
+    } else {
+        Write-Host 'GMGN : un nouvel onglet par achat verifie recent. Ventes manuelles.'
+    }
     Write-Host 'Connexion au VPS : utilise le mot de passe habituel si SSH le demande.'
     Write-Host 'Laisse cette fenetre ouverte. Ctrl+C pour arreter.'
-    Start-Process -FilePath $chrome -ArgumentList @('--new-tab','https://gmgn.ai/sol')
+    if (-not $SingleTab) { Start-Process -FilePath $chrome -ArgumentList @('--new-tab','https://gmgn.ai/sol') }
 
     # Fixed remote command, no credentials on the command line; no exposed web server.
     $remote = 'exec /home/bot/wallet-alerts/.venv/bin/python -u /home/bot/wallet-alerts/scripts/wallet_alerts_ws.py --early --browser-events'
@@ -68,10 +85,15 @@ try {
                 # Only a validated CA enters the fixed GMGN URL; never execute remote text.
                 $url = 'https://gmgn.ai/sol/token/' + [string]$event.mint
                 try {
-                    Start-Process -FilePath $chrome -ArgumentList @('--new-tab',$url)
+                    if ($SingleTab) {
+                        [IO.File]::AppendAllText($bridgeFile,($event | ConvertTo-Json -Compress) + "`n",$utf8)
+                    } else {
+                        Start-Process -FilePath $chrome -ArgumentList @('--new-tab',$url)
+                    }
                     Add-Content -LiteralPath $seenFile -Value $key -Encoding ASCII
                     [void]$seen.Add($key)
-                    Write-Host ('CHART GMGN OUVERT : ' + [string]$event.mint) -ForegroundColor Green
+                    $label = if ($SingleTab) { 'CA TRANSMIS A L''EXTENSION : ' } else { 'CHART GMGN OUVERT : ' }
+                    Write-Host ($label + [string]$event.mint) -ForegroundColor Green
                 } catch { Write-Warning ('Ouverture impossible. Lien : ' + $url) }
             }
         }
