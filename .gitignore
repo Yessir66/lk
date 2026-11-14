@@ -2,3 +2,4 @@ data/
 __pycache__/
 *.pyc
 scout_config.json
+wallet_alerts_config.json

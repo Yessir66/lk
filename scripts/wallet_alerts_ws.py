@@ -1,0 +1,304 @@
+#!/usr/bin/env python3
+"""Read-only Solana trade alerts. No wallet keys, orders, pump.fun, or AI calls."""
+import argparse
+import asyncio
+import json
+import os
+from pathlib import Path
+import sqlite3
+import ssl
+import time
+from urllib.parse import urlsplit, quote
+
+from discord_token_analysis import WATCHED, QUOTES, TRADE_LOG, ReadRPC, parse_trade, valid_address, paris
+from discord_token_telegram import TelegramSender, amounts
+from discord_solana_watch import StateLock
+
+ROOT=Path(__file__).resolve().parents[1]
+VERSION='2026.11.14.1'
+
+
+def settings(path):
+    value=json.loads(path.read_text(encoding='utf-8-sig')) if path.is_file() else {}
+    if not isinstance(value,dict):raise ValueError('Configuration attendue : objet JSON')
+    wallets=value.get('wallets',WATCHED)
+    if (not isinstance(wallets,dict) or not 1<=len(wallets)<=20 or
+        any(not isinstance(n,str) or not 1<=len(n)<=40 or not valid_address(w) for n,w in wallets.items()) or
+        len(set(wallets.values()))!=len(wallets)):
+        raise ValueError('Wallets : 1 à 20 noms distincts et adresses Solana uniques')
+    key=os.getenv('HELIUS_API_KEY') or value.get('helius_api_key')
+    if key is not None and (not isinstance(key,str) or not key.strip()):raise ValueError('Clé Helius invalide')
+    http=os.getenv('SOLANA_RPC_URL') or value.get('rpc_http_url')
+    if not http and key:http='https://mainnet.helius-rpc.com/?api-key='+quote(key.strip(),safe='')
+    ws=os.getenv('SOLANA_WS_URL') or value.get('rpc_ws_url')
+    if not ws and isinstance(http,str):ws='wss://'+http[len('https://'):] if http.startswith('https://') else None
+    for url,scheme in ((http,'https'),(ws,'wss')):
+        if not isinstance(url,str):raise ValueError('Renseigner Helius ou les URL HTTPS et WSS du RPC')
+        parsed=urlsplit(url)
+        if parsed.scheme!=scheme or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError('RPC : URL HTTPS/WSS sans identifiant intégré requise')
+    return value,dict(wallets),http,ws
+
+
+def trades_in(tx,wallet,signature):
+    meta=tx.get('meta') or {}
+    mints={b.get('mint') for side in ('preTokenBalances','postTokenBalances') for b in meta.get(side,[])
+           if b.get('owner')==wallet and valid_address(b.get('mint')) and b.get('mint') not in QUOTES}
+    trades=[]
+    for mint in sorted(mints):
+        trade=parse_trade(tx,wallet,mint,signature)
+        if trade:trades.append(trade)
+    return trades
+
+
+class Journal:
+    def __init__(self,path):
+        path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+        self.db=sqlite3.connect(path)
+        self.db.executescript('''
+          PRAGMA journal_mode=WAL;
+          CREATE TABLE IF NOT EXISTS events (
+            wallet TEXT,signature TEXT,first_seen REAL,confirmed_seen REAL,slot INTEGER,source TEXT,
+            state TEXT,attempts INTEGER DEFAULT 0,retry_at REAL DEFAULT 0,trades TEXT,error TEXT,
+            PRIMARY KEY(wallet,signature));
+          CREATE TABLE IF NOT EXISTS cursors (wallet TEXT PRIMARY KEY,signature TEXT);
+          CREATE TABLE IF NOT EXISTS gaps (wallet TEXT,at REAL,reason TEXT);
+          CREATE TABLE IF NOT EXISTS alerts (wallet TEXT,signature TEXT,mint TEXT,state TEXT,text TEXT,
+            expires_at REAL,message_id INTEGER,error TEXT,PRIMARY KEY(wallet,signature,mint));
+          CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY,value TEXT);
+        ''')
+        self.db.execute("UPDATE alerts SET state='uncertain',error='Interruption pendant envoi ; aucun renvoi automatique' WHERE state='sending'")
+        self.db.commit()
+
+    def observe(self,wallet,signature,at,slot,source,confirmed):
+        self.db.execute('''INSERT INTO events (wallet,signature,first_seen,confirmed_seen,slot,source,state)
+          VALUES (?,?,?,?,?,?,?) ON CONFLICT(wallet,signature) DO UPDATE SET
+          first_seen=MIN(events.first_seen,excluded.first_seen),
+          source=CASE WHEN events.confirmed_seen IS NULL AND excluded.confirmed_seen IS NOT NULL
+                      THEN excluded.source ELSE events.source END,
+          confirmed_seen=COALESCE(events.confirmed_seen,excluded.confirmed_seen),
+          state=CASE WHEN events.state='provisional' AND excluded.confirmed_seen IS NOT NULL
+                     THEN 'pending' ELSE events.state END''',
+          (wallet,signature,at,at if confirmed else None,slot,source,'pending' if confirmed else 'provisional'))
+        self.db.commit()
+
+    def finish(self,wallet,signature,trades,alerts=()):
+        self.db.execute("UPDATE events SET state='done',trades=?,error=NULL WHERE wallet=? AND signature=?",
+                        (json.dumps(trades),wallet,signature))
+        for mint,text,expiry in alerts:
+            self.db.execute("INSERT OR IGNORE INTO alerts (wallet,signature,mint,state,text,expires_at) VALUES (?,?,?,'pending',?,?)",
+                            (wallet,signature,mint,text,expiry))
+        self.db.commit()
+
+    def due(self,now):
+        return self.db.execute("SELECT wallet,signature,first_seen,confirmed_seen,source,attempts FROM events WHERE state='pending' AND retry_at<=? ORDER BY CASE source WHEN 'websocket' THEN 0 ELSE 1 END,confirmed_seen LIMIT 1",(now,)).fetchone()
+
+    def retry(self,wallet,signature,attempts,reason,now):
+        self.db.execute('UPDATE events SET state=?,attempts=?,retry_at=?,error=? WHERE wallet=? AND signature=?',
+          ('unavailable' if attempts>=12 else 'pending',attempts,now+min(30,2**min(attempts,5)),reason,wallet,signature))
+        self.db.commit()
+
+
+def notification(journal,message,subscriptions,now):
+    if message.get('method')!='logsNotification':return
+    params=message.get('params') or {};target=subscriptions.get(params.get('subscription'))
+    if target is None:return
+    wallet,commitment=target;result=params.get('result') or {};value=result.get('value') or {}
+    signature=value.get('signature')
+    if value.get('err') is not None or not isinstance(signature,str) or not 64<=len(signature)<=100:return
+    # Logs identify candidates only. The transaction decoder must prove the actual swap.
+    if not any(TRADE_LOG.search(line) for line in value.get('logs',[]) if isinstance(line,str)):return
+    journal.observe(wallet,signature,now,(result.get('context') or {}).get('slot'),'websocket',commitment=='confirmed')
+
+
+class Service:
+    def __init__(self,journal,wallets,rpc,ws_url,*,sender=None,early=False,max_age=120):
+        self.journal,self.wallets,self.rpc,self.ws_url=journal,wallets,rpc,ws_url
+        self.names={w:n for n,w in wallets.items()};self.sender=sender;self.early=early;self.max_age=max_age
+        self.rpc_lock=asyncio.Lock();self.recover=asyncio.Event();self.pause_until=0
+        if sender:
+            previous=journal.db.execute("SELECT value FROM meta WHERE key='telegram_destination'").fetchone()
+            if previous and previous[0]!=sender.destination:raise ValueError('Destination Telegram modifiée : utiliser un autre journal')
+            journal.db.execute("INSERT OR IGNORE INTO meta VALUES ('telegram_destination',?)",(sender.destination,));journal.db.commit()
+
+    async def call(self,method,params):
+        async with self.rpc_lock:
+            delay=self.pause_until-time.monotonic()
+            if delay>0:await asyncio.sleep(delay)
+            try:return await asyncio.to_thread(self.rpc.call,method,params)
+            except Exception as exc:
+                if getattr(exc,'status',None)==429:self.pause_until=time.monotonic()+60
+                raise
+
+    async def websocket(self):
+        from websockets.asyncio.client import connect
+        failures=0
+        while True:
+            try:
+                async with connect(self.ws_url,ssl=ssl.create_default_context(),open_timeout=20,
+                                   ping_interval=20,ping_timeout=20,max_size=2**22) as ws:
+                    requests={};subscriptions={};identity=0
+                    for wallet in self.names:
+                        for commitment in (('processed','confirmed') if self.early else ('confirmed',)):
+                            identity+=1;requests[identity]=(wallet,commitment)
+                            await ws.send(json.dumps({'jsonrpc':'2.0','id':identity,'method':'logsSubscribe',
+                              'params':[{'mentions':[wallet]},{'commitment':commitment}]}))
+                    deadline=time.monotonic()+20
+                    while requests:
+                        message=json.loads(await asyncio.wait_for(ws.recv(),max(.01,deadline-time.monotonic())))
+                        if 'id' in message:
+                            target=requests.pop(message['id'],None)
+                            if target is None or not isinstance(message.get('result'),int):
+                                raise ValueError('Abonnement RPC refusé')
+                            subscriptions[message['result']]=target
+                        else:notification(self.journal,message,subscriptions,time.time())
+                    failures=0;print(f'WEBSOCKET CONNECTÉ : {len(self.names)} wallets ; {len(subscriptions)} abonnements.',flush=True)
+                    self.recover.set()
+                    async for raw in ws:notification(self.journal,json.loads(raw),subscriptions,time.time())
+                    raise ConnectionError('WebSocket fermé')
+            except asyncio.CancelledError:raise
+            except Exception as exc:
+                failures+=1
+                # Never log connection exception text: it may contain the API key in the URL.
+                print(f'WebSocket : reconnexion ({type(exc).__name__}) dans {min(30,2**min(failures,5))} s.',flush=True)
+                await asyncio.sleep(min(30,2**min(failures,5)))
+
+    async def backfill_wallet(self,wallet):
+        db=self.journal.db;cursor=db.execute('SELECT signature FROM cursors WHERE wallet=?',(wallet,)).fetchone()
+        anchor=cursor[0] if cursor else None;before=None;newest=None;found=False
+        for page in range(10):
+            options={'limit':100 if cursor else 1,'commitment':'confirmed'}
+            if before:options['before']=before
+            rows=await self.call('getSignaturesForAddress',[wallet,options])
+            if not rows:found=True;break
+            newest=newest or rows[0]['signature']
+            if not cursor:found=True;break  # First boot starts now, without replaying old alerts.
+            for row in rows:
+                if row['signature']==anchor:found=True;break
+                if row.get('err') is None:
+                    self.journal.observe(wallet,row['signature'],time.time(),row.get('slot'),'rattrapage',True)
+            if found or len(rows)<100:found=True;break
+            before=rows[-1]['signature']
+        if not found:
+            db.execute('INSERT INTO gaps VALUES (?,?,?)',(wallet,time.time(),'Rattrapage limité à 1000 signatures'))
+            print('HISTORIQUE PARTIEL : '+self.names[wallet]+' ; rattrapage limité à 1000 signatures.',flush=True)
+        if newest or not cursor:db.execute('INSERT OR REPLACE INTO cursors VALUES (?,?)',(wallet,newest or ''))
+        db.commit()
+
+    async def backfill(self):
+        while True:
+            # Periodic reconciliation also protects against a missed notification without disconnect.
+            try:await asyncio.wait_for(self.recover.wait(),60)
+            except asyncio.TimeoutError:pass
+            self.recover.clear()
+            for wallet in self.names:
+                try:await self.backfill_wallet(wallet)
+                except asyncio.CancelledError:raise
+                except Exception as exc:
+                    print('Rattrapage différé : '+self.names[wallet]+' ('+type(exc).__name__+').',flush=True)
+
+    async def decode_one(self,now):
+        row=self.journal.due(now)
+        if row is None:return False
+        wallet,signature,first,confirmed,source,attempts=row
+        try:
+            tx=await self.call('getTransaction',[signature,{'encoding':'jsonParsed','commitment':'confirmed',
+                                                            'maxSupportedTransactionVersion':1}])
+            if not tx:
+                self.journal.retry(wallet,signature,attempts+1,'Transaction pas encore disponible',time.time());return True
+            trades=trades_in(tx,wallet,signature);decoded=time.time();block=tx.get('blockTime')
+            for trade in trades:
+                trade.update(first_seen_at=first,confirmed_seen_at=confirmed,decoded_at=decoded,source=source,
+                             notification_to_decode_ms=round(max(0,decoded-first)*1000),
+                             block_to_decode_ms=round((decoded-block)*1000) if isinstance(block,(int,float)) else None)
+            alerts=[]
+            for trade in trades:
+                if trade['kind'] not in ('buy','sell') or trade.get('swap_proof_version')!=1:continue
+                text=render(trade,self.names[wallet]);print(text,flush=True)
+                if self.sender and isinstance(block,(int,float)) and 0<=decoded-block<=self.max_age:
+                    alerts.append((trade['mint'],text,block+self.max_age))
+            self.journal.finish(wallet,signature,trades,alerts)
+        except asyncio.CancelledError:raise
+        except Exception as exc:
+            self.journal.retry(wallet,signature,attempts+1,type(exc).__name__,time.time());return True
+        return True
+
+    async def deliver_one(self,now):
+        if not self.sender:return False
+        db=self.journal.db
+        row=db.execute("SELECT wallet,signature,mint,text,expires_at FROM alerts WHERE state='pending' ORDER BY rowid LIMIT 1").fetchone()
+        if not row:return False
+        wallet,signature,mint,text,expires=row;key=(wallet,signature,mint)
+        if now>expires:
+            db.execute("UPDATE alerts SET state='expired' WHERE wallet=? AND signature=? AND mint=?",key);db.commit();return True
+        # Independent from decoding: a slow Telegram request never holds up new transactions.
+        db.execute("UPDATE alerts SET state='sending' WHERE wallet=? AND signature=? AND mint=?",key);db.commit()
+        try:
+            message_id=await asyncio.to_thread(self.sender.send,text);state,error='sent',None
+        except Exception as exc:state,error,message_id='uncertain',type(exc).__name__,None
+        db.execute('UPDATE alerts SET state=?,error=?,message_id=? WHERE wallet=? AND signature=? AND mint=?',
+                   (state,error,message_id,*key));db.commit()
+        print('Telegram : '+state+' ; '+self.names.get(wallet,wallet[:8]),flush=True)
+        return True
+
+    async def notifier(self):
+        while True:
+            if not await self.deliver_one(time.time()):await asyncio.sleep(.1)
+
+    async def worker(self):
+        while True:
+            if not await self.decode_one(time.time()):await asyncio.sleep(.1)
+
+    async def run(self):
+        tasks=[asyncio.create_task(fn()) for fn in (self.websocket,self.backfill,self.worker,self.notifier)]
+        try:await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:task.cancel()
+            await asyncio.gather(*tasks,return_exceptions=True)
+
+
+def render(trade,name):
+    verb='ACHAT' if trade['kind']=='buy' else 'VENTE'
+    at=paris(trade['at'])+' (Paris)' if isinstance(trade.get('at'),(int,float)) else 'indisponible'
+    lines=[f'{verb} VÉRIFIÉ — {name}',trade['mint'],'Transaction : '+at,
+           'Quantité : '+trade['quantity']+' tokens',
+           ('Payé : ' if verb=='ACHAT' else 'Reçu : ')+amounts(trade['quotes']),
+           'Réception notification → décodage : '+str(trade['notification_to_decode_ms'])+' ms',
+           'Source : '+trade['source'],'https://solscan.io/tx/'+trade['signature']]
+    if trade['source']=='rattrapage':lines.append('Événement retrouvé par rattrapage, pas par notification directe.')
+    return '\n'.join(lines)
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--config',type=Path,default=ROOT/'wallet_alerts_config.json')
+    parser.add_argument('--state',type=Path,default=ROOT/'data'/'wallet_alerts_ws'/'state.sqlite3')
+    parser.add_argument('--check',action='store_true',help='Valider la configuration sans requête réseau')
+    parser.add_argument('--telegram',action='store_true',help='Activer explicitement les alertes Bot API')
+    parser.add_argument('--early',action='store_true',help='Mesurer aussi les notifications processed ; jamais alertées avant confirmation')
+    args=parser.parse_args()
+    try:
+        config,wallets,http,ws=settings(args.config)
+        print('Wallet alerts WebSocket '+VERSION+' — lecture seule, aucun achat ni publication.',flush=True)
+        print('Wallets : '+', '.join(wallets),flush=True)
+        sender=None
+        if args.telegram:
+            token=os.getenv('TELEGRAM_BOT_TOKEN') or config.get('telegram_bot_token')
+            chat=os.getenv('TELEGRAM_CHAT_ID') or config.get('telegram_chat_id')
+            if not isinstance(token,str) or not token or not isinstance(chat,(str,int)) or not str(chat):
+                raise ValueError('Telegram : token du bot et chat_id requis dans la configuration locale')
+            sender=TelegramSender(token,chat)
+        if args.check:
+            print('Configuration valide ; aucune connexion effectuée. URL et secrets masqués.');return
+        args.state.parent.mkdir(parents=True,exist_ok=True)
+        with StateLock(args.state.with_suffix('.lock')):
+            journal=Journal(args.state)
+            try:asyncio.run(Service(journal,wallets,ReadRPC(http,None,rps=2),ws,sender=sender,early=args.early).run())
+            finally:journal.db.close()
+    except KeyboardInterrupt:print('Surveillance arrêtée.',flush=True)
+    except Exception as exc:
+        # Parser/provider errors can include URLs and keys; output only a fixed diagnostic.
+        raise SystemExit('Démarrage impossible ('+type(exc).__name__+') : vérifier configuration, dépendances et état du service.') from None
+
+
+if __name__=='__main__':main()
