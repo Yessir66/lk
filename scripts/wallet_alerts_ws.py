@@ -8,6 +8,8 @@ from pathlib import Path
 import sqlite3
 import ssl
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from urllib.parse import urlsplit, quote
 
 from discord_token_analysis import WATCHED, QUOTES, TRADE_LOG, ReadRPC, parse_trade, valid_address, paris
@@ -15,7 +17,7 @@ from discord_token_telegram import TelegramSender, amounts
 from discord_solana_watch import StateLock
 
 ROOT=Path(__file__).resolve().parents[1]
-VERSION='2026.11.14.3'
+VERSION='2026.11.14.4'
 BACKFILL_PAGE_SIZE=1000
 BACKFILL_MAX_PAGES=10
 
@@ -98,10 +100,21 @@ class Journal:
             expires_at REAL,message_id INTEGER,error TEXT,PRIMARY KEY(wallet,signature,mint));
           CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY,value TEXT);
         ''')
+        columns={row[1] for row in self.db.execute('PRAGMA table_info(events)')}
+        for name in ('processed_seen','confirmed_ws_seen','processed_to_confirmed_ms','confirmed_to_decode_ms'):
+            if name not in columns:self.db.execute('ALTER TABLE events ADD COLUMN '+name+' REAL')
+        self.timings={}
         self.db.execute("UPDATE alerts SET state='uncertain',error='Interruption pendant envoi ; aucun renvoi automatique' WHERE state='sending'")
         self.db.commit()
 
-    def observe(self,wallet,signature,at,slot,source,confirmed,*,commit=True):
+    def begin_connection(self):
+        # Monotonic timestamps from different connections/process lifetimes are never compared.
+        self.timings.clear()
+
+    def observe(self,wallet,signature,at,slot,source,confirmed,*,commit=True,stage=None,monotonic=None):
+        old=self.db.execute('SELECT processed_seen,confirmed_ws_seen,confirmed_seen FROM events WHERE wallet=? AND signature=?',
+                            (wallet,signature)).fetchone() if stage else None
+        fresh=stage in ('processed','confirmed') and (old is None or old[0 if stage=='processed' else 1] is None)
         self.db.execute('''INSERT INTO events (wallet,signature,first_seen,confirmed_seen,slot,source,state)
           VALUES (?,?,?,?,?,?,?) ON CONFLICT(wallet,signature) DO UPDATE SET
           first_seen=MIN(events.first_seen,excluded.first_seen),
@@ -111,11 +124,32 @@ class Journal:
           state=CASE WHEN events.state='provisional' AND excluded.confirmed_seen IS NOT NULL
                      THEN 'pending' ELSE events.state END''',
           (wallet,signature,at,at if confirmed else None,slot,source,'pending' if confirmed else 'provisional'))
+        if fresh:
+            column='processed_seen' if stage=='processed' else 'confirmed_ws_seen'
+            self.db.execute('UPDATE events SET '+column+'=? WHERE wallet=? AND signature=?',(at,wallet,signature))
+            if monotonic is not None:
+                times=self.timings.setdefault((wallet,signature),{})
+                times[stage]=monotonic
+                if 'processed' in times and 'confirmed' in times:
+                    delta=(times['confirmed']-times['processed'])*1000
+                    self.db.execute('UPDATE events SET processed_to_confirmed_ms=? WHERE wallet=? AND signature=?',
+                                    (delta,wallet,signature))
+                while len(self.timings)>20000:self.timings.pop(next(iter(self.timings)))
         if commit:self.db.commit()
+        return bool(fresh and stage=='processed' and (old is None or old[2] is None))
+
+    def timing(self,wallet,signature,decoded_mono):
+        row=self.db.execute('SELECT processed_seen,confirmed_ws_seen,processed_to_confirmed_ms FROM events WHERE wallet=? AND signature=?',
+                            (wallet,signature)).fetchone()
+        times=self.timings.get((wallet,signature),{})
+        return dict(processed_seen_at=row[0],confirmed_ws_seen_at=row[1],processed_to_confirmed_ms=row[2],
+                    confirmed_to_decode_ms=(decoded_mono-times['confirmed'])*1000 if 'confirmed' in times else None)
 
     def finish(self,wallet,signature,trades,alerts=()):
         self.db.execute("UPDATE events SET state='done',trades=?,error=NULL WHERE wallet=? AND signature=?",
                         (json.dumps(trades),wallet,signature))
+        if trades:self.db.execute('UPDATE events SET confirmed_to_decode_ms=? WHERE wallet=? AND signature=?',
+                                  (trades[0].get('confirmed_to_decode_ms'),wallet,signature))
         for mint,text,expiry in alerts:
             self.db.execute("INSERT OR IGNORE INTO alerts (wallet,signature,mint,state,text,expires_at) VALUES (?,?,?,'pending',?,?)",
                             (wallet,signature,mint,text,expiry))
@@ -130,7 +164,7 @@ class Journal:
         self.db.commit()
 
 
-def notification(journal,message,subscriptions,now):
+def notification(journal,message,subscriptions,now,*,monotonic=None,names=None):
     if message.get('method')!='logsNotification':return
     params=message.get('params') or {};target=subscriptions.get(params.get('subscription'))
     if target is None:return
@@ -139,7 +173,11 @@ def notification(journal,message,subscriptions,now):
     if value.get('err') is not None or not isinstance(signature,str) or not 64<=len(signature)<=100:return
     # Logs identify candidates only. The transaction decoder must prove the actual swap.
     if not any(TRADE_LOG.search(line) for line in value.get('logs',[]) if isinstance(line,str)):return
-    journal.observe(wallet,signature,now,(result.get('context') or {}).get('slot'),'websocket',commitment=='confirmed')
+    provisional=journal.observe(wallet,signature,now,(result.get('context') or {}).get('slot'),'websocket',commitment=='confirmed',
+                                stage=commitment,monotonic=time.monotonic() if monotonic is None else monotonic)
+    if provisional:
+        print('TRANSACTION PROVISOIRE mentionnant '+(names or {}).get(wallet,wallet[:8])+
+              ' — '+precise_time(now)+' ; sens et montants à vérifier.\nhttps://solscan.io/tx/'+signature,flush=True)
 
 
 class Service:
@@ -168,6 +206,7 @@ class Service:
             try:
                 async with connect(self.ws_url,ssl=ssl.create_default_context(),open_timeout=20,
                                    ping_interval=20,ping_timeout=20,max_size=2**22) as ws:
+                    self.journal.begin_connection()
                     requests={};subscriptions={};identity=0
                     for wallet in self.names:
                         for commitment in (('processed','confirmed') if self.early else ('confirmed',)):
@@ -182,10 +221,10 @@ class Service:
                             if target is None or not isinstance(message.get('result'),int):
                                 raise ValueError('Abonnement RPC refusé')
                             subscriptions[message['result']]=target
-                        else:notification(self.journal,message,subscriptions,time.time())
+                        else:notification(self.journal,message,subscriptions,time.time(),names=self.names)
                     failures=0;print(f'WEBSOCKET CONNECTÉ : {len(self.names)} wallets ; {len(subscriptions)} abonnements.',flush=True)
                     self.recover.set()
-                    async for raw in ws:notification(self.journal,json.loads(raw),subscriptions,time.time())
+                    async for raw in ws:notification(self.journal,json.loads(raw),subscriptions,time.time(),names=self.names)
                     raise ConnectionError('WebSocket fermé')
             except asyncio.CancelledError:raise
             except Exception as exc:
@@ -240,10 +279,11 @@ class Service:
             if not tx:
                 self.journal.retry(wallet,signature,attempts+1,'Transaction pas encore disponible',time.time());return True
             trades=trades_in(tx,wallet,signature);decoded=time.time();block=tx.get('blockTime')
+            timing=self.journal.timing(wallet,signature,time.monotonic())
             for trade in trades:
                 trade.update(first_seen_at=first,confirmed_seen_at=confirmed,decoded_at=decoded,source=source,
                              notification_to_decode_ms=round(max(0,decoded-first)*1000),
-                             block_to_decode_ms=round((decoded-block)*1000) if isinstance(block,(int,float)) else None)
+                             block_to_decode_ms=round((decoded-block)*1000) if isinstance(block,(int,float)) else None,**timing)
             alerts=[]
             for trade in trades:
                 if trade['kind'] not in ('buy','sell') or trade.get('swap_proof_version')!=1:continue
@@ -290,6 +330,42 @@ class Service:
             await asyncio.gather(*tasks,return_exceptions=True)
 
 
+def precise_time(value):
+    return datetime.fromtimestamp(value,ZoneInfo('Europe/Paris')).strftime('%d/%m/%Y %H:%M:%S.%f')[:-3]+' (Paris)'
+
+
+def timing_report(path):
+    """Read-only report: do not recover/reset an active sender when inspecting its database."""
+    db=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True)
+    try:
+        columns={row[1] for row in db.execute('PRAGMA table_info(events)')}
+        if 'processed_to_confirmed_ms' not in columns:
+            print('Journal sans mesures processed/confirmed ; lancer la nouvelle version avec --early.');return
+        values=[];decode=[];verified=0
+        for trades,gap,delay in db.execute('SELECT trades,processed_to_confirmed_ms,confirmed_to_decode_ms FROM events WHERE state=\'done\''):
+            if not any(t.get('kind') in ('buy','sell') and t.get('swap_proof_version')==1 for t in json.loads(trades or '[]')):continue
+            verified+=1
+            if isinstance(gap,(int,float)):values.append(gap)
+            if isinstance(delay,(int,float)):decode.append(delay)
+        print(f'Transactions vérifiées : {verified} ; paires processed/confirmed du même branchement : {len(values)}.')
+        for name,items in (('Processed → confirmed',values),('Confirmed → décodage',decode)):
+            if not items:print(name+' : pas encore de mesure.');continue
+            items.sort()
+            def percentile(p):
+                index=(len(items)-1)*p;lo=int(index);hi=min(lo+1,len(items)-1)
+                return items[lo]+(items[hi]-items[lo])*(index-lo)
+            print(f'{name} : médiane {seconds(percentile(.5))} ; P95 {seconds(percentile(.95))} ; n={len(items)}.')
+        pending=db.execute("SELECT count(*) FROM events WHERE state='provisional'").fetchone()[0]
+        gaps=db.execute('SELECT count(*) FROM gaps').fetchone()[0]
+        print(f'Provisoires sans confirmation enregistrée : {pending} ; fenêtres de rattrapage incomplètes : {gaps}.')
+        print('Mesures locales, hors livraison Telegram ; ni heure exacte d’exécution ni garantie de latence.')
+    finally:db.close()
+
+
+def seconds(milliseconds):
+    return f'{milliseconds/1000:.2f}'.replace('.',',')+' s'
+
+
 def render(trade,name):
     verb='ACHAT' if trade['kind']=='buy' else 'VENTE'
     at=paris(trade['at'])+' (Paris)' if isinstance(trade.get('at'),(int,float)) else 'indisponible'
@@ -301,6 +377,16 @@ def render(trade,name):
     delay=trade.get('block_to_decode_ms')
     if isinstance(delay,(int,float)):
         lines.insert(-2,'Block Solana → décodage (approximatif) : '+str(delay)+' ms')
+    for field,label in (('processed_seen_at','Réception processed'),('confirmed_ws_seen_at','Réception confirmed')):
+        if trade.get(field) is not None:lines.insert(-2,label+' : '+precise_time(trade[field]))
+    gap=trade.get('processed_to_confirmed_ms')
+    if gap is not None:
+        lines.insert(-2,f'Écart local processed → confirmed : {seconds(gap)} (même connexion).')
+        if gap<0:lines.insert(-2,'La notification processed est arrivée après confirmed pour cette transaction.')
+    elif trade.get('processed_seen_at') is not None:
+        lines.insert(-2,'Comparaison processed/confirmed indisponible : paire du même branchement absente.')
+    delay=trade.get('confirmed_to_decode_ms')
+    if delay is not None:lines.insert(-2,f'Réception confirmed → décodage : {seconds(delay)} (horloge monotone).')
     if trade['source']=='rattrapage':lines.append('Événement retrouvé par rattrapage, pas par notification directe.')
     return '\n'.join(lines)
 
@@ -313,8 +399,10 @@ def main():
     parser.add_argument('--diagnose',action='store_true',help='Tester HTTPS et un abonnement WSS, sans surveillance ni Telegram')
     parser.add_argument('--telegram',action='store_true',help='Activer explicitement les alertes Bot API')
     parser.add_argument('--early',action='store_true',help='Mesurer aussi les notifications processed ; jamais alertées avant confirmation')
+    parser.add_argument('--timing-report',action='store_true',help='Afficher les mesures enregistrées sans réseau ni modification du journal')
     args=parser.parse_args()
     try:
+        if args.timing_report:timing_report(args.state);return
         config,wallets,http,ws=settings(args.config)
         print('Wallet alerts WebSocket '+VERSION+' — lecture seule, aucun achat ni publication.',flush=True)
         print('Wallets : '+', '.join(wallets),flush=True)

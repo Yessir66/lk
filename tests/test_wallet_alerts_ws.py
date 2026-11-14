@@ -104,6 +104,79 @@ class WalletAlertTest(unittest.IsolatedAsyncioTestCase):
         w.notification(self.journal,notice(),{1:(WALLET,'confirmed')},self.at+1)
         self.assertEqual(self.journal.db.execute('SELECT count(*) FROM events').fetchone()[0],1)
 
+    async def test_early_notification_is_provisional_and_monotonic_gap_survives_wall_clock_adjustment(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        output=StringIO()
+        with redirect_stdout(output):
+            w.notification(self.journal,notice(),{1:(WALLET,'processed')},self.at+10,monotonic=100,names={WALLET:'DECU'})
+        self.assertIn('TRANSACTION PROVISOIRE mentionnant DECU',output.getvalue())
+        self.assertNotIn('ACHAT',output.getvalue());self.assertIsNone(self.journal.due(self.at+11))
+        self.assertFalse(await self.service.deliver_one(self.at+11));self.sender.send.assert_not_called()
+        w.notification(self.journal,notice(),{1:(WALLET,'confirmed')},self.at+9,monotonic=100.75)
+        with patch.object(w.time,'time',return_value=self.at+11),patch.object(w.time,'monotonic',return_value=101):
+            await self.service.decode_one(self.at+11)
+        trade=json.loads(self.journal.db.execute('SELECT trades FROM events').fetchone()[0])[0]
+        self.assertEqual(trade['processed_to_confirmed_ms'],750)
+        self.assertEqual(trade['confirmed_to_decode_ms'],250)
+        text=w.render(trade,'DECU')
+        self.assertIn('0,75 s (même connexion)',text);self.assertIn('0,25 s (horloge monotone)',text)
+
+    def test_reconnect_or_restart_never_pairs_monotonic_clocks_from_different_sessions(self):
+        w.notification(self.journal,notice(),{1:(WALLET,'processed')},self.at,monotonic=100)
+        self.journal.begin_connection()
+        w.notification(self.journal,notice(),{1:(WALLET,'confirmed')},self.at+2,monotonic=200)
+        self.assertIsNone(self.journal.timing(WALLET,SIGNATURE,201)['processed_to_confirmed_ms'])
+        other=w.Journal(self.path)
+        try:self.assertEqual(other.timings,{})
+        finally:other.db.close()
+
+    def test_confirmed_first_is_recorded_as_negative_gap_without_provisional_alert(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        w.notification(self.journal,notice(),{1:(WALLET,'confirmed')},self.at,monotonic=1)
+        output=StringIO()
+        with redirect_stdout(output):w.notification(self.journal,notice(),{1:(WALLET,'processed')},self.at+.1,monotonic=1.1)
+        self.assertEqual(output.getvalue(),'')
+        self.assertAlmostEqual(self.journal.timing(WALLET,SIGNATURE,2)['processed_to_confirmed_ms'],-100)
+
+    def test_duplicate_processed_does_not_replace_first_arrival_or_print_twice(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        output=StringIO()
+        with redirect_stdout(output):
+            w.notification(self.journal,notice(),{1:(WALLET,'processed')},self.at,monotonic=1)
+            w.notification(self.journal,notice(),{1:(WALLET,'processed')},self.at+.3,monotonic=1.3)
+        w.notification(self.journal,notice(),{1:(WALLET,'confirmed')},self.at+.5,monotonic=1.5)
+        self.assertEqual(output.getvalue().count('TRANSACTION PROVISOIRE'),1)
+        self.assertEqual(self.journal.timing(WALLET,SIGNATURE,2)['processed_to_confirmed_ms'],500)
+
+    def test_report_is_read_only_and_excludes_old_and_unverified_rows_from_paired_metrics(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        self.journal.observe(WALLET,SIGNATURE,self.at,1,'websocket',True)
+        self.journal.finish(WALLET,SIGNATURE,[{'kind':'buy','swap_proof_version':1}])
+        self.journal.db.execute('UPDATE events SET processed_to_confirmed_ms=750,confirmed_to_decode_ms=125')
+        self.journal.db.execute("INSERT INTO alerts (wallet,signature,mint,state) VALUES (?,?,?,'sending')",(WALLET,SIGNATURE,MINT))
+        self.journal.db.commit()
+        output=StringIO()
+        with redirect_stdout(output):w.timing_report(self.path)
+        self.assertIn('médiane 0,75 s',output.getvalue());self.assertIn('médiane 0,12 s',output.getvalue())
+        self.assertEqual(self.journal.db.execute('SELECT state FROM alerts').fetchone()[0],'sending')
+
+    def test_migrates_existing_state_without_replaying_trades_or_inventing_processed_times(self):
+        import sqlite3
+        path=self.root/'old.sqlite3';db=sqlite3.connect(path)
+        db.execute('CREATE TABLE events (wallet TEXT,signature TEXT,first_seen REAL,confirmed_seen REAL,slot INTEGER,source TEXT,state TEXT,attempts INTEGER DEFAULT 0,retry_at REAL DEFAULT 0,trades TEXT,error TEXT,PRIMARY KEY(wallet,signature))')
+        db.execute("INSERT INTO events (wallet,signature,first_seen,state,trades) VALUES (?,?,?,'done','[]')",(WALLET,SIGNATURE,self.at))
+        db.commit();db.close()
+        migrated=w.Journal(path)
+        try:
+            self.assertIsNone(migrated.due(self.at+1))
+            timing=migrated.timing(WALLET,SIGNATURE,100)
+            self.assertTrue(all(v is None for v in timing.values()))
+        finally:migrated.db.close()
+
     def test_failed_unknown_subscription_and_non_trade_logs_are_ignored(self):
         w.notification(self.journal,notice(err={'InstructionError':[0,'failed']}),{1:(WALLET,'confirmed')},1)
         w.notification(self.journal,notice(),{},1)
@@ -222,6 +295,27 @@ class WalletAlertTest(unittest.IsolatedAsyncioTestCase):
                 request=socket.sent_notification[0]
                 self.assertEqual(request['method'],'logsSubscribe')
                 self.assertEqual(request['params'],[{'mentions':[WALLET]},{'commitment':'confirmed'}])
+            finally:task.cancel();await asyncio.gather(task,return_exceptions=True)
+
+    async def test_early_mode_subscribes_to_both_commitments_for_each_wallet(self):
+        class Socket:
+            def __init__(self):self.sent=[];self.replies=asyncio.Queue()
+            async def __aenter__(self):return self
+            async def __aexit__(self,*args):pass
+            async def send(self,raw):
+                request=json.loads(raw);self.sent.append(request)
+                await self.replies.put(json.dumps({'id':request['id'],'result':request['id']}))
+            async def recv(self):return await self.replies.get()
+            def __aiter__(self):return self
+            async def __anext__(self):await asyncio.Future()
+        socket=Socket();self.service.early=True
+        with patch('websockets.asyncio.client.connect',return_value=socket):
+            task=asyncio.create_task(self.service.websocket())
+            try:
+                await asyncio.wait_for(self.service.recover.wait(),2)
+                pairs={(r['params'][0]['mentions'][0],r['params'][1]['commitment']) for r in socket.sent}
+                self.assertEqual(pairs,{(wallet,level) for wallet in w.WATCHED.values() for level in ('processed','confirmed')})
+                self.assertEqual(len(socket.sent),4)
             finally:task.cancel();await asyncio.gather(task,return_exceptions=True)
 
     async def test_fresh_websocket_events_have_priority_over_backfill(self):
