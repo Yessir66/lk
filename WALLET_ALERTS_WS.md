@@ -1,4 +1,4 @@
-# Alertes de wallets par WebSocket — 2026.11.14.5
+# Alertes de wallets par WebSocket — 2026.11.14.6
 
 Programme indépendant du bot de republication. Il suit **DECU** (`4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9`) et **LE L** (`CkPFGv2Wv1vwdWjtXioEgb8jhZQfs3eVZez3QCetu7xD`) par défaut. Aucun achat, ordre Trojan, appel pump.fun, GMGN ou IA. Aucune clé privée de wallet n’est nécessaire.
 
@@ -117,4 +117,6 @@ Voir [MESURE_PROCESSED_CONFIRMED.md](MESURE_PROCESSED_CONFIRMED.md). Lancer avec
 
 ## Analyse du délai après confirmation
 
-Voir [MESURE_RPC_DETAILLEE.md](MESURE_RPC_DETAILLEE.md) pour le détail file/quota local/RPC HTTP+JSON/réessais/décodage ajouté en 2026.11.14.5. Les profils détaillés sont collectés uniquement sur les nouvelles transactions après installation ; les profils incomplets sont exclus des statistiques par étape. La limite locale reste 2 requêtes/s.
+Voir [MESURE_RPC_DETAILLEE.md](MESURE_RPC_DETAILLEE.md) pour le détail file/quota local/RPC HTTP+JSON/réessais/décodage ajouté en 2026.11.14.5. Les profils détaillés sont collectés uniquement sur les nouvelles transactions après installation ; les profils incomplets sont exclus des statistiques par étape.
+
+Depuis **2026.11.14.6**, les transactions directes sont prioritaires sur le rattrapage, avec un worker distinct pour chaque source. Le plafond HTTPS local partagé est **5 requêtes/s** par défaut ; les lectures de rattrapage sont en plus limitées à **1/s**. Une lecture HTTP déjà partie doit finir avant la suivante. Une réponse HTTP 429 conserve la pause globale de 60 secondes. `--rpc-rps 2` permet de revenir au plafond précédent. Voir [OPTIMISATION_WALLET_ALERTS.md](OPTIMISATION_WALLET_ALERTS.md) pour la mise à jour et la comparaison des mesures par version et plafond.

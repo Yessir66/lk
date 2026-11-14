@@ -201,10 +201,82 @@ class WalletAlertTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(v>=0 for v in metrics.values()))
         self.assertNotIn('secret',json.dumps(metrics))
 
+    async def test_waiting_backfill_does_not_reserve_quota_ahead_of_new_live_request(self):
+        self.service.call=w.Service.call.__get__(self.service)
+        self.service.rpc_interval=.02
+        self.rpc.call.return_value=[]
+        self.service.rpc_next_at=w.time.monotonic()+.05
+        background=asyncio.create_task(self.service.call('getSignaturesForAddress',[WALLET]))
+        await asyncio.sleep(.01)
+        self.assertFalse(self.service.rpc_busy)
+        foreground=asyncio.create_task(self.service.call('getTransaction',[SIGNATURE]))
+        await asyncio.wait_for(asyncio.gather(background,foreground),2)
+        self.assertEqual([c.args[0] for c in self.rpc.call.call_args_list],['getTransaction','getSignaturesForAddress'])
+
+    async def test_background_and_foreground_decoders_do_not_block_each_other(self):
+        old='old-sig';self.journal.observe(WALLET,old,self.at,1,'rattrapage',True)
+        self.journal.observe(WALLET,SIGNATURE,self.at+1,1,'websocket',True)
+        entered=asyncio.Event();release=asyncio.Event()
+        async def call(method,params,*,metrics=None,background=None):
+            if background:entered.set();await release.wait()
+            return self.tx
+        self.service.call=call
+        task=asyncio.create_task(self.service.decode_one(self.at+2,background=True))
+        try:
+            await asyncio.wait_for(entered.wait(),1)
+            self.assertTrue(await asyncio.wait_for(self.service.decode_one(self.at+2,background=False),1))
+            self.assertFalse(task.done())
+            states=dict(self.journal.db.execute('SELECT signature,state FROM events'))
+            self.assertEqual(states[SIGNATURE],'done');self.assertEqual(states[old],'pending')
+        finally:release.set();await task
+
+    async def test_cancelled_priority_waiter_is_removed_and_next_request_can_run(self):
+        self.service.call=w.Service.call.__get__(self.service)
+        self.service.rpc_next_at=w.time.monotonic()+10
+        task=asyncio.create_task(self.service.call('getTransaction',[SIGNATURE]))
+        await asyncio.sleep(.01);task.cancel();await asyncio.gather(task,return_exceptions=True)
+        self.assertEqual(self.service.rpc_waiters,[]);self.assertFalse(self.service.rpc_busy)
+        self.service.rpc_next_at=0;self.rpc.call.return_value=[]
+        self.assertEqual(await asyncio.wait_for(self.service.call('getTransaction',[SIGNATURE]),1),[])
+
+    async def test_rpc_dispatch_is_serialized_and_shared_between_both_priorities(self):
+        self.service.call=w.Service.call.__get__(self.service)
+        self.service.rpc_interval=.02;seen=[]
+        def call(method,params):seen.append(w.time.monotonic());return []
+        self.rpc.call.side_effect=call
+        await asyncio.wait_for(asyncio.gather(*[
+            self.service.call('getTransaction',[str(i)]) for i in range(4)]),2)
+        self.assertEqual(len(seen),4)
+        self.assertTrue(all(b-a>=.01 for a,b in zip(seen,seen[1:])))
+        self.assertFalse(self.service.rpc_busy);self.assertEqual(self.service.rpc_waiters,[])
+
+    async def test_backfill_has_separate_one_per_second_ceiling_without_blocking_foreground(self):
+        self.service.rpc_interval=.001
+        await self.service.acquire_rpc(background=True)
+        await self.service.release_rpc()
+        self.assertGreater(self.service.background_next_at-w.time.monotonic(),.8)
+        await asyncio.wait_for(self.service.acquire_rpc(background=False),.3)
+        await self.service.release_rpc()
+
+    async def test_http_429_pauses_foreground_and_background_instead_of_retrying_faster(self):
+        self.service.call=w.Service.call.__get__(self.service)
+        from discord_token_analysis import RemoteError
+        self.rpc.call.side_effect=RemoteError('quota',status=429)
+        with self.assertRaises(RemoteError):await self.service.call('getTransaction',[SIGNATURE])
+        self.assertGreater(self.service.pause_until-w.time.monotonic(),59)
+        tasks=[asyncio.create_task(self.service.call(method,[WALLET])) for method in ('getTransaction','getSignaturesForAddress')]
+        try:
+            await asyncio.sleep(.02)
+            self.rpc.call.assert_called_once();self.assertFalse(self.service.rpc_busy)
+        finally:
+            for task in tasks:task.cancel()
+            await asyncio.gather(*tasks,return_exceptions=True)
+        self.assertEqual(self.service.rpc_waiters,[])
+
     async def measured_decode(self,retry=False,reconnect=False):
         clock={'now':1000.2};calls=[]
         self.journal.observe(WALLET,SIGNATURE,self.at,1,'websocket',True,stage='confirmed',monotonic=1000)
-        async def call(method,params,*,metrics=None):
+        async def call(method,params,*,metrics=None,background=None):
             parts=dict(rpc_lock_wait_ms=100.0,cooldown_wait_ms=0.0,scheduler_wait_ms=10.0,
                        rate_limit_wait_ms=300.0,http_json_ms=200.0)
             metrics.update(parts);clock['now']+=sum(parts.values())/1000;calls.append(method)
@@ -265,6 +337,21 @@ class WalletAlertTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('RPC HTTP + JSON (cumul essais) : médiane 0,20 s',output.getvalue())
         self.assertIn('Total confirmed → décodage : médiane 0,81 s',output.getvalue())
         self.assertNotIn('9,00 s',output.getvalue())
+
+    async def test_report_separates_old_two_rps_and_new_five_rps_profiles(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        profile=await self.measured_decode()
+        old=dict(profile,version='2026.11.14.5',rpc_rps=2,http_json_ms=1000)
+        new=dict(profile,version='2026.11.14.6',rpc_rps=5,http_json_ms=100)
+        self.journal.finish(WALLET,SIGNATURE,[{'kind':'buy','swap_proof_version':1}],profile=old)
+        self.journal.observe(WALLET,'new',self.at,1,'websocket',True)
+        self.journal.finish(WALLET,'new',[{'kind':'buy','swap_proof_version':1}],profile=new)
+        output=StringIO()
+        with redirect_stdout(output):w.timing_report(self.path)
+        self.assertIn('Version 2026.11.14.5 ; plafond 2/s ; profils complets : 1',output.getvalue())
+        self.assertIn('Version 2026.11.14.6 ; plafond 5/s ; profils complets : 1',output.getvalue())
+        self.assertNotIn('médiane 0,55 s',output.getvalue())
 
     def test_failed_unknown_subscription_and_non_trade_logs_are_ignored(self):
         w.notification(self.journal,notice(err={'InstructionError':[0,'failed']}),{1:(WALLET,'confirmed')},1)

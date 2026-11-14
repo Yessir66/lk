@@ -17,7 +17,7 @@ from discord_token_telegram import TelegramSender, amounts
 from discord_solana_watch import StateLock
 
 ROOT=Path(__file__).resolve().parents[1]
-VERSION='2026.11.14.5'
+VERSION='2026.11.14.6'
 BACKFILL_PAGE_SIZE=1000
 BACKFILL_MAX_PAGES=10
 RPC_PHASES=('rpc_lock_wait_ms','cooldown_wait_ms','scheduler_wait_ms','rate_limit_wait_ms','http_json_ms')
@@ -171,8 +171,10 @@ class Journal:
                             (wallet,signature,mint,text,expiry))
         self.db.commit()
 
-    def due(self,now):
-        return self.db.execute("SELECT wallet,signature,first_seen,confirmed_seen,source,attempts FROM events WHERE state='pending' AND retry_at<=? ORDER BY CASE source WHEN 'websocket' THEN 0 ELSE 1 END,confirmed_seen LIMIT 1",(now,)).fetchone()
+    def due(self,now,background=None):
+        source=" AND source='websocket'" if background is False else " AND source!='websocket'" if background is True else ''
+        return self.db.execute("SELECT wallet,signature,first_seen,confirmed_seen,source,attempts FROM events WHERE state='pending' AND retry_at<=?"+
+            source+" ORDER BY CASE source WHEN 'websocket' THEN 0 ELSE 1 END,confirmed_seen LIMIT 1",(now,)).fetchone()
 
     def retry(self,wallet,signature,attempts,reason,now,profile=None):
         self.db.execute('UPDATE events SET state=?,attempts=?,retry_at=?,error=?,rpc_profile=? WHERE wallet=? AND signature=?',
@@ -201,19 +203,56 @@ class Service:
     def __init__(self,journal,wallets,rpc,ws_url,*,sender=None,early=False,max_age=120):
         self.journal,self.wallets,self.rpc,self.ws_url=journal,wallets,rpc,ws_url
         self.names={w:n for n,w in wallets.items()};self.sender=sender;self.early=early;self.max_age=max_age
-        self.rpc_lock=asyncio.Lock();self.recover=asyncio.Event();self.pause_until=0
+        self.rpc_condition=asyncio.Condition();self.rpc_waiters=[];self.rpc_sequence=0;self.rpc_busy=False
+        interval=getattr(rpc,'interval',None)
+        self.rpc_interval=interval if isinstance(interval,(int,float)) and interval>0 else .5
+        self.rpc_next_at=0;self.background_next_at=0;self.recover=asyncio.Event();self.pause_until=0
         self.profiles={}
         if sender:
             previous=journal.db.execute("SELECT value FROM meta WHERE key='telegram_destination'").fetchone()
             if previous and previous[0]!=sender.destination:raise ValueError('Destination Telegram modifiée : utiliser un autre journal')
             journal.db.execute("INSERT OR IGNORE INTO meta VALUES ('telegram_destination',?)",(sender.destination,));journal.db.commit()
 
-    async def call(self,method,params,*,metrics=None):
-        started=time.monotonic()
-        async with self.rpc_lock:
-            acquired=time.monotonic()
-            delay=self.pause_until-time.monotonic()
-            if delay>0:await asyncio.sleep(delay)
+    async def acquire_rpc(self,background):
+        """Wait for quota outside the transport, re-evaluating priority on every wakeup."""
+        waits={'rpc_lock_wait_ms':0.0,'rate_limit_wait_ms':0.0,'cooldown_wait_ms':0.0}
+        async with self.rpc_condition:
+            self.rpc_sequence+=1;ticket=(1 if background else 0,self.rpc_sequence)
+            self.rpc_waiters.append(ticket);self.rpc_condition.notify_all()
+            try:
+                while True:
+                    now=time.monotonic()
+                    first=ticket==min(self.rpc_waiters)
+                    urgent=background and self.journal.due(time.time(),background=False) is not None
+                    ready_at=max(self.rpc_next_at,self.background_next_at if background else 0)
+                    if not self.rpc_busy and first and not urgent and now>=max(ready_at,self.pause_until):
+                        self.rpc_waiters.remove(ticket);self.rpc_busy=True
+                        self.rpc_next_at=now+self.rpc_interval
+                        if background:self.background_next_at=now+1.0
+                        return waits
+                    if self.rpc_busy or not first or urgent:
+                        field,timeout='rpc_lock_wait_ms',.05
+                    elif self.pause_until>now and self.pause_until>=ready_at:
+                        field,timeout='cooldown_wait_ms',self.pause_until-now
+                    else:field,timeout='rate_limit_wait_ms',max(.001,ready_at-now)
+                    start=time.monotonic()
+                    try:await asyncio.wait_for(self.rpc_condition.wait(),timeout)
+                    except asyncio.TimeoutError:pass
+                    waits[field]+=max(0,time.monotonic()-start)*1000
+            except BaseException:
+                if ticket in self.rpc_waiters:self.rpc_waiters.remove(ticket)
+                self.rpc_condition.notify_all();raise
+
+    async def release_rpc(self):
+        async with self.rpc_condition:
+            next_at=getattr(self.rpc,'next_at',None)
+            if isinstance(next_at,(int,float)):self.rpc_next_at=max(self.rpc_next_at,next_at)
+            self.rpc_busy=False;self.rpc_condition.notify_all()
+
+    async def call(self,method,params,*,metrics=None,background=None):
+        if background is None:background=method!='getTransaction'
+        waits=await self.acquire_rpc(background)
+        try:
             dispatched=time.monotonic();thread_times={}
             def invoke():
                 thread_times['start']=time.monotonic()
@@ -221,18 +260,25 @@ class Service:
                 finally:
                     thread_times['end']=time.monotonic()
                     if metrics is not None and isinstance(getattr(self.rpc,'last_timing',None),dict):
-                        metrics.update(self.rpc.last_timing)
-            try:return await asyncio.to_thread(invoke)
+                        for name,value in self.rpc.last_timing.items():
+                            if isinstance(value,(int,float)):metrics[name]=value
+            task=asyncio.create_task(asyncio.to_thread(invoke))
+            try:return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # Never release the shared transport while its HTTP thread still runs.
+                await asyncio.gather(task,return_exceptions=True);raise
             except Exception as exc:
                 if getattr(exc,'status',None)==429:self.pause_until=time.monotonic()+60
                 raise
             finally:
+                if background and 'start' in thread_times:
+                    self.background_next_at=max(self.background_next_at,thread_times['start']+1.0)
                 if metrics is not None:
                     resumed=time.monotonic()
-                    metrics['rpc_lock_wait_ms']=max(0,acquired-started)*1000
-                    metrics['cooldown_wait_ms']=max(0,dispatched-acquired)*1000
+                    for name,value in waits.items():metrics[name]=metrics.get(name,0)+value
                     if 'start' in thread_times and 'end' in thread_times:
                         metrics['scheduler_wait_ms']=max(0,(resumed-dispatched)-(thread_times['end']-thread_times['start']))*1000
+        finally:await self.release_rpc()
 
     async def websocket(self):
         from websockets.asyncio.client import connect
@@ -304,8 +350,8 @@ class Service:
                 except Exception as exc:
                     print('Rattrapage différé : '+self.names[wallet]+' ('+type(exc).__name__+').',flush=True)
 
-    async def decode_one(self,now):
-        row=self.journal.due(now)
+    async def decode_one(self,now,background=None):
+        row=self.journal.due(now,background)
         if row is None:return False
         wallet,signature,first,confirmed,source,attempts=row
         key=(wallet,signature);started=time.monotonic()
@@ -315,7 +361,7 @@ class Service:
             profile={field:0.0 for field in RPC_PHASES}
             profile.update(queue_wait_ms=max(0,started-confirmation_mono)*1000 if confirmation_mono is not None and attempts==0 else None,
                            retry_wait_ms=0.0,attempts_profiled=0,prior_attempts=attempts,complete=attempts==0,
-                           _confirmed=confirmation_mono,_last_end=None)
+                           _confirmed=confirmation_mono,_last_end=None,version=VERSION,rpc_rps=1/self.rpc_interval)
             self.profiles[key]=profile
         elif profile['_last_end'] is not None:
             profile['retry_wait_ms']+=max(0,started-profile['_last_end'])*1000
@@ -331,7 +377,7 @@ class Service:
         def public_profile():return {k:v for k,v in profile.items() if not k.startswith('_')}
         try:
             tx=await self.call('getTransaction',[signature,{'encoding':'jsonParsed','commitment':'confirmed',
-                                                            'maxSupportedTransactionVersion':1}],metrics=metrics)
+                                                            'maxSupportedTransactionVersion':1}],metrics=metrics,background=source!='websocket')
             record_attempt()
             if not tx:
                 profile['_last_end']=time.monotonic()
@@ -390,12 +436,13 @@ class Service:
         while True:
             if not await self.deliver_one(time.time()):await asyncio.sleep(.1)
 
-    async def worker(self):
+    async def worker(self,background=False):
         while True:
-            if not await self.decode_one(time.time()):await asyncio.sleep(.1)
+            if not await self.decode_one(time.time(),background):await asyncio.sleep(.05 if background else .01)
 
     async def run(self):
         tasks=[asyncio.create_task(fn()) for fn in (self.websocket,self.backfill,self.worker,self.notifier)]
+        tasks.append(asyncio.create_task(self.worker(background=True)))
         try:await asyncio.gather(*tasks)
         finally:
             for task in tasks:task.cancel()
@@ -438,19 +485,24 @@ def timing_report(path):
                 if profile.get('complete'):profiles.append(profile)
             print(f'Profils détaillés complets : {len(profiles)} (mesures depuis cette mise à jour).')
             labels=(('queue_wait_ms','File avant première lecture'),('rpc_lock_wait_ms','Attente accès RPC partagé'),
-                    ('rate_limit_wait_ms','Régulateur local 2 requêtes/s'),('cooldown_wait_ms','Pause après HTTP 429'),
+                    ('rate_limit_wait_ms','Régulateur local'),('cooldown_wait_ms','Pause après HTTP 429'),
                     ('scheduler_wait_ms','Ordonnancement des lectures'),('http_json_ms','RPC HTTP + JSON (cumul essais)'),
                     ('retry_wait_ms','Attente entre essais'),('decode_ms','Décodage des swaps'),
                     ('other_ms','Autres opérations locales'),('total_ms','Total confirmed → décodage'))
-            for field,label in labels:
-                items=sorted(p[field] for p in profiles if isinstance(p.get(field),(int,float)))
-                if not items:continue
-                def pct(p):
-                    i=(len(items)-1)*p;lo=int(i);hi=min(lo+1,len(items)-1)
-                    return items[lo]+(items[hi]-items[lo])*(i-lo)
-                print(f'{label} : médiane {seconds(pct(.5))} ; P95 {seconds(pct(.95))}.')
-            if profiles:
-                print('Profils avec réessai : '+str(sum(p['attempts_profiled']>1 for p in profiles))+'. Les médianes des étapes ne s’additionnent pas.')
+            groups={}
+            for profile in profiles:
+                group=(profile.get('version','2026.11.14.5'),profile.get('rpc_rps',2))
+                groups.setdefault(group,[]).append(profile)
+            for (version,rps),cohort in sorted(groups.items()):
+                print(f'Version {version} ; plafond {rps:g}/s ; profils complets : {len(cohort)}.')
+                for field,label in labels:
+                    items=sorted(p[field] for p in cohort if isinstance(p.get(field),(int,float)))
+                    if not items:continue
+                    def pct(p):
+                        i=(len(items)-1)*p;lo=int(i);hi=min(lo+1,len(items)-1)
+                        return items[lo]+(items[hi]-items[lo])*(i-lo)
+                    print(f'{label} : médiane {seconds(pct(.5))} ; P95 {seconds(pct(.95))}.')
+                print('Profils avec réessai : '+str(sum(p['attempts_profiled']>1 for p in cohort))+'. Les médianes des étapes ne s’additionnent pas.')
         print('Mesures locales, hors livraison Telegram ; ni heure exacte d’exécution ni garantie de latence.')
     finally:db.close()
 
@@ -499,12 +551,15 @@ def main():
     parser.add_argument('--telegram',action='store_true',help='Activer explicitement les alertes Bot API')
     parser.add_argument('--early',action='store_true',help='Mesurer aussi les notifications processed ; jamais alertées avant confirmation')
     parser.add_argument('--timing-report',action='store_true',help='Afficher les mesures enregistrées sans réseau ni modification du journal')
+    parser.add_argument('--rpc-rps',type=float,default=5,help='Plafond local partagé HTTPS, défaut 5/s ; maximum 10/s')
     args=parser.parse_args()
+    if not .5<=args.rpc_rps<=10:parser.error('--rpc-rps doit être entre 0.5 et 10')
     try:
         if args.timing_report:timing_report(args.state);return
         config,wallets,http,ws=settings(args.config)
         print('Wallet alerts WebSocket '+VERSION+' — lecture seule, aucun achat ni publication.',flush=True)
         print('Wallets : '+', '.join(wallets),flush=True)
+        print(f'RPC HTTPS : plafond local {args.rpc_rps:g}/s ; rattrapage au maximum 1/s, priorité aux événements directs.',flush=True)
         sender=None
         if args.telegram:
             token=os.getenv('TELEGRAM_BOT_TOKEN') or config.get('telegram_bot_token')
@@ -522,7 +577,7 @@ def main():
         args.state.parent.mkdir(parents=True,exist_ok=True)
         with StateLock(args.state.with_suffix('.lock')):
             journal=Journal(args.state)
-            try:asyncio.run(Service(journal,wallets,MeasuredRPC(http,None,rps=2),ws,sender=sender,early=args.early).run())
+            try:asyncio.run(Service(journal,wallets,MeasuredRPC(http,None,rps=args.rpc_rps),ws,sender=sender,early=args.early).run())
             finally:journal.db.close()
     except KeyboardInterrupt:print('Surveillance arrêtée.',flush=True)
     except Exception as exc:

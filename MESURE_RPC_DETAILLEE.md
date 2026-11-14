@@ -1,5 +1,7 @@
 # Détail des délais RPC — 2026.11.14.5
 
+**Guide historique de la version .5.** Depuis la version .6, le plafond par défaut est de 5/s, avec priorité au direct et rattrapage limité à 1/s. Voir [OPTIMISATION_WALLET_ALERTS.md](OPTIMISATION_WALLET_ALERTS.md). La description des étapes mesurées ci-dessous reste applicable.
+
 Cette mise à jour ajoute uniquement des mesures. Le RPC reste en lecture seule, limité localement à **2 requêtes par seconde**, partagé entre lecture des transactions et rattrapage. Les mêmes swaps sont vérifiés après confirmation. Aucun changement au bot d’achats, aucune activation automatique de Telegram.
 
 Le mode de collecte reste :
