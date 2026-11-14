@@ -17,9 +17,24 @@ from discord_token_telegram import TelegramSender, amounts
 from discord_solana_watch import StateLock
 
 ROOT=Path(__file__).resolve().parents[1]
-VERSION='2026.11.14.4'
+VERSION='2026.11.14.5'
 BACKFILL_PAGE_SIZE=1000
 BACKFILL_MAX_PAGES=10
+RPC_PHASES=('rpc_lock_wait_ms','cooldown_wait_ms','scheduler_wait_ms','rate_limit_wait_ms','http_json_ms')
+
+
+class MeasuredRPC(ReadRPC):
+    """Same read-only transport and rate limit, with the local sleep measured separately."""
+    def call(self,method,params):
+        self.last_timing=None
+        start=time.monotonic()
+        time.sleep(max(0,self.next_at-start))
+        request_start=time.monotonic()
+        try:return super().call(method,params)
+        finally:
+            end=time.monotonic()
+            self.last_timing={'rate_limit_wait_ms':max(0,request_start-start)*1000,
+                              'http_json_ms':max(0,end-request_start)*1000}
 
 
 def failure_label(exc):
@@ -103,6 +118,7 @@ class Journal:
         columns={row[1] for row in self.db.execute('PRAGMA table_info(events)')}
         for name in ('processed_seen','confirmed_ws_seen','processed_to_confirmed_ms','confirmed_to_decode_ms'):
             if name not in columns:self.db.execute('ALTER TABLE events ADD COLUMN '+name+' REAL')
+        if 'rpc_profile' not in columns:self.db.execute('ALTER TABLE events ADD COLUMN rpc_profile TEXT')
         self.timings={}
         self.db.execute("UPDATE alerts SET state='uncertain',error='Interruption pendant envoi ; aucun renvoi automatique' WHERE state='sending'")
         self.db.commit()
@@ -145,9 +161,9 @@ class Journal:
         return dict(processed_seen_at=row[0],confirmed_ws_seen_at=row[1],processed_to_confirmed_ms=row[2],
                     confirmed_to_decode_ms=(decoded_mono-times['confirmed'])*1000 if 'confirmed' in times else None)
 
-    def finish(self,wallet,signature,trades,alerts=()):
-        self.db.execute("UPDATE events SET state='done',trades=?,error=NULL WHERE wallet=? AND signature=?",
-                        (json.dumps(trades),wallet,signature))
+    def finish(self,wallet,signature,trades,alerts=(),profile=None):
+        self.db.execute("UPDATE events SET state='done',trades=?,error=NULL,rpc_profile=? WHERE wallet=? AND signature=?",
+                        (json.dumps(trades),json.dumps(profile) if profile is not None else None,wallet,signature))
         if trades:self.db.execute('UPDATE events SET confirmed_to_decode_ms=? WHERE wallet=? AND signature=?',
                                   (trades[0].get('confirmed_to_decode_ms'),wallet,signature))
         for mint,text,expiry in alerts:
@@ -158,9 +174,10 @@ class Journal:
     def due(self,now):
         return self.db.execute("SELECT wallet,signature,first_seen,confirmed_seen,source,attempts FROM events WHERE state='pending' AND retry_at<=? ORDER BY CASE source WHEN 'websocket' THEN 0 ELSE 1 END,confirmed_seen LIMIT 1",(now,)).fetchone()
 
-    def retry(self,wallet,signature,attempts,reason,now):
-        self.db.execute('UPDATE events SET state=?,attempts=?,retry_at=?,error=? WHERE wallet=? AND signature=?',
-          ('unavailable' if attempts>=12 else 'pending',attempts,now+min(30,2**min(attempts,5)),reason,wallet,signature))
+    def retry(self,wallet,signature,attempts,reason,now,profile=None):
+        self.db.execute('UPDATE events SET state=?,attempts=?,retry_at=?,error=?,rpc_profile=? WHERE wallet=? AND signature=?',
+          ('unavailable' if attempts>=12 else 'pending',attempts,now+min(30,2**min(attempts,5)),reason,
+           json.dumps(profile) if profile is not None else None,wallet,signature))
         self.db.commit()
 
 
@@ -185,19 +202,37 @@ class Service:
         self.journal,self.wallets,self.rpc,self.ws_url=journal,wallets,rpc,ws_url
         self.names={w:n for n,w in wallets.items()};self.sender=sender;self.early=early;self.max_age=max_age
         self.rpc_lock=asyncio.Lock();self.recover=asyncio.Event();self.pause_until=0
+        self.profiles={}
         if sender:
             previous=journal.db.execute("SELECT value FROM meta WHERE key='telegram_destination'").fetchone()
             if previous and previous[0]!=sender.destination:raise ValueError('Destination Telegram modifiée : utiliser un autre journal')
             journal.db.execute("INSERT OR IGNORE INTO meta VALUES ('telegram_destination',?)",(sender.destination,));journal.db.commit()
 
-    async def call(self,method,params):
+    async def call(self,method,params,*,metrics=None):
+        started=time.monotonic()
         async with self.rpc_lock:
+            acquired=time.monotonic()
             delay=self.pause_until-time.monotonic()
             if delay>0:await asyncio.sleep(delay)
-            try:return await asyncio.to_thread(self.rpc.call,method,params)
+            dispatched=time.monotonic();thread_times={}
+            def invoke():
+                thread_times['start']=time.monotonic()
+                try:return self.rpc.call(method,params)
+                finally:
+                    thread_times['end']=time.monotonic()
+                    if metrics is not None and isinstance(getattr(self.rpc,'last_timing',None),dict):
+                        metrics.update(self.rpc.last_timing)
+            try:return await asyncio.to_thread(invoke)
             except Exception as exc:
                 if getattr(exc,'status',None)==429:self.pause_until=time.monotonic()+60
                 raise
+            finally:
+                if metrics is not None:
+                    resumed=time.monotonic()
+                    metrics['rpc_lock_wait_ms']=max(0,acquired-started)*1000
+                    metrics['cooldown_wait_ms']=max(0,dispatched-acquired)*1000
+                    if 'start' in thread_times and 'end' in thread_times:
+                        metrics['scheduler_wait_ms']=max(0,(resumed-dispatched)-(thread_times['end']-thread_times['start']))*1000
 
     async def websocket(self):
         from websockets.asyncio.client import connect
@@ -273,27 +308,64 @@ class Service:
         row=self.journal.due(now)
         if row is None:return False
         wallet,signature,first,confirmed,source,attempts=row
+        key=(wallet,signature);started=time.monotonic()
+        confirmation_mono=self.journal.timings.get(key,{}).get('confirmed')
+        profile=self.profiles.get(key)
+        if profile is None:
+            profile={field:0.0 for field in RPC_PHASES}
+            profile.update(queue_wait_ms=max(0,started-confirmation_mono)*1000 if confirmation_mono is not None and attempts==0 else None,
+                           retry_wait_ms=0.0,attempts_profiled=0,prior_attempts=attempts,complete=attempts==0,
+                           _confirmed=confirmation_mono,_last_end=None)
+            self.profiles[key]=profile
+        elif profile['_last_end'] is not None:
+            profile['retry_wait_ms']+=max(0,started-profile['_last_end'])*1000
+        metrics={};recorded=False
+        def record_attempt():
+            nonlocal recorded
+            if recorded:return
+            recorded=True;profile['attempts_profiled']+=1
+            for field in RPC_PHASES:
+                value=metrics.get(field)
+                if isinstance(value,(int,float)) and value>=0:profile[field]+=value
+                else:profile['complete']=False
+        def public_profile():return {k:v for k,v in profile.items() if not k.startswith('_')}
         try:
             tx=await self.call('getTransaction',[signature,{'encoding':'jsonParsed','commitment':'confirmed',
-                                                            'maxSupportedTransactionVersion':1}])
+                                                            'maxSupportedTransactionVersion':1}],metrics=metrics)
+            record_attempt()
             if not tx:
-                self.journal.retry(wallet,signature,attempts+1,'Transaction pas encore disponible',time.time());return True
-            trades=trades_in(tx,wallet,signature);decoded=time.time();block=tx.get('blockTime')
-            timing=self.journal.timing(wallet,signature,time.monotonic())
+                profile['_last_end']=time.monotonic()
+                self.journal.retry(wallet,signature,attempts+1,'Transaction pas encore disponible',time.time(),public_profile())
+                if attempts+1>=12:self.profiles.pop(key,None)
+                return True
+            decode_start=time.monotonic()
+            trades=trades_in(tx,wallet,signature);decode_end=time.monotonic();decoded=time.time();block=tx.get('blockTime')
+            timing=self.journal.timing(wallet,signature,decode_end)
+            profile['decode_ms']=max(0,decode_end-decode_start)*1000
+            same_clock=profile['_confirmed'] is not None and self.journal.timings.get(key,{}).get('confirmed')==profile['_confirmed']
+            profile['complete']=profile['complete'] and same_clock and profile['queue_wait_ms'] is not None
+            profile['total_ms']=(decode_end-profile['_confirmed'])*1000 if same_clock else None
+            parts=[profile.get(k) for k in (*RPC_PHASES,'queue_wait_ms','retry_wait_ms','decode_ms')]
+            profile['other_ms']=max(0,profile['total_ms']-sum(parts)) if profile['complete'] else None
+            details=public_profile()
             for trade in trades:
                 trade.update(first_seen_at=first,confirmed_seen_at=confirmed,decoded_at=decoded,source=source,
                              notification_to_decode_ms=round(max(0,decoded-first)*1000),
-                             block_to_decode_ms=round((decoded-block)*1000) if isinstance(block,(int,float)) else None,**timing)
+                             block_to_decode_ms=round((decoded-block)*1000) if isinstance(block,(int,float)) else None,
+                             rpc_profile=details,**timing)
             alerts=[]
             for trade in trades:
                 if trade['kind'] not in ('buy','sell') or trade.get('swap_proof_version')!=1:continue
                 text=render(trade,self.names[wallet]);print(text,flush=True)
                 if self.sender and isinstance(block,(int,float)) and 0<=decoded-block<=self.max_age:
                     alerts.append((trade['mint'],text,block+self.max_age))
-            self.journal.finish(wallet,signature,trades,alerts)
+            self.journal.finish(wallet,signature,trades,alerts,details);self.profiles.pop(key,None)
         except asyncio.CancelledError:raise
         except Exception as exc:
-            self.journal.retry(wallet,signature,attempts+1,type(exc).__name__,time.time());return True
+            record_attempt();profile['_last_end']=time.monotonic()
+            self.journal.retry(wallet,signature,attempts+1,type(exc).__name__,time.time(),public_profile())
+            if attempts+1>=12:self.profiles.pop(key,None)
+            return True
         return True
 
     async def deliver_one(self,now):
@@ -358,6 +430,27 @@ def timing_report(path):
         pending=db.execute("SELECT count(*) FROM events WHERE state='provisional'").fetchone()[0]
         gaps=db.execute('SELECT count(*) FROM gaps').fetchone()[0]
         print(f'Provisoires sans confirmation enregistrée : {pending} ; fenêtres de rattrapage incomplètes : {gaps}.')
+        if 'rpc_profile' in columns:
+            profiles=[]
+            for trades,raw in db.execute("SELECT trades,rpc_profile FROM events WHERE state='done' AND rpc_profile IS NOT NULL"):
+                if not any(t.get('kind') in ('buy','sell') and t.get('swap_proof_version')==1 for t in json.loads(trades or '[]')):continue
+                profile=json.loads(raw)
+                if profile.get('complete'):profiles.append(profile)
+            print(f'Profils détaillés complets : {len(profiles)} (mesures depuis cette mise à jour).')
+            labels=(('queue_wait_ms','File avant première lecture'),('rpc_lock_wait_ms','Attente accès RPC partagé'),
+                    ('rate_limit_wait_ms','Régulateur local 2 requêtes/s'),('cooldown_wait_ms','Pause après HTTP 429'),
+                    ('scheduler_wait_ms','Ordonnancement des lectures'),('http_json_ms','RPC HTTP + JSON (cumul essais)'),
+                    ('retry_wait_ms','Attente entre essais'),('decode_ms','Décodage des swaps'),
+                    ('other_ms','Autres opérations locales'),('total_ms','Total confirmed → décodage'))
+            for field,label in labels:
+                items=sorted(p[field] for p in profiles if isinstance(p.get(field),(int,float)))
+                if not items:continue
+                def pct(p):
+                    i=(len(items)-1)*p;lo=int(i);hi=min(lo+1,len(items)-1)
+                    return items[lo]+(items[hi]-items[lo])*(i-lo)
+                print(f'{label} : médiane {seconds(pct(.5))} ; P95 {seconds(pct(.95))}.')
+            if profiles:
+                print('Profils avec réessai : '+str(sum(p['attempts_profiled']>1 for p in profiles))+'. Les médianes des étapes ne s’additionnent pas.')
         print('Mesures locales, hors livraison Telegram ; ni heure exacte d’exécution ni garantie de latence.')
     finally:db.close()
 
@@ -387,6 +480,12 @@ def render(trade,name):
         lines.insert(-2,'Comparaison processed/confirmed indisponible : paire du même branchement absente.')
     delay=trade.get('confirmed_to_decode_ms')
     if delay is not None:lines.insert(-2,f'Réception confirmed → décodage : {seconds(delay)} (horloge monotone).')
+    profile=trade.get('rpc_profile')
+    if profile and profile.get('complete'):
+        lines.insert(-2,'Détail : file '+seconds(profile['queue_wait_ms'])+' ; accès RPC '+seconds(profile['rpc_lock_wait_ms'])+
+                     ' ; quota local '+seconds(profile['rate_limit_wait_ms'])+' ; RPC HTTP+JSON '+seconds(profile['http_json_ms'])+
+                     ' ; attente réessais '+seconds(profile['retry_wait_ms'])+' ; décodage '+seconds(profile['decode_ms'])+
+                     f' ; lectures {profile["attempts_profiled"]}.')
     if trade['source']=='rattrapage':lines.append('Événement retrouvé par rattrapage, pas par notification directe.')
     return '\n'.join(lines)
 
@@ -423,7 +522,7 @@ def main():
         args.state.parent.mkdir(parents=True,exist_ok=True)
         with StateLock(args.state.with_suffix('.lock')):
             journal=Journal(args.state)
-            try:asyncio.run(Service(journal,wallets,ReadRPC(http,None,rps=2),ws,sender=sender,early=args.early).run())
+            try:asyncio.run(Service(journal,wallets,MeasuredRPC(http,None,rps=2),ws,sender=sender,early=args.early).run())
             finally:journal.db.close()
     except KeyboardInterrupt:print('Surveillance arrêtée.',flush=True)
     except Exception as exc:

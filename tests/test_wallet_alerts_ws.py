@@ -177,6 +177,95 @@ class WalletAlertTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all(v is None for v in timing.values()))
         finally:migrated.db.close()
 
+    def test_measured_rpc_separates_local_rate_sleep_from_http_and_json(self):
+        clock={'now':10.0}
+        def advance(value):clock['now']+=value
+        rpc=w.MeasuredRPC('https://unused.invalid',None,rps=2);rpc.next_at=10.3
+        response=MagicMock(status_code=200)
+        response.json.side_effect=lambda:(advance(.01),{'result':[]})[1]
+        rpc.http.post=MagicMock(side_effect=lambda *a,**k:(advance(.2),response)[1])
+        with patch.object(w.time,'monotonic',side_effect=lambda:clock['now']),patch.object(w.time,'sleep',side_effect=advance):
+            self.assertEqual(rpc.call('getSignaturesForAddress',[WALLET,{'limit':1}]),[])
+        self.assertAlmostEqual(rpc.last_timing['rate_limit_wait_ms'],300)
+        self.assertAlmostEqual(rpc.last_timing['http_json_ms'],210)
+        self.assertAlmostEqual(rpc.next_at,10.8)
+        self.assertEqual(rpc.http.post.call_args.kwargs['json']['method'],'getSignaturesForAddress')
+
+    async def test_call_records_rpc_lock_and_transport_metrics_without_secrets(self):
+        rpc=MagicMock();rpc.call.return_value=[]
+        rpc.last_timing={'rate_limit_wait_ms':10.0,'http_json_ms':20.0}
+        service=w.Service(self.journal,dict(w.WATCHED),rpc,'wss://unused.invalid')
+        metrics={}
+        self.assertEqual(await service.call('getSignaturesForAddress',[WALLET,{'limit':1}],metrics=metrics),[])
+        self.assertEqual(set(metrics),set(w.RPC_PHASES))
+        self.assertTrue(all(v>=0 for v in metrics.values()))
+        self.assertNotIn('secret',json.dumps(metrics))
+
+    async def measured_decode(self,retry=False,reconnect=False):
+        clock={'now':1000.2};calls=[]
+        self.journal.observe(WALLET,SIGNATURE,self.at,1,'websocket',True,stage='confirmed',monotonic=1000)
+        async def call(method,params,*,metrics=None):
+            parts=dict(rpc_lock_wait_ms=100.0,cooldown_wait_ms=0.0,scheduler_wait_ms=10.0,
+                       rate_limit_wait_ms=300.0,http_json_ms=200.0)
+            metrics.update(parts);clock['now']+=sum(parts.values())/1000;calls.append(method)
+            if reconnect:self.journal.begin_connection()
+            return None if retry and len(calls)==1 else self.tx
+        self.service.call=call
+        original=w.trades_in
+        def decode(*args):
+            clock['now']+=.002
+            return original(*args)
+        with patch.object(w.time,'monotonic',side_effect=lambda:clock['now']),\
+             patch.object(w.time,'time',return_value=self.at+1),patch.object(w,'trades_in',side_effect=decode):
+            await self.service.decode_one(self.at+1)
+            if retry:
+                stored=json.loads(self.journal.db.execute('SELECT rpc_profile FROM events').fetchone()[0])
+                self.assertEqual(stored['attempts_profiled'],1)
+                clock['now']+=2.5
+                await self.service.decode_one(self.at+4)
+        return json.loads(self.journal.db.execute('SELECT rpc_profile FROM events').fetchone()[0])
+
+    async def test_full_profile_attributes_wait_quota_rpc_and_actual_decoder_cost(self):
+        profile=await self.measured_decode()
+        self.assertTrue(profile['complete'])
+        self.assertAlmostEqual(profile['queue_wait_ms'],200)
+        self.assertAlmostEqual(profile['decode_ms'],2)
+        self.assertAlmostEqual(profile['total_ms'],812)
+        self.assertAlmostEqual(profile['other_ms'],0)
+        self.assertEqual(profile['attempts_profiled'],1)
+        trade=json.loads(self.journal.db.execute('SELECT trades FROM events').fetchone()[0])[0]
+        self.assertIn('quota local 0,30 s',w.render(trade,'DECU'))
+        self.assertIn('RPC HTTP+JSON 0,20 s',w.render(trade,'DECU'))
+        self.sender.send.assert_not_called()
+
+    async def test_null_transaction_retry_keeps_initial_queue_and_sums_all_reads(self):
+        profile=await self.measured_decode(retry=True)
+        self.assertTrue(profile['complete']);self.assertEqual(profile['attempts_profiled'],2)
+        self.assertAlmostEqual(profile['queue_wait_ms'],200)
+        self.assertAlmostEqual(profile['retry_wait_ms'],2500)
+        self.assertAlmostEqual(profile['http_json_ms'],400)
+        self.assertAlmostEqual(profile['rate_limit_wait_ms'],600)
+        self.assertAlmostEqual(profile['total_ms'],3922)
+        self.assertAlmostEqual(profile['other_ms'],0)
+
+    async def test_reconnect_during_rpc_does_not_claim_complete_timing_profile(self):
+        profile=await self.measured_decode(reconnect=True)
+        self.assertFalse(profile['complete']);self.assertIsNone(profile['total_ms'])
+        self.assertEqual(self.journal.db.execute('SELECT state FROM events').fetchone()[0],'done')
+
+    async def test_phase_report_uses_only_complete_verified_profiles(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        await self.measured_decode()
+        self.journal.observe(WALLET,'old',self.at,1,'rattrapage',True)
+        self.journal.finish(WALLET,'old',[{'kind':'buy','swap_proof_version':1}],profile={'complete':False,'http_json_ms':9000})
+        output=StringIO()
+        with redirect_stdout(output):w.timing_report(self.path)
+        self.assertIn('Profils détaillés complets : 1',output.getvalue())
+        self.assertIn('RPC HTTP + JSON (cumul essais) : médiane 0,20 s',output.getvalue())
+        self.assertIn('Total confirmed → décodage : médiane 0,81 s',output.getvalue())
+        self.assertNotIn('9,00 s',output.getvalue())
+
     def test_failed_unknown_subscription_and_non_trade_logs_are_ignored(self):
         w.notification(self.journal,notice(err={'InstructionError':[0,'failed']}),{1:(WALLET,'confirmed')},1)
         w.notification(self.journal,notice(),{},1)
