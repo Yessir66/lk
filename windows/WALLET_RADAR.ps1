@@ -6,23 +6,28 @@ if ($env:OS -eq 'Windows_NT') {
 }
 $projectRoot = Split-Path $PSScriptRoot -Parent
 
-function Invoke-WalletManager {
+function Send-RadarScripts {
     if (-not (Get-Command ssh.exe -ErrorAction SilentlyContinue) -or -not (Get-Command scp.exe -ErrorAction SilentlyContinue)) {
         throw 'OpenSSH Windows introuvable.'
     }
     $sources = @(
         (Join-Path $projectRoot 'scripts\configure_wallet_alerts.py'),
-        (Join-Path $projectRoot 'scripts\wallet_alerts_ws.py')
+        (Join-Path $projectRoot 'scripts\wallet_alerts_ws.py'),
+        (Join-Path $projectRoot 'scripts\wallet_radar_paper.py')
     )
     foreach ($source in $sources) {
         if (-not (Test-Path -LiteralPath $source)) { throw ('Fichier manquant : ' + $source) }
     }
-    Write-Host 'WALLET RADAR - Gestion des wallets' -ForegroundColor Green
     Write-Host 'Si la surveillance tourne, arrete-la avec Ctrl+C dans son autre fenetre.'
     Write-Host 'Connexion au VPS. Le mot de passe habituel peut etre demande deux fois.'
     Write-Host 'Les cles API et les reglages GMGN sont conserves.'
     & scp.exe @sources bot@2.24.62.69:/home/bot/wallet-alerts/scripts/
     if ($LASTEXITCODE -ne 0) { throw 'Transfert interrompu. Aucune gestion lancee.' }
+}
+
+function Invoke-WalletManager {
+    Write-Host 'WALLET RADAR - Gestion des wallets' -ForegroundColor Green
+    Send-RadarScripts
     $remote = '/home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/configure_wallet_alerts.py --manage-wallets'
     & ssh.exe -t -o ServerAliveInterval=15 -o ServerAliveCountMax=3 bot@2.24.62.69 $remote
     if ($LASTEXITCODE -ne 0) { throw 'Connexion terminee avec une erreur. Verifie les messages ci-dessus.' }
@@ -35,6 +40,8 @@ try {
         Write-Host 'WALLET RADAR' -ForegroundColor Green
         Write-Host '1 - Demarrer la surveillance et GMGN en onglet unique'
         Write-Host '2 - Ajouter, retirer ou renommer les wallets'
+        Write-Host '3 - Tester les conditions BBIG BOSS en SIMULATION (aucun achat reel)'
+        Write-Host '4 - Afficher le bilan du dernier essai de 30 tokens'
         Write-Host '0 - Quitter'
         $choice = Read-Host 'Ton choix'
         if ($choice -eq '0') { break }
@@ -43,7 +50,13 @@ try {
                 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'OUVRIR_CHARTS_GMGN.ps1') -SingleTab
             } elseif ($choice -eq '2') {
                 Invoke-WalletManager
-            } else { Write-Host 'Choisis 0, 1 ou 2.' }
+            } elseif ($choice -eq '3') {
+                Send-RadarScripts
+                & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'OUVRIR_CHARTS_GMGN.ps1') -SingleTab -PaperBuys
+            } elseif ($choice -eq '4') {
+                & ssh.exe -t bot@2.24.62.69 '/home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_alerts_ws.py --paper-report'
+                if ($LASTEXITCODE -ne 0) { throw 'Bilan indisponible. Installer et lancer le mode 3 avant le premier bilan.' }
+            } else { Write-Host 'Choisis 0, 1, 2, 3 ou 4.' }
         } catch { Write-Host $_.Exception.Message -ForegroundColor Red }
     }
 } catch {

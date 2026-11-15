@@ -4,12 +4,14 @@
 
 Il n'effectue aucun achat ni vente automatique. Le lanceur n'active pas Telegram. La decision de vente reste manuelle.
 
+Depuis la version **2026.11.15.3**, le menu propose aussi **3 : simulation des conditions BBIG BOSS sur 30 tokens**, et **4 : bilan du dernier essai**. Voir [SIMULATION_BBIG_BOSS.md](SIMULATION_BBIG_BOSS.md). Aucun ordre reel n'est active.
+
 ## Installer le menu une seule fois
 
 1. Arrete l'ancien lanceur avec **Ctrl+C**.
 2. Extrais le correctif dans **`C:\Users\Enzo\Downloads\wallet-alerts`** en acceptant les remplacements. Conserve les autres dossiers et fichiers. L'extension GMGN deja installee peut rester telle quelle.
 3. A la racine de ce dossier, double-clique sur **`WALLET_RADAR.cmd`**.
-4. Choisis **2 - Ajouter, retirer ou renommer les wallets**. Le menu transfere automatiquement les deux scripts necessaires vers ton VPS, puis ouvre leur gestion. Le mot de passe habituel du VPS peut etre demande **deux fois** : une pour le transfert, une pour la connexion. Ne saisis jamais de cle API ou de cle privee dans ces champs.
+4. Choisis **2 - Ajouter, retirer ou renommer les wallets**. Le menu transfere automatiquement les scripts necessaires vers ton VPS, puis ouvre leur gestion. Le mot de passe habituel du VPS peut etre demande **deux fois** : une pour le transfert, une pour la connexion. Ne saisis jamais de cle API ou de cle privee dans ces champs.
 
 Ta liste actuelle est reprise depuis le VPS : **BBIG BOSS reste surveille** si tu ne modifies pas la liste. Rien n'est remplace automatiquement par les anciens wallets. La cle Helius et les reglages GMGN sont conserves.
 

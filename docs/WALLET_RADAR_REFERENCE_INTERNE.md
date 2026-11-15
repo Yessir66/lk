@@ -11,11 +11,11 @@ Cette fiche décrit le dernier état connu ; le code et la configuration du dép
 - À distinguer du bot de republication de callouts pump.fun/Trojan et du bot d'analyse Discord, présents dans le même dépôt.
 - Aucun achat ni vente automatique dans le fonctionnement utilisé. L'utilisateur consulte le graphique et décide manuellement de vendre.
 - Telegram est implémenté en option explicite, mais **reste désactivé dans le lanceur utilisé**. Ne pas l'activer par défaut.
-- Les idées de déclenchement par volume/nombre d'achats sur 100–300 ms ont seulement été discutées. Aucune stratégie de trading ni surveillance exhaustive de tous les achats d'un token n'a été ajoutée.
+- Les anciennes idées de momentum sur 100–300 ms n'ont pas été activées. Un mode expérimental de simulation 1 s / 3 s a ensuite été ajouté : voir la section « Simulation BBIG BOSS ». Aucun trading réel ni flux exhaustif de tous les DEX n'est activé.
 
 ## État connu et wallet demandé
 
-- Version serveur du dépôt : **2026.11.15.2**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
+- Version serveur du dépôt : **2026.11.15.3**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
 - Extension Chrome : version **1.0.0**, dossier `chrome-gmgn`.
 - Dernière liste demandée : **BBIG BOSS uniquement**, adresse publique :
   `BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp`.
@@ -47,7 +47,9 @@ Point d'entrée conseillé : **`WALLET_RADAR.cmd` à la racine du dossier Window
 Menu principal Windows :
 
 - **1** : démarrer la surveillance et GMGN en onglet unique.
-- **2** : gérer les wallets. Transfert automatique via SCP de `configure_wallet_alerts.py` et `wallet_alerts_ws.py`, puis connexion SSH interactive à leur gestion. Mot de passe VPS éventuellement demandé deux fois.
+- **2** : gérer les wallets. Transfert automatique via SCP de `configure_wallet_alerts.py`, `wallet_alerts_ws.py` et `wallet_radar_paper.py`, puis connexion SSH interactive à leur gestion. Mot de passe VPS éventuellement demandé deux fois.
+- **3** : lancer l'essai de simulation BBIG BOSS, après transfert automatique des scripts.
+- **4** : afficher le bilan hors réseau du dernier essai via SSH.
 - **0** : quitter le menu.
 
 Dans la gestion distante des wallets :
@@ -122,6 +124,26 @@ Pont local :
 - Rapport hors réseau : `.venv/bin/python scripts/wallet_alerts_ws.py --timing-report`. Profils détaillés regroupés par version/plafond ; ne pas confondre statistiques globales mélangeant les versions avec ces groupes. Ne pas additionner les médianes des étapes.
 - L'utilisateur s'intéresse aussi aux achats qui s'intercalent entre BBIG BOSS et DECU. Une capture montrait 11 achats intermédiaires, environ 2303 $, dans la même seconde affichée ; cela ne donnait ni leurs intervalles exacts, ni la preuve d'une entrée possible avant DECU. Suivre un wallet seul ne fournit pas un flux exhaustif des achats de tout le token.
 
+## Simulation BBIG BOSS : décisions et limites nouvelles
+
+L'utilisateur veut préparer une couche d'achat automatique, **mais l'implémentation livrée reste exclusivement en simulation**. Guide complet : `SIMULATION_BBIG_BOSS.md`, moteur : `scripts/wallet_radar_paper.py`. Choix actés :
+
+- Signal fondé uniquement sur BBIG BOSS. À partir de son achat, attendre une seconde ; s'il liquide toute sa position pendant cette première seconde observée, annuler. Une vente partielle n'annule pas.
+- Refuser le créateur déclaré **bwam**, adresse `bwamJzztZsepfkteWRChggmXuiiCQvpLqPietdNfSXa`. Le champ de créateur de l'événement natif est utilisé ; l'identité humaine ou les anciens créateurs ne sont pas reconstruits.
+- Après la première seconde, achat théorique dès que les achats observés depuis T0 atteignent 400 USD, **hors transaction initiale de BBIG BOSS**, avant T0 + 3 s. Les achats suivants de BBIG BOSS peuvent compter. Une vente totale après la première seconde n'annule plus.
+- Montant voulu pour une future exécution : **25 USD de tokens**, frais en supplément. Plafond des frais toujours à définir. Exécution directe depuis un VPS avec wallet dédié retenue comme orientation, mais aucun système de signature/envoi n'est installé dans ce mode.
+- Point de départ retenu pour l'essai : première réception processed associée à l'achat ; le décodage/confirmation ne redémarre pas les compteurs. L'heure exacte d'exécution on-chain n'est pas connue.
+- Helius Developer à 49 USD/mois, flux complet `transactionSubscribe` processed : budget acceptable pour l'utilisateur, **mais il a explicitement demandé d'essayer d'abord avec le gratuit**. Aucun abonnement changé.
+- L'utilisateur a expressément fixé le premier essai à **30 tokens distincts, pas 50**. Les cas exclus, non supportés et inexploitables comptent dans ces 30. Zéro token réel testé depuis le cloud à ce stade ; les tests sont contrôlés/mocks. L'essai réel devra tourner sur son VPS.
+
+Le mode 3 ajoute `--paper-buys` au lanceur normal. Deuxième WSS standard : logs processed de BBIG BOSS, puis abonnement temporaire au mint pour décoder les TradeEvent Pump.fun, sans requête RPC par acheteur. Pas de PumpSwap ni autres DEX dans cette première couverture. Forme ABI inconnue : pas de feu vert présumé. Devise de cotation non convertible : volume inconnu. SOL/USD public CoinGecko horodaté, âge maximal 90 s ; USDC nominal 1 USD.
+
+La position initiale vient du getTransaction confirmé déjà lu par le suivi principal, complété par un getTokenAccountsByOwner sous le plafond RPC partagé. Un autre compte non nul hors de ceux de la transaction empêche de prétendre connaître la position totale initiale : résultat inexploitables. Les ventes/achats natifs suivants reconstruisent la fenêtre initiale. Une preuve arrivant trop tard, un changement incompris ou une coupure empêchent une conclusion positive. Le volume reste observé à réception, avec trou possible avant l'abonnement au mint ; l'ordre exact dans un même slot n'est pas reconstitué et processed reste provisoire. C'est un essai de faisabilité/couverture, pas une validation d'exécution réelle ou de rentabilité.
+
+Notifications console `[SIMULATION]` et bulles Windows selon réglages OS : suivi, développeur exclu, sortie totale pendant 1 s, attente de volume, achat théorique, volume non observé, données insuffisantes ou non supportées. Aucun Telegram ajouté. Le marqueur transport est `RADAR_DECISION ` + JSON public, distinct de `GMGN_BUY`.
+
+Journal par session : `data/wallet_alerts_ws/paper_decisions.jsonl`. À 30 résultats, la collecte expérimentale s'arrête ; la surveillance habituelle/GMGN continue. Menu 4 ou `--paper-report` lit le dernier essai sans réseau. Un redémarrage crée un nouvel essai et conserve les anciens journaux. Les règles et les montants restent théoriques : aucune signature, aucun ordre ni estimation de prix exécutable.
+
 ## Dépannage connu
 
 **`Démarrage impossible (RemoteError)` immédiatement après la bannière** : vérifier en premier une autre instance encore active. Le verrou partagé peut émettre cette classe d'erreur. La classe seule n'est pas une preuve absolue de sa cause.
@@ -160,7 +182,7 @@ Les scripts `discord_*` sont partagés avec d'autres bots : ne pas changer leurs
 
 ## Vérification et livraison
 
-Dernière validation de la version .2 : **275 tests Python**, **8 tests JS de navigation**, menu Windows testé avec SSH/SCP simulés ; hôte natif testé via PowerShell portable. Pas de transaction ni message Telegram envoyé par ces tests. L'exécution complète Chrome/Windows est confirmée par l'utilisateur pour les étapes antérieures, pas par un accès direct à son PC.
+Dernière validation de la version .3 : **301 tests Python**, tests de lancement/gestion Windows avec SSH/SCP simulés et protocole de notifications ; hôte natif testé via PowerShell portable. Les 8 tests JS de navigation avaient également passé pour la version précédente ; l'extension n'a pas changé pour ce mode. Pas de transaction ni message Telegram envoyé par ces tests. Les 30 tokens réels de l'essai ne sont pas encore collectés depuis le cloud. L'exécution complète Chrome/Windows est confirmée par l'utilisateur pour les étapes antérieures, pas par un accès direct à son PC.
 
 Commandes usuelles dans le dépôt :
 
@@ -176,6 +198,7 @@ Derniers correctifs remis à l'utilisateur, sous `/workspace/artifacts` si dispo
 - `gmgn_onglet_unique_1.0.0.zip` : extension + pont natif.
 - `wallet_unique_BBIG_BOSS_2026.11.15.1.zip` : configuration BBIG BOSS et désactivation des anciennes attentes.
 - `wallet_radar_menu_2026.11.15.2.zip` : menu Windows + gestion interactive.
+- `wallet_radar_simulation_30_tokens_2026.11.15.3.zip` : mode 3 de simulation gratuite BBIG BOSS et mode 4 de bilan.
 
 Les archives doivent exclure les configurations réelles, clés, bases, `.venv` et données personnelles. Préserver ces fichiers au déploiement ; ne jamais demander de remplacer tout `scripts` en effaçant des fichiers des autres bots.
 

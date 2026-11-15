@@ -19,7 +19,7 @@ try {
     & $menu -ManageWallets
     if ($global:RadarCalls.Count -ne 2) { throw 'Manager must transfer scripts then start one SSH session' }
     $files = $global:RadarCalls[0].values
-    if ($files.Count -ne 3 -or $files[0] -notlike '*configure_wallet_alerts.py' -or $files[1] -notlike '*wallet_alerts_ws.py') {
+    if ($files.Count -ne 4 -or $files[0] -notlike '*configure_wallet_alerts.py' -or $files[1] -notlike '*wallet_alerts_ws.py' -or $files[2] -notlike '*wallet_radar_paper.py') {
         throw 'Unexpected transfer source files'
     }
     if ($global:RadarCalls[1].values[-1] -cne '/home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/configure_wallet_alerts.py --manage-wallets') {
@@ -36,6 +36,15 @@ try {
     & $menu
     if ($global:RadarCalls.Count -ne 3 -or $global:RadarCalls[2].kind -cne 'start') { throw 'Menu did not dispatch manage and start' }
     if ($global:RadarCalls[2].values[-1] -cne '-SingleTab') { throw 'Surveillance must keep single-tab mode' }
+    $global:RadarCalls.Clear()
+    foreach ($answer in @('3','0')) { $global:RadarAnswers.Enqueue($answer) }
+    & $menu
+    if ($global:RadarCalls.Count -ne 2 -or $global:RadarCalls[0].kind -cne 'scp' -or $global:RadarCalls[1].kind -cne 'start') { throw 'Simulation must transfer scripts before starting' }
+    if ($global:RadarCalls[1].values[-1] -cne '-PaperBuys') { throw 'Simulation flag missing' }
+    $global:RadarCalls.Clear()
+    foreach ($answer in @('4','0')) { $global:RadarAnswers.Enqueue($answer) }
+    & $menu
+    if ($global:RadarCalls.Count -ne 1 -or $global:RadarCalls[0].values[-1] -notlike '*--paper-report') { throw 'Offline report command missing' }
     Write-Host 'Wallet Radar Windows menu tests OK; all external actions mocked.'
 } finally {
     Remove-Item Function:\scp.exe,Function:\ssh.exe,Function:\powershell.exe,Function:\Read-Host -ErrorAction SilentlyContinue

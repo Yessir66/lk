@@ -17,7 +17,7 @@ from discord_token_telegram import TelegramSender, amounts
 from discord_solana_watch import StateLock
 
 ROOT=Path(__file__).resolve().parents[1]
-VERSION='2026.11.15.2'
+VERSION='2026.11.15.3'
 DEFAULT_WALLETS={'BBIG BOSS':'BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp'}
 BACKFILL_PAGE_SIZE=1000
 BACKFILL_MAX_PAGES=10
@@ -201,10 +201,12 @@ def notification(journal,message,subscriptions,now,*,monotonic=None,names=None):
 
 
 class Service:
-    def __init__(self,journal,wallets,rpc,ws_url,*,sender=None,early=False,max_age=120,browser_events=False):
+    def __init__(self,journal,wallets,rpc,ws_url,*,sender=None,early=False,max_age=120,browser_events=False,paper=None):
         self.journal,self.wallets,self.rpc,self.ws_url=journal,wallets,rpc,ws_url
         self.names={w:n for n,w in wallets.items()};self.sender=sender;self.early=early;self.max_age=max_age
         self.browser_events=browser_events
+        self.paper=paper
+        self.paper_checks=set()
         self.rpc_condition=asyncio.Condition();self.rpc_waiters=[];self.rpc_sequence=0;self.rpc_busy=False
         interval=getattr(rpc,'interval',None)
         self.rpc_interval=interval if isinstance(interval,(int,float)) and interval>0 else .5
@@ -419,11 +421,33 @@ class Service:
             self.journal.retry(wallet,signature,attempts+1,type(exc).__name__,time.time(),public_profile())
             if attempts+1>=12:self.profiles.pop(key,None)
             return True
+        if self.paper:
+            try:
+                for trade in trades:
+                    c=self.paper.decisions.candidates.get(trade['mint'])
+                    if (c and not c.terminal and trade.get('kind')=='buy' and trade.get('signature')==c.signature):
+                        task=asyncio.create_task(self.verify_paper_position(trade,tx))
+                        self.paper_checks.add(task);task.add_done_callback(self.paper_checks.discard)
+                    else:self.paper.confirmed(trade,tx,time.monotonic())
+            except Exception:self.paper.decisions.interrupted(time.monotonic())
         if self.browser_events:
             for trade in trades:
                 event=browser_event(trade,decoded,self.max_age)
                 if event:print('GMGN_BUY '+json.dumps(event,separators=(',',':')),flush=True)
         return True
+
+    async def verify_paper_position(self,trade,tx):
+        try:
+            snapshot=await self.call('getTokenAccountsByOwner',[trade['wallet'],{'mint':trade['mint']},
+                {'encoding':'jsonParsed','commitment':'confirmed'}],background=False)
+            self.paper.confirmed(trade,tx,time.monotonic(),
+                processed_mono=self.journal.timings.get((trade['wallet'],trade['signature']),{}).get('processed'),
+                processed_wall=trade.get('processed_seen_at'),account_snapshot=snapshot)
+        except asyncio.CancelledError:raise
+        except Exception:
+            c=self.paper.decisions.candidates.get(trade['mint'])
+            if c and not c.terminal:self.paper.decisions.notify(c,'DONNEES_INSUFFISANTES',
+                'Verification des comptes de position indisponible.',time.monotonic(),True)
 
     async def deliver_one(self,now):
         if not self.sender:return False
@@ -454,10 +478,12 @@ class Service:
     async def run(self):
         tasks=[asyncio.create_task(fn()) for fn in (self.websocket,self.backfill,self.worker,self.notifier)]
         tasks.append(asyncio.create_task(self.worker(background=True)))
+        if self.paper:tasks.append(asyncio.create_task(self.paper.run()))
         try:await asyncio.gather(*tasks)
         finally:
-            for task in tasks:task.cancel()
-            await asyncio.gather(*tasks,return_exceptions=True)
+            pending=tasks+list(self.paper_checks)
+            for task in pending:task.cancel()
+            await asyncio.gather(*pending,return_exceptions=True)
 
 
 def precise_time(value):
@@ -574,11 +600,20 @@ def main():
     parser.add_argument('--timing-report',action='store_true',help='Afficher les mesures enregistrées sans réseau ni modification du journal')
     parser.add_argument('--rpc-rps',type=float,default=5,help='Plafond local partagé HTTPS, défaut 5/s ; maximum 10/s')
     parser.add_argument('--browser-events',action='store_true',help='Émettre les achats vérifiés récents pour le lanceur Chrome Windows via SSH')
+    parser.add_argument('--paper-buys',action='store_true',help='SIMULATION BBIG BOSS : volume Pump.fun, aucun ordre reel')
+    parser.add_argument('--paper-report',action='store_true',help='Bilan hors reseau du dernier essai de 30 tokens')
     args=parser.parse_args()
     if not .5<=args.rpc_rps<=10:parser.error('--rpc-rps doit être entre 0.5 et 10')
     try:
+        if args.paper_report:
+            from wallet_radar_paper import report
+            report(args.state.parent/'paper_decisions.jsonl');return
         if args.timing_report:timing_report(args.state);return
         config,wallets,http,ws=settings(args.config)
+        if args.paper_buys:
+            from wallet_radar_paper import BBIG, PaperObserver
+            if BBIG not in wallets.values():parser.error('La simulation necessite BBIG BOSS dans les wallets suivis')
+            args.early=True
         print('Wallet Radar '+VERSION+' — lecture seule, aucun achat ni publication.',flush=True)
         print('Wallets : '+', '.join(wallets),flush=True)
         print(f'RPC HTTPS : plafond local {args.rpc_rps:g}/s ; rattrapage au maximum 1/s, priorité aux événements directs.',flush=True)
@@ -599,7 +634,10 @@ def main():
         args.state.parent.mkdir(parents=True,exist_ok=True)
         with StateLock(args.state.with_suffix('.lock')):
             journal=Journal(args.state)
-            try:asyncio.run(Service(journal,wallets,MeasuredRPC(http,None,rps=args.rpc_rps),ws,sender=sender,early=args.early,browser_events=args.browser_events).run())
+            try:
+                paper=PaperObserver(ws,args.state.parent/'paper_decisions.jsonl') if args.paper_buys else None
+                asyncio.run(Service(journal,wallets,MeasuredRPC(http,None,rps=args.rpc_rps),ws,sender=sender,
+                                    early=args.early,browser_events=args.browser_events,paper=paper).run())
             finally:journal.db.close()
     except KeyboardInterrupt:print('Surveillance arrêtée.',flush=True)
     except Exception as exc:

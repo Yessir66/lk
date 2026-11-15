@@ -1,6 +1,7 @@
 param(
     [switch]$Test,
-    [switch]$SingleTab
+    [switch]$SingleTab,
+    [switch]$PaperBuys
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,6 +22,16 @@ function Get-GmgnBuy {
     return $event
 }
 
+function Get-RadarDecision {
+    param([string]$Line)
+    if (-not $Line.StartsWith('RADAR_DECISION ')) { return $null }
+    try { $event = $Line.Substring(15) | ConvertFrom-Json } catch { return $null }
+    if ($event.v -ne 1 -or $event.type -cne 'paper_decision' -or $event.mode -cne 'SIMULATION') { return $null }
+    if ([string]$event.mint -cnotmatch '^[1-9A-HJ-NP-Za-km-z]{32,44}$') { return $null }
+    if ($event.code -cnotin @('SUIVI','DEV_EXCLU','SORTIE_TOTALE_1S','ATTENTE_VOLUME','ACHAT_SIMULE','VOLUME_INSUFFISANT','DONNEES_INSUFFISANTES','NON_SUPPORTE')) { return $null }
+    return $event
+}
+
 if ($Test) {
     # Pure protocol checks: no SSH, Chrome, keys, orders or Telegram.
     $sample = @{v=1;type='verified_buy';mint=('A'*32);wallet=('B'*32);signature=('C'*88)}
@@ -33,10 +44,15 @@ if ($Test) {
     if ($null -ne (Get-GmgnBuy ($prefix + ($sample | ConvertTo-Json -Compress)))) { throw 'Sell accepted' }
     if ($null -ne (Get-GmgnBuy 'GMGN_BUY invalid-json')) { throw 'Invalid JSON accepted' }
     if ($null -ne (Get-GmgnBuy 'TRANSACTION PROVISOIRE')) { throw 'Provisional accepted' }
+    $decision = @{v=1;type='paper_decision';mode='SIMULATION';mint=('A'*32);code='ACHAT_SIMULE';message='No real order'}
+    if ($null -eq (Get-RadarDecision ('RADAR_DECISION ' + ($decision | ConvertTo-Json -Compress)))) { throw 'Simulation notification rejected' }
+    $decision.mode = 'LIVE'
+    if ($null -ne (Get-RadarDecision ('RADAR_DECISION ' + ($decision | ConvertTo-Json -Compress)))) { throw 'Live notification accepted as simulation' }
     Write-Host 'Protocol tests OK; no network or browser opened.'
     exit 0
 }
 
+$radarTray = $null
 try {
     if (-not (Get-Command ssh.exe -ErrorAction SilentlyContinue)) { throw 'Client OpenSSH Windows introuvable.' }
     $candidates = @(
@@ -70,12 +86,38 @@ try {
     }
     Write-Host 'Connexion au VPS : utilise le mot de passe habituel si SSH le demande.'
     Write-Host 'Laisse cette fenetre ouverte. Ctrl+C pour arreter.'
+    if ($PaperBuys) {
+        Write-Host 'SIMULATION 25 USD : aucun ordre reel. Notifications de decision activees.' -ForegroundColor Yellow
+        if ($env:OS -eq 'Windows_NT') {
+            try {
+                Add-Type -AssemblyName System.Windows.Forms
+                Add-Type -AssemblyName System.Drawing
+                $radarTray = New-Object System.Windows.Forms.NotifyIcon
+                $radarTray.Icon = [System.Drawing.SystemIcons]::Information
+                $radarTray.Text = 'Wallet Radar - Simulation'
+                $radarTray.Visible = $true
+            } catch { Write-Warning 'Notifications Windows indisponibles ; decisions affichees dans cette console.' }
+        }
+    }
     if (-not $SingleTab) { Start-Process -FilePath $chrome -ArgumentList @('--new-tab','https://gmgn.ai/sol') }
 
     # Fixed remote command, no credentials on the command line; no exposed web server.
     $remote = 'exec /home/bot/wallet-alerts/.venv/bin/python -u /home/bot/wallet-alerts/scripts/wallet_alerts_ws.py --early --browser-events'
+    if ($PaperBuys) { $remote += ' --paper-buys' }
     & ssh.exe -T -o ServerAliveInterval=15 -o ServerAliveCountMax=3 bot@2.24.62.69 $remote | ForEach-Object {
         $line = [string]$_
+        $decision = Get-RadarDecision $line
+        if ($null -ne $decision) {
+            $notice = [string]$decision.code + ' : ' + [string]$decision.message
+            Write-Host ('[SIMULATION] ' + $notice + ' CA : ' + [string]$decision.mint) -ForegroundColor Yellow
+            if ($null -ne $radarTray) {
+                $radarTray.BalloonTipTitle = 'Wallet Radar - SIMULATION'
+                $radarTray.BalloonTipText = ($notice + ' ' + [string]$decision.mint).Substring(0,[Math]::Min(240,($notice + ' ' + [string]$decision.mint).Length))
+                $radarTray.ShowBalloonTip(4000)
+                [System.Windows.Forms.Application]::DoEvents()
+            }
+            return
+        }
         $event = Get-GmgnBuy $line
         if ($null -eq $event) {
             if (-not $line.StartsWith($prefix)) { Write-Host $line }
@@ -103,4 +145,6 @@ try {
 } catch {
     Write-Host $_.Exception.Message -ForegroundColor Red
     exit 1
+} finally {
+    if ($null -ne $radarTray) { $radarTray.Dispose() }
 }

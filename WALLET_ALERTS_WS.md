@@ -1,6 +1,8 @@
-# Wallet Radar — 2026.11.15.2
+# Wallet Radar — 2026.11.15.3
 
 Le bot porte desormais le nom **Wallet Radar**. Voir [WALLET_RADAR.md](WALLET_RADAR.md) pour le menu Windows permettant d'ajouter, retirer et renommer les wallets sans commandes manuelles.
+
+Le menu **3** teste désormais les conditions BBIG BOSS en simulation sur **30 tokens distincts**, sans achat réel ; le menu **4** affiche le bilan. Voir [SIMULATION_BBIG_BOSS.md](SIMULATION_BBIG_BOSS.md) pour la couverture Pump.fun et les limites de mesure.
 
 Programme indépendant du bot de republication. Il suit désormais uniquement **BBIG BOSS** (`BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp`) par défaut. Une configuration locale existante reste prioritaire : voir [BBIG_BOSS.md](BBIG_BOSS.md) pour remplacer sa liste sans modifier la clé Helius. Aucun achat, ordre Trojan, appel pump.fun, GMGN ou IA. Aucune clé privée de wallet n’est nécessaire.
 
