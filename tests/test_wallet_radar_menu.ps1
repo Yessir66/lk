@@ -45,6 +45,10 @@ try {
     foreach ($answer in @('4','0')) { $global:RadarAnswers.Enqueue($answer) }
     & $menu
     if ($global:RadarCalls.Count -ne 1 -or $global:RadarCalls[0].values[-1] -notlike '*--paper-report') { throw 'Offline report command missing' }
+    $global:RadarCalls.Clear()
+    foreach ($answer in @('5','0')) { $global:RadarAnswers.Enqueue($answer) }
+    & $menu
+    if ($global:RadarCalls.Count -ne 2 -or $global:RadarCalls[0].kind -cne 'scp' -or $global:RadarCalls[1].values[-1] -notlike '*--stop') { throw 'Stop must update the helper then call its scoped stop command' }
     Write-Host 'Wallet Radar Windows menu tests OK; all external actions mocked.'
 } finally {
     Remove-Item Function:\scp.exe,Function:\ssh.exe,Function:\powershell.exe,Function:\Read-Host -ErrorAction SilentlyContinue

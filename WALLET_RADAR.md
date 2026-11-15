@@ -6,6 +6,8 @@ Il n'effectue aucun achat ni vente automatique. Le lanceur n'active pas Telegram
 
 Depuis la version **2026.11.15.3**, le menu propose aussi **3 : simulation des conditions BBIG BOSS sur 30 tokens**, et **4 : bilan du dernier essai**. Voir [SIMULATION_BBIG_BOSS.md](SIMULATION_BBIG_BOSS.md). Aucun ordre reel n'est active.
 
+Depuis **2026.11.15.4**, **5 : arreter proprement Wallet Radar sur le VPS** permet de fermer une ancienne instance encore active avant de relancer. Voir [ARRET_WALLET_RADAR.md](ARRET_WALLET_RADAR.md). Les donnees et les autres bots sont conserves.
+
 ## Installer le menu une seule fois
 
 1. Arrete l'ancien lanceur avec **Ctrl+C**.

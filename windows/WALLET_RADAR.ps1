@@ -42,6 +42,7 @@ try {
         Write-Host '2 - Ajouter, retirer ou renommer les wallets'
         Write-Host '3 - Tester les conditions BBIG BOSS en SIMULATION (aucun achat reel)'
         Write-Host '4 - Afficher le bilan du dernier essai de 30 tokens'
+        Write-Host '5 - Arreter proprement Wallet Radar sur le VPS'
         Write-Host '0 - Quitter'
         $choice = Read-Host 'Ton choix'
         if ($choice -eq '0') { break }
@@ -56,7 +57,11 @@ try {
             } elseif ($choice -eq '4') {
                 & ssh.exe -t bot@2.24.62.69 '/home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_alerts_ws.py --paper-report'
                 if ($LASTEXITCODE -ne 0) { throw 'Bilan indisponible. Installer et lancer le mode 3 avant le premier bilan.' }
-            } else { Write-Host 'Choisis 0, 1, 2, 3 ou 4.' }
+            } elseif ($choice -eq '5') {
+                Send-RadarScripts
+                & ssh.exe -t bot@2.24.62.69 '/home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_alerts_ws.py --stop'
+                if ($LASTEXITCODE -ne 0) { throw 'Arret non confirme. Verifie les messages ci-dessus avant de relancer.' }
+            } else { Write-Host 'Choisis 0, 1, 2, 3, 4 ou 5.' }
         } catch { Write-Host $_.Exception.Message -ForegroundColor Red }
     }
 } catch {

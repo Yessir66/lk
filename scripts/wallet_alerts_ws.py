@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import signal
 from pathlib import Path
 import sqlite3
 import ssl
@@ -12,12 +13,12 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from urllib.parse import urlsplit, quote
 
-from discord_token_analysis import WATCHED, QUOTES, TRADE_LOG, ReadRPC, parse_trade, valid_address, paris
+from discord_token_analysis import WATCHED, QUOTES, TRADE_LOG, ReadRPC, RemoteError, parse_trade, valid_address, paris
 from discord_token_telegram import TelegramSender, amounts
 from discord_solana_watch import StateLock
 
 ROOT=Path(__file__).resolve().parents[1]
-VERSION='2026.11.15.3'
+VERSION='2026.11.15.4'
 DEFAULT_WALLETS={'BBIG BOSS':'BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp'}
 BACKFILL_PAGE_SIZE=1000
 BACKFILL_MAX_PAGES=10
@@ -589,6 +590,51 @@ def browser_event(trade,now,max_age=120):
             'wallet':trade['wallet'],'signature':trade['signature'],'detected_at':now}
 
 
+def watcher_pids(script=None,proc_root=Path('/proc')):
+    """Own-user Python processes executing this exact script; never match arbitrary command text."""
+    target=(Path(script) if script else Path(__file__)).resolve();result=[]
+    for entry in proc_root.iterdir():
+        if not entry.name.isdecimal() or int(entry.name)==os.getpid():continue
+        try:
+            if entry.stat().st_uid!=os.getuid():continue
+            args=[part.decode('utf-8') for part in (entry/'cmdline').read_bytes().split(b'\0') if part]
+            if len(args)<2 or not Path(args[0]).name.startswith(('python','pypy')):continue
+            index=1
+            while index<len(args) and args[index] in ('-u','-B','--'):index+=1
+            if index>=len(args) or args[index].startswith('-'):continue
+            path=Path(args[index])
+            if not path.is_absolute():path=(entry/'cwd').resolve()/path
+            if path.resolve()==target:result.append(int(entry.name))
+        except (OSError,UnicodeError):continue
+    return sorted(result)
+
+
+def stop_watchers(script=None,timeout=30):
+    if os.name!='posix' or not Path('/proc').is_dir():raise ValueError('Arret disponible sur le VPS Linux uniquement')
+    found=watcher_pids(script)
+    if not found:
+        print('Aucune surveillance Wallet Radar active pour ce compte.',flush=True);return
+    for pid in found:
+        try:
+            if pid not in watcher_pids(script):continue
+            os.kill(pid,signal.SIGINT)
+            print(f'Arret propre demande a Wallet Radar (PID {pid}).',flush=True)
+        except ProcessLookupError:continue
+    deadline=time.monotonic()+timeout
+    while time.monotonic()<deadline:
+        if not watcher_pids(script):
+            print('Wallet Radar est arrete. Tu peux lancer le menu 3. Donnees conservees.',flush=True);return
+        time.sleep(.1)
+    raise TimeoutError('Wallet Radar ne s’est pas encore arrete')
+
+
+def startup_failure(exc):
+    if isinstance(exc,RemoteError) and exc.args==('Cette analyse Discord est déjà lancée pour ce journal ; fermer son ancien terminal',):
+        return 'Wallet Radar est deja actif sur le VPS. Choisir 5 (arret propre), puis 3 (simulation). Ne pas supprimer le verrou.'
+    if isinstance(exc,TimeoutError):return 'Arret encore en cours ou delai depasse. Attendre puis reessayer le menu 5.'
+    return 'Démarrage impossible ('+type(exc).__name__+') : vérifier configuration, dépendances et état du service.'
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config',type=Path,default=ROOT/'wallet_alerts_config.json')
@@ -602,9 +648,11 @@ def main():
     parser.add_argument('--browser-events',action='store_true',help='Émettre les achats vérifiés récents pour le lanceur Chrome Windows via SSH')
     parser.add_argument('--paper-buys',action='store_true',help='SIMULATION BBIG BOSS : volume Pump.fun, aucun ordre reel')
     parser.add_argument('--paper-report',action='store_true',help='Bilan hors reseau du dernier essai de 30 tokens')
+    parser.add_argument('--stop',action='store_true',help='Arreter proprement les instances de ce script appartenant au compte Linux courant')
     args=parser.parse_args()
     if not .5<=args.rpc_rps<=10:parser.error('--rpc-rps doit être entre 0.5 et 10')
     try:
+        if args.stop:stop_watchers();return
         if args.paper_report:
             from wallet_radar_paper import report
             report(args.state.parent/'paper_decisions.jsonl');return
@@ -642,7 +690,7 @@ def main():
     except KeyboardInterrupt:print('Surveillance arrêtée.',flush=True)
     except Exception as exc:
         # Parser/provider errors can include URLs and keys; output only a fixed diagnostic.
-        raise SystemExit('Démarrage impossible ('+type(exc).__name__+') : vérifier configuration, dépendances et état du service.') from None
+        raise SystemExit(startup_failure(exc)) from None
 
 
 if __name__=='__main__':main()

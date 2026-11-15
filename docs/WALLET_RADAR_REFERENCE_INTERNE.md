@@ -15,14 +15,14 @@ Cette fiche décrit le dernier état connu ; le code et la configuration du dép
 
 ## État connu et wallet demandé
 
-- Version serveur du dépôt : **2026.11.15.3**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
+- Version serveur du dépôt : **2026.11.15.4**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
 - Extension Chrome : version **1.0.0**, dossier `chrome-gmgn`.
 - Dernière liste demandée : **BBIG BOSS uniquement**, adresse publique :
   `BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp`.
 - DECU et LE L ont été retirés du suivi Wallet Radar à la demande de l'utilisateur. Leur présence dans l'historique ou dans les constantes du module partagé d'analyse Discord ne signifie pas qu'ils sont encore suivis ici.
 - Les listes de wallets sont désormais modifiables par l'utilisateur. **Vérifier la liste actuelle avant toute future modification** ; ne pas réimposer cette liste historique.
 - La configuration locale `wallet_alerts_config.json` prime sur `DEFAULT_WALLETS` et le fichier d'exemple. Modifier un défaut du code ne suffit pas à migrer une configuration existante.
-- Dernier incident : capture montrant encore la version .1 et un échec `RemoteError`, très probablement dû au verrou d'une instance précédente. Arrêt propre de l'ancienne instance et passage par le menu 2 pour transférer la .2 conseillés ; utilisateur a répondu « OKAY SUPER ». Aucune inspection directe du VPS ni nouvelle capture prouvant sa version n'a été réalisée ensuite.
+- Dernier incident : capture confirmant le transfert de la version .3 mais échec immédiat `RemoteError` en simulation, très probablement dû au verrou d'une instance précédente. Correctif .4 préparé avec arrêt ciblé via menu 5 et message de verrou explicite ; pas d'accès direct au VPS pour constater l'arrêt.
 
 ## Dépôt et lieux de déploiement
 
@@ -50,6 +50,7 @@ Menu principal Windows :
 - **2** : gérer les wallets. Transfert automatique via SCP de `configure_wallet_alerts.py`, `wallet_alerts_ws.py` et `wallet_radar_paper.py`, puis connexion SSH interactive à leur gestion. Mot de passe VPS éventuellement demandé deux fois.
 - **3** : lancer l'essai de simulation BBIG BOSS, après transfert automatique des scripts.
 - **4** : afficher le bilan hors réseau du dernier essai via SSH.
+- **5** : transférer les scripts, puis demander un arrêt propre des instances du même script sur le VPS (`--stop`). Pas de suppression du journal/verrou, pas de kill forcé ni arrêt des autres bots.
 - **0** : quitter le menu.
 
 Dans la gestion distante des wallets :
@@ -149,6 +150,7 @@ Journal par session : `data/wallet_alerts_ws/paper_decisions.jsonl`. À 30 résu
 **`Démarrage impossible (RemoteError)` immédiatement après la bannière** : vérifier en premier une autre instance encore active. Le verrou partagé peut émettre cette classe d'erreur. La classe seule n'est pas une preuve absolue de sa cause.
 
 - Arrêter les autres fenêtres de surveillance avec Ctrl+C.
+- Méthode conseillée depuis la .4 : **menu 5**, attendre l'arrêt confirmé ou l'absence d'instance, puis menu 3. Le contrôleur cherche les processus Python du même UID qui exécutent le chemin exact du script (absolu ou relatif à leur cwd), puis SIGINT et attente bornée à 30 s. Le message de verrou connu est désormais explicite. Guide `ARRET_WALLET_RADAR.md`.
 - Si l'instance est orpheline, après connexion SSH, arrêt ciblé et propre déjà conseillé :
   `pkill -INT -u bot -f '[p]ython.*wallet_alerts_ws[.]py'`.
 - Ne pas utiliser `killall python` ni détruire le journal.
@@ -183,6 +185,8 @@ Les scripts `discord_*` sont partagés avec d'autres bots : ne pas changer leurs
 ## Vérification et livraison
 
 Dernière validation de la version .3 : **301 tests Python**, tests de lancement/gestion Windows avec SSH/SCP simulés et protocole de notifications ; hôte natif testé via PowerShell portable. Les 8 tests JS de navigation avaient également passé pour la version précédente ; l'extension n'a pas changé pour ce mode. Pas de transaction ni message Telegram envoyé par ces tests. Les 30 tokens réels de l'essai ne sont pas encore collectés depuis le cloud. L'exécution complète Chrome/Windows est confirmée par l'utilisateur pour les étapes antérieures, pas par un accès direct à son PC.
+
+Correctif .4 : **305 tests Python passent**, dont un arrêt SIGINT d'un processus de test isolé avec conservation d'un autre processus Python ; menu 5 validé avec SSH/SCP simulés. L'arrêt réel sur le VPS reste à effectuer par l'utilisateur.
 
 Commandes usuelles dans le dépôt :
 
