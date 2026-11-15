@@ -192,7 +192,36 @@ class NativeDecoderTest(unittest.TestCase):
         self.assertEqual(events[0]['token_amount'],22741914376767)
         self.assertEqual(events[0]['creator'],'DitH8kfqVFDrDZzQmpQ1sRmyad48546XmbushMM8vmdG')
         self.assertEqual(events[0]['quote_amount'],600584)
+        self.assertEqual(events[0]['quote_transfer_fee'],0)
+        self.assertEqual(events[0]['unparsed_tail_bytes'],0)
         self.assertIsNone(p.Prices().dollars(events[0],1000))
+
+    def test_official_transfer_fee_field_and_previous_layout_are_both_supported(self):
+        raw=encoded_event(quote_transfer_fee=12345)
+        current=p.decode_event(raw)
+        self.assertEqual(current['quote_transfer_fee'],12345)
+        self.assertEqual(current['unparsed_tail_bytes'],0)
+        legacy=p.decode_event(raw[:-8])
+        self.assertNotIn('quote_transfer_fee',legacy)
+        self.assertEqual(legacy['unparsed_tail_bytes'],0)
+        self.assertEqual(legacy['token_amount'],current['token_amount'])
+
+    def test_current_official_event_can_progress_to_theoretical_decision(self):
+        prices=p.Prices();prices.update({'solana':{'usd':100,'last_updated_at':1000}},1000)
+        output=[];engine=p.Decisions(prices,output.append)
+        def logs(raw):return [f'Program {p.PUMP} invoke [1]',
+            'Program data: '+base64.b64encode(raw).decode(),f'Program {p.PUMP} success']
+        raw=encoded_event(user=key_bytes(p.BBIG),quote_transfer_fee=0)
+        initial=p.native_trades({'signature':SIGNATURE,'err':None,'logs':logs(raw)},10,1000,100)[0]
+        engine.observe(initial)
+        candidate=engine.candidates[initial['mint']]
+        self.assertIsNone(candidate.terminal)
+        candidate.baseline=100
+        raw=encoded_event(sol_amount=4*10**9,quote_transfer_fee=0)
+        following=p.native_trades({'signature':'F'*88,'err':None,'logs':logs(raw)},10,1000.5,100.5)[0]
+        engine.observe(following);engine.tick(101)
+        self.assertEqual(candidate.terminal,'ACHAT_SIMULE')
+        self.assertEqual(candidate.volume,400)
 
     def test_program_stack_prevents_fake_event_logs_from_other_programs(self):
         raw=base64.b64encode(encoded_event()).decode()
@@ -230,6 +259,7 @@ class NativeDecoderTest(unittest.TestCase):
             with contextlib.redirect_stdout(output):p.report(path)
             self.assertIn('1/30',output.getvalue());self.assertIn('DEV_EXCLU : 1',output.getvalue())
             self.assertNotIn('ACHAT_SIMULE :',output.getvalue())
+            self.assertIn('volume USD observe non mesure',output.getvalue())
 
 
 def key_bytes(key):

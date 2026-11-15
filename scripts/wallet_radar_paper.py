@@ -20,7 +20,8 @@ USDC='EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 ZERO='11111111111111111111111111111111'
 DISCRIMINATOR=bytes([189,219,127,211,78,230,97,238])
 ALPHABET='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
-# Official ABI: pump-fun/pump-public-docs, commit 639b87fb45c3adeffa6f7c4a1bf0cb85e392bf22, idl/pump.json.
+# Official ABI: pump-public-docs 639b87f + @pump-fun/pump-sdk 4.3.1, src/idl/pump.json.
+# The published SDK includes quote_transfer_fee, absent from the public-docs snapshot.
 FIELDS=[('mint','pubkey'),('sol_amount','u64'),('token_amount','u64'),('is_buy','bool'),
  ('user','pubkey'),('timestamp','i64'),('virtual_sol_reserves','u64'),('virtual_token_reserves','u64'),
  ('real_sol_reserves','u64'),('real_token_reserves','u64'),('fee_recipient','pubkey'),('fee_basis_points','u64'),
@@ -29,9 +30,9 @@ FIELDS=[('mint','pubkey'),('sol_amount','u64'),('token_amount','u64'),('is_buy',
  ('last_update_timestamp','i64'),('ix_name','string'),('mayhem_mode','bool'),('cashback_fee_basis_points','u64'),
  ('cashback','u64'),('buyback_fee_basis_points','u64'),('buyback_fee','u64'),('shareholders','shareholders'),
  ('quote_mint','pubkey'),('quote_amount','u64'),('virtual_quote_reserves','u64'),('real_quote_reserves','u64'),
- ('holder_rewards_bps','u64'),('holder_rewards','u64'),('creator_fee_unclaimed','u64')]
+ ('holder_rewards_bps','u64'),('holder_rewards','u64'),('creator_fee_unclaimed','u64'),('quote_transfer_fee','u64')]
 LEGACY_ENDS={'track_volume','mayhem_mode','cashback_fee_basis_points','shareholders','quote_mint',
-             'holder_rewards_bps','creator_fee_unclaimed'}
+             'holder_rewards_bps','creator_fee_unclaimed','quote_transfer_fee'}
 
 
 def public_key(raw):
@@ -368,7 +369,9 @@ def report(path):
     print(f'WALLET RADAR - SIMULATION : {len(latest)}/{limit} tokens distincts, dernier essai.')
     for code,count in sorted(outcomes.items()):print(f'{code} : {count}')
     for mint,row in latest.items():
-        print(mint[:8]+'... '+row['code']+' ; volume USD observe '+str(row.get('usd_total','?'))+
+        volume=str(row.get('usd_total','non mesure'))
+        if row['code'] in ('DONNEES_INSUFFISANTES','NON_SUPPORTE','DEV_EXCLU') and not row.get('buys'):volume='non mesure'
+        print(mint[:8]+'... '+row['code']+' ; volume USD observe '+volume+
               ' ; decision a '+str(row.get('elapsed_s','?'))+' s ; '+str(row.get('message','')))
     print('Aucun achat reel. Volumes observes a reception processed, pas historique exhaustif ni prix executable.')
     print('SOL/USD indicatif CoinGecko horodate (maximum 90 s) ; USDC valorise nominalement a 1 USD.')

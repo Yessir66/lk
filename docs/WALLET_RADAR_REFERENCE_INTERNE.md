@@ -15,14 +15,14 @@ Cette fiche décrit le dernier état connu ; le code et la configuration du dép
 
 ## État connu et wallet demandé
 
-- Version serveur du dépôt : **2026.11.15.4**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
+- Version serveur du dépôt : **2026.11.15.5**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
 - Extension Chrome : version **1.0.0**, dossier `chrome-gmgn`.
 - Dernière liste demandée : **BBIG BOSS uniquement**, adresse publique :
   `BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp`.
 - DECU et LE L ont été retirés du suivi Wallet Radar à la demande de l'utilisateur. Leur présence dans l'historique ou dans les constantes du module partagé d'analyse Discord ne signifie pas qu'ils sont encore suivis ici.
 - Les listes de wallets sont désormais modifiables par l'utilisateur. **Vérifier la liste actuelle avant toute future modification** ; ne pas réimposer cette liste historique.
 - La configuration locale `wallet_alerts_config.json` prime sur `DEFAULT_WALLETS` et le fichier d'exemple. Modifier un défaut du code ne suffit pas à migrer une configuration existante.
-- Dernier incident : capture confirmant le transfert de la version .3 mais échec immédiat `RemoteError` en simulation, très probablement dû au verrou d'une instance précédente. Correctif .4 préparé avec arrêt ciblé via menu 5 et message de verrou explicite ; pas d'accès direct au VPS pour constater l'arrêt.
+- Dernier incident : version .4 et simulation bien démarrées, confirmées par capture. Bilan réel : **2/30 tokens, 2 DONNEES_INSUFFISANTES, extension de format Pump.fun inconnue, décision à 0 s**. Volume non mesuré, et non zéro volume réel. SDK officiel 4.3.1 consulté : champ final `quote_transfer_fee: u64` manquant dans le schéma de documentation initial. Correctif .5 préparé, ancien et nouveau formats testés. Il reste à l'appliquer sur le VPS et observer de nouveaux tokens ; les deux cas bloqués ne valident pas la stratégie.
 
 ## Dépôt et lieux de déploiement
 
@@ -139,6 +139,8 @@ L'utilisateur veut préparer une couche d'achat automatique, **mais l'implément
 
 Le mode 3 ajoute `--paper-buys` au lanceur normal. Deuxième WSS standard : logs processed de BBIG BOSS, puis abonnement temporaire au mint pour décoder les TradeEvent Pump.fun, sans requête RPC par acheteur. Pas de PumpSwap ni autres DEX dans cette première couverture. Forme ABI inconnue : pas de feu vert présumé. Devise de cotation non convertible : volume inconnu. SOL/USD public CoinGecko horodaté, âge maximal 90 s ; USDC nominal 1 USD.
 
+Depuis la .5, le schema TradeEvent inclut `quote_transfer_fee` du SDK officiel `@pump-fun/pump-sdk` **4.3.1**, absent de `pump-public-docs` au moment de la consultation. Ce champ u64 final explique les 8 octets non lus de la fixture archivee. Ne pas supprimer globalement le controle d'octets restants : seules les extensions identifiees doivent etre ajoutees. Guide `CORRECTIF_FORMAT_PUMP.md`. Les anciens evenements sans ce champ sont compatibles. Le rapport distingue les volumes non mesures des zeros.
+
 La position initiale vient du getTransaction confirmé déjà lu par le suivi principal, complété par un getTokenAccountsByOwner sous le plafond RPC partagé. Un autre compte non nul hors de ceux de la transaction empêche de prétendre connaître la position totale initiale : résultat inexploitables. Les ventes/achats natifs suivants reconstruisent la fenêtre initiale. Une preuve arrivant trop tard, un changement incompris ou une coupure empêchent une conclusion positive. Le volume reste observé à réception, avec trou possible avant l'abonnement au mint ; l'ordre exact dans un même slot n'est pas reconstitué et processed reste provisoire. C'est un essai de faisabilité/couverture, pas une validation d'exécution réelle ou de rentabilité.
 
 Notifications console `[SIMULATION]` et bulles Windows selon réglages OS : suivi, développeur exclu, sortie totale pendant 1 s, attente de volume, achat théorique, volume non observé, données insuffisantes ou non supportées. Aucun Telegram ajouté. Le marqueur transport est `RADAR_DECISION ` + JSON public, distinct de `GMGN_BUY`.
@@ -187,6 +189,8 @@ Les scripts `discord_*` sont partagés avec d'autres bots : ne pas changer leurs
 Dernière validation de la version .3 : **301 tests Python**, tests de lancement/gestion Windows avec SSH/SCP simulés et protocole de notifications ; hôte natif testé via PowerShell portable. Les 8 tests JS de navigation avaient également passé pour la version précédente ; l'extension n'a pas changé pour ce mode. Pas de transaction ni message Telegram envoyé par ces tests. Les 30 tokens réels de l'essai ne sont pas encore collectés depuis le cloud. L'exécution complète Chrome/Windows est confirmée par l'utilisateur pour les étapes antérieures, pas par un accès direct à son PC.
 
 Correctif .4 : **305 tests Python passent**, dont un arrêt SIGINT d'un processus de test isolé avec conservation d'un autre processus Python ; menu 5 validé avec SSH/SCP simulés. L'arrêt réel sur le VPS reste à effectuer par l'utilisateur.
+
+Correctif .5 : **307 tests Python passent**. Tous les noms et types du schema TradeEvent sont compares au SDK officiel 4.3.1 ; fixture archivee de 405 octets entierement lue, nouveau champ et compatibilite des anciens evenements verifies. Test de progression du nouveau format jusqu'a une decision theorique, sans ordre. Aucun resultat reel des prochains tokens corrige n'est encore acquis.
 
 Commandes usuelles dans le dépôt :
 
