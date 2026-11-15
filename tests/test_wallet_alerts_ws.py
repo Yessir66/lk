@@ -97,6 +97,44 @@ class WalletAlertTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated,dict(original,wallets=w.DEFAULT_WALLETS))
         self.assertTrue(w.valid_address(updated['wallets']['BBIG BOSS']))
 
+    def test_interactive_wallet_manager_add_rename_remove_preserves_secrets(self):
+        from io import StringIO
+        from contextlib import redirect_stdout
+        path=self.root/'wallet_alerts_config.json'
+        original={'helius_api_key':'never-print-this-key','telegram_bot_token':'also-private',
+                  'wallets':dict(w.DEFAULT_WALLETS),'rpc_http_url':'https://private.example/'}
+        path.write_text(json.dumps(original))
+        output=StringIO()
+        answers=['2','DECU',WALLET,'4','1','BBIG BOSS RENOMME','3','2','0']
+        with patch('builtins.input',side_effect=answers),redirect_stdout(output):
+            configure.manage_wallets(path,original)
+        updated=json.loads(path.read_text())
+        self.assertEqual(updated,dict(original,wallets={'BBIG BOSS RENOMME':w.DEFAULT_WALLETS['BBIG BOSS']}))
+        self.assertNotIn('never-print-this-key',output.getvalue())
+        self.assertNotIn('also-private',output.getvalue())
+
+    def test_interactive_wallet_manager_rejects_duplicates_and_last_removal(self):
+        path=self.root/'wallet_alerts_config.json'
+        original={'helius_api_key':'private','wallets':dict(w.DEFAULT_WALLETS)}
+        text=json.dumps(original);path.write_text(text)
+        answers=['2','OTHER',w.DEFAULT_WALLETS['BBIG BOSS'],'2','BAD','invalid-address',
+                 '2','bbig boss',WALLET,'3','1','4','99','0']
+        with patch('builtins.input',side_effect=answers),patch('builtins.print'):
+            configure.manage_wallets(path,original)
+        self.assertEqual(path.read_text(),text)
+
+    def test_interactive_wallet_manager_saves_before_user_interrupts(self):
+        path=self.root/'wallet_alerts_config.json'
+        original={'helius_api_key':'private','wallets':dict(w.DEFAULT_WALLETS)}
+        path.write_text(json.dumps(original))
+        with patch.object(configure,'__file__',str(self.root/'scripts/configure_wallet_alerts.py')),\
+             patch.object(sys,'argv',['configure_wallet_alerts.py','--manage-wallets']),\
+             patch.object(configure.getpass,'getpass') as key_prompt,\
+             patch('builtins.input',side_effect=['2','DECU',WALLET,KeyboardInterrupt]),patch('builtins.print'):
+            configure.main()
+        key_prompt.assert_not_called()
+        self.assertEqual(json.loads(path.read_text())['wallets'],dict(w.DEFAULT_WALLETS,DECU=WALLET))
+
     async def test_removed_wallet_queued_events_and_alerts_are_not_processed(self):
         self.journal.observe(WALLET,SIGNATURE,self.at,1,'websocket',True)
         self.journal.db.execute("INSERT INTO alerts (wallet,signature,mint,state) VALUES (?,?,?,'pending')",(WALLET,SIGNATURE,MINT))

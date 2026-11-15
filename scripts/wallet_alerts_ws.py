@@ -17,7 +17,7 @@ from discord_token_telegram import TelegramSender, amounts
 from discord_solana_watch import StateLock
 
 ROOT=Path(__file__).resolve().parents[1]
-VERSION='2026.11.15.1'
+VERSION='2026.11.15.2'
 DEFAULT_WALLETS={'BBIG BOSS':'BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp'}
 BACKFILL_PAGE_SIZE=1000
 BACKFILL_MAX_PAGES=10
@@ -579,7 +579,7 @@ def main():
     try:
         if args.timing_report:timing_report(args.state);return
         config,wallets,http,ws=settings(args.config)
-        print('Wallet alerts WebSocket '+VERSION+' — lecture seule, aucun achat ni publication.',flush=True)
+        print('Wallet Radar '+VERSION+' — lecture seule, aucun achat ni publication.',flush=True)
         print('Wallets : '+', '.join(wallets),flush=True)
         print(f'RPC HTTPS : plafond local {args.rpc_rps:g}/s ; rattrapage au maximum 1/s, priorité aux événements directs.',flush=True)
         sender=None

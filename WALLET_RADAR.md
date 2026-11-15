@@ -1,0 +1,46 @@
+# Wallet Radar
+
+**Wallet Radar** est le nom de reference de notre bot de surveillance Solana et d'affichage GMGN. Il detecte les achats et ventes des wallets choisis via Helius sur le VPS, puis transmet les achats verifies a Chrome sur ton PC. L'extension reutilise un onglet GMGN et conserve le graphique lorsqu'il affiche deja le meme token. Il est distinct du bot de republication de callouts et de l'analyse Discord.
+
+Il n'effectue aucun achat ni vente automatique. Le lanceur n'active pas Telegram. La decision de vente reste manuelle.
+
+## Installer le menu une seule fois
+
+1. Arrete l'ancien lanceur avec **Ctrl+C**.
+2. Extrais le correctif dans **`C:\Users\Enzo\Downloads\wallet-alerts`** en acceptant les remplacements. Conserve les autres dossiers et fichiers. L'extension GMGN deja installee peut rester telle quelle.
+3. A la racine de ce dossier, double-clique sur **`WALLET_RADAR.cmd`**.
+4. Choisis **2 - Ajouter, retirer ou renommer les wallets**. Le menu transfere automatiquement les deux scripts necessaires vers ton VPS, puis ouvre leur gestion. Le mot de passe habituel du VPS peut etre demande **deux fois** : une pour le transfert, une pour la connexion. Ne saisis jamais de cle API ou de cle privee dans ces champs.
+
+Ta liste actuelle est reprise depuis le VPS : **BBIG BOSS reste surveille** si tu ne modifies pas la liste. Rien n'est remplace automatiquement par les anciens wallets. La cle Helius et les reglages GMGN sont conserves.
+
+## Gerer les wallets
+
+Dans la gestion, les wallets apparaissent avec un numero, leur nom et leur adresse publique.
+
+- **1 : afficher la liste.**
+- **2 : ajouter.** Entre un nom, puis l'adresse publique Solana du wallet. Le wallet s'ajoute a la liste existante. Ne colle pas le CA d'un token.
+- **3 : retirer.** Entre le numero du wallet affiche. Les autres wallets sont conserves.
+- **4 : renommer.** Entre le numero puis le nouveau nom.
+- **0 : quitter la gestion et revenir au menu Windows.**
+
+Chaque modification valide est enregistree immediatement dans la configuration du VPS, sans modifier la cle Helius. Elle est prise en compte **au prochain lancement de la surveillance**. Si le bot tournait dans une autre fenetre, arrete-le avec Ctrl+C puis relance-le. Ce menu ne change pas a chaud ses abonnements WebSocket.
+
+Les doublons d'adresse, noms deja utilises et adresses invalides sont refuses. La liste accepte jusqu'a 20 wallets. Au moins un wallet doit rester : pour remplacer le dernier, ajoute d'abord le nouveau puis retire l'ancien. Les evenements anciens restent dans l'historique, mais les evenements encore en attente des wallets retires sont desactives lors du redemarrage.
+
+Le raccourci `windows\GERER_WALLETS.cmd` permet aussi d'acceder directement a cette gestion.
+
+## Demarrer au quotidien
+
+1. Garde Chrome ouvert dans ton profil habituel, avec l'extension GMGN active et son onglet reserve.
+2. Double-clique sur **`WALLET_RADAR.cmd`**, puis choisis **1 - Demarrer la surveillance et GMGN en onglet unique**.
+3. Saisis le mot de passe VPS si demande. Garde le PC connecte et la fenetre du lanceur ouverte.
+
+La console affiche **Wallet Radar**, puis les noms reellement suivis. Avec BBIG BOSS seul et le mode `--early`, il y a **1 wallet et 2 abonnements** : processed et confirmed. Il n'y a pas deux wallets.
+
+N'ouvre pas plusieurs surveillances en parallele. L'ancien `LANCER_GMGN_ONGLET_UNIQUE.cmd` fonctionne encore, mais `WALLET_RADAR.cmd` devient le point d'entree conseille pour demarrer et gerer la liste.
+
+Pour arreter la surveillance : **Ctrl+C** dans sa fenetre. Si Windows demande de terminer le programme de commandes, valide l'arret. Le rattrapage apres interruption n'est pas garanti exhaustif.
+
+## Reutiliser ce nom dans nos discussions
+
+Tu peux dire par exemple : « ajoute ce wallet a Wallet Radar », « retire ce wallet de Wallet Radar », ou « les graphiques de Wallet Radar chargent lentement ». Ce nom designe le suivi des wallets et GMGN, pas les autres bots du projet.
