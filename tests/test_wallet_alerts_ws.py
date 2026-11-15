@@ -76,10 +76,37 @@ class WalletAlertTest(unittest.IsolatedAsyncioTestCase):
         example=Path(__file__).parents[1]/'wallet_alerts_config.example.json'
         with patch.dict(w.os.environ,{},clear=True):
             config,wallets,http,ws=w.settings(example)
-        self.assertEqual(wallets,w.WATCHED);self.assertTrue(ws.startswith('wss://'))
+        self.assertEqual(wallets,w.DEFAULT_WALLETS);self.assertTrue(ws.startswith('wss://'))
         self.assertIn('mainnet.helius-rpc.com',http)
         text=w.render(dict(w.trades_in(self.tx,WALLET,SIGNATURE)[0],notification_to_decode_ms=100,source='websocket'),'DECU')
         self.assertIn(SIGNATURE,text);self.assertNotIn('api-key',text)
+
+    def test_replace_wallets_preserves_credentials_and_avoids_prompt(self):
+        path=self.root/'wallet_alerts_config.json'
+        original={'helius_api_key':'secret-key','telegram_chat_id':'123',
+                  'wallets':dict(w.WATCHED),'rpc_http_url':'https://rpc.example/'}
+        path.write_text(json.dumps(original))
+        with patch.object(configure,'__file__',str(self.root/'scripts/configure_wallet_alerts.py')),\
+             patch.object(configure.getpass,'getpass') as prompt,\
+             patch.object(sys,'argv',['configure_wallet_alerts.py','--wallet',w.DEFAULT_WALLETS['BBIG BOSS'],'--name','BBIG BOSS']),\
+             patch('builtins.print') as output:
+            configure.main()
+        prompt.assert_not_called()
+        output.assert_any_call('Wallet suivi uniquement : BBIG BOSS ; '+w.DEFAULT_WALLETS['BBIG BOSS'])
+        updated=json.loads(path.read_text())
+        self.assertEqual(updated,dict(original,wallets=w.DEFAULT_WALLETS))
+        self.assertTrue(w.valid_address(updated['wallets']['BBIG BOSS']))
+
+    async def test_removed_wallet_queued_events_and_alerts_are_not_processed(self):
+        self.journal.observe(WALLET,SIGNATURE,self.at,1,'websocket',True)
+        self.journal.db.execute("INSERT INTO alerts (wallet,signature,mint,state) VALUES (?,?,?,'pending')",(WALLET,SIGNATURE,MINT))
+        self.journal.db.commit()
+        service=w.Service(self.journal,w.DEFAULT_WALLETS,self.rpc,'wss://unused.invalid')
+        service.call=AsyncMock()
+        self.assertFalse(await service.decode_one(self.at+1))
+        service.call.assert_not_called()
+        self.assertEqual(self.journal.db.execute('SELECT state FROM events').fetchone()[0],'ignored')
+        self.assertEqual(self.journal.db.execute('SELECT state FROM alerts').fetchone()[0],'expired')
 
     def test_http_and_websocket_status_diagnostics_never_expose_exception_text(self):
         from types import SimpleNamespace

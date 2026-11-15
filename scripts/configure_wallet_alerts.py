@@ -11,12 +11,22 @@ import re
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--telegram',action='store_true',help='Configurer le bot d’alertes Telegram sans requête réseau')
+    mode=parser.add_mutually_exclusive_group()
+    mode.add_argument('--telegram',action='store_true',help='Configurer le bot d’alertes Telegram sans requête réseau')
+    mode.add_argument('--wallet',help='Remplacer toute la liste par cette adresse publique Solana')
+    parser.add_argument('--name',help='Nom du wallet avec --wallet')
     args=parser.parse_args()
+    if args.name and not args.wallet:parser.error('--name nécessite --wallet')
     root=Path(__file__).resolve().parents[1];path=root/'wallet_alerts_config.json'
     template=root/'wallet_alerts_config.example.json'
     data=json.loads((path if path.is_file() else template).read_text(encoding='utf-8-sig'))
-    if args.telegram:
+    if args.wallet:
+        from discord_token_analysis import valid_address
+        wallet_name=(args.name or args.wallet[:8]).strip()
+        if not valid_address(args.wallet) or not 1<=len(wallet_name)<=40:
+            raise SystemExit('Adresse publique Solana ou nom invalide ; aucun fichier modifié.')
+        data['wallets']={wallet_name:args.wallet}
+    elif args.telegram:
         token=getpass.getpass('Token du bot d’alertes Telegram (BotFather ; saisie masquée) : ').strip()
         chat=input('Chat ID Telegram (laisser vide pour conserver la valeur existante) : ').strip()
         if token:data['telegram_bot_token']=token
@@ -39,6 +49,7 @@ def main():
     finally:
         if os.path.exists(name):os.unlink(name)
     print('Configuration enregistrée localement. Aucun appel réseau, aucune clé affichée.')
+    if args.wallet:print('Wallet suivi uniquement : '+wallet_name+' ; '+args.wallet)
 
 
 if __name__=='__main__':main()

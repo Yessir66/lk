@@ -1,6 +1,6 @@
-# Alertes de wallets par WebSocket — 2026.11.14.7
+# Alertes de wallets par WebSocket — 2026.11.15.1
 
-Programme indépendant du bot de republication. Il suit **DECU** (`4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9`) et **LE L** (`CkPFGv2Wv1vwdWjtXioEgb8jhZQfs3eVZez3QCetu7xD`) par défaut. Aucun achat, ordre Trojan, appel pump.fun, GMGN ou IA. Aucune clé privée de wallet n’est nécessaire.
+Programme indépendant du bot de republication. Il suit désormais uniquement **BBIG BOSS** (`BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp`) par défaut. Une configuration locale existante reste prioritaire : voir [BBIG_BOSS.md](BBIG_BOSS.md) pour remplacer sa liste sans modifier la clé Helius. Aucun achat, ordre Trojan, appel pump.fun, GMGN ou IA. Aucune clé privée de wallet n’est nécessaire.
 
 Le programme reçoit des notifications Solana `logsSubscribe` en **confirmed**, puis lit chaque transaction avec `getTransaction`, version maximale 1, au même niveau de confirmation. Une alerte d’achat ou de vente demande un swap signé par le wallet, un changement de solde et une contrepartie économique avec attribution du transfert au swap. Un transfert seul ne devient pas un achat. Les programmes de swap inconnus et certains swaps complexes peuvent rester non reconnus ; les données ambiguës restent locales.
 

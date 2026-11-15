@@ -17,7 +17,8 @@ from discord_token_telegram import TelegramSender, amounts
 from discord_solana_watch import StateLock
 
 ROOT=Path(__file__).resolve().parents[1]
-VERSION='2026.11.14.7'
+VERSION='2026.11.15.1'
+DEFAULT_WALLETS={'BBIG BOSS':'BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp'}
 BACKFILL_PAGE_SIZE=1000
 BACKFILL_MAX_PAGES=10
 RPC_PHASES=('rpc_lock_wait_ms','cooldown_wait_ms','scheduler_wait_ms','rate_limit_wait_ms','http_json_ms')
@@ -69,7 +70,7 @@ async def diagnose(http,ws_url,wallet):
 def settings(path):
     value=json.loads(path.read_text(encoding='utf-8-sig')) if path.is_file() else {}
     if not isinstance(value,dict):raise ValueError('Configuration attendue : objet JSON')
-    wallets=value.get('wallets',WATCHED)
+    wallets=value.get('wallets',DEFAULT_WALLETS)
     if (not isinstance(wallets,dict) or not 1<=len(wallets)<=20 or
         any(not isinstance(n,str) or not 1<=len(n)<=40 or not valid_address(w) for n,w in wallets.items()) or
         len(set(wallets.values()))!=len(wallets)):
@@ -209,6 +210,11 @@ class Service:
         self.rpc_interval=interval if isinstance(interval,(int,float)) and interval>0 else .5
         self.rpc_next_at=0;self.background_next_at=0;self.recover=asyncio.Event();self.pause_until=0
         self.profiles={}
+        # Preserve history, but never decode or notify queued events from removed wallets.
+        placeholders=','.join('?' for _ in self.names)
+        journal.db.execute("UPDATE events SET state='ignored' WHERE wallet NOT IN ("+placeholders+") AND state IN ('pending','provisional')",tuple(self.names))
+        journal.db.execute("UPDATE alerts SET state='expired' WHERE wallet NOT IN ("+placeholders+") AND state='pending'",tuple(self.names))
+        journal.db.commit()
         if sender:
             previous=journal.db.execute("SELECT value FROM meta WHERE key='telegram_destination'").fetchone()
             if previous and previous[0]!=sender.destination:raise ValueError('Destination Telegram modifiée : utiliser un autre journal')
