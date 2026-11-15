@@ -18,7 +18,7 @@ from discord_token_telegram import TelegramSender, amounts
 from discord_solana_watch import StateLock
 
 ROOT=Path(__file__).resolve().parents[1]
-VERSION='2026.11.15.5'
+VERSION='2026.11.15.6'
 DEFAULT_WALLETS={'BBIG BOSS':'BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp'}
 BACKFILL_PAGE_SIZE=1000
 BACKFILL_MAX_PAGES=10
@@ -445,10 +445,13 @@ class Service:
                 processed_mono=self.journal.timings.get((trade['wallet'],trade['signature']),{}).get('processed'),
                 processed_wall=trade.get('processed_seen_at'),account_snapshot=snapshot)
         except asyncio.CancelledError:raise
-        except Exception:
+        except Exception as exc:
             c=self.paper.decisions.candidates.get(trade['mint'])
+            label=failure_label(exc)
+            rpc_code=getattr(exc,'rpc_code',None)
+            if isinstance(rpc_code,int):label+=' ; RPC '+str(rpc_code)
             if c and not c.terminal:self.paper.decisions.notify(c,'DONNEES_INSUFFISANTES',
-                'Verification des comptes de position indisponible.',time.monotonic(),True)
+                'Verification des comptes de position indisponible ('+label+').',time.monotonic(),True)
 
     async def deliver_one(self,now):
         if not self.sender:return False
@@ -649,6 +652,7 @@ def main():
     parser.add_argument('--paper-buys',action='store_true',help='SIMULATION BBIG BOSS : volume Pump.fun, aucun ordre reel')
     parser.add_argument('--paper-report',action='store_true',help='Bilan hors reseau du dernier essai de 30 tokens')
     parser.add_argument('--stop',action='store_true',help='Arreter proprement les instances de ce script appartenant au compte Linux courant')
+    parser.add_argument('--paper-diagnose',action='store_true',help='Diagnostiquer au maximum 4 cas de simulation, requetes en lecture seule')
     args=parser.parse_args()
     if not .5<=args.rpc_rps<=10:parser.error('--rpc-rps doit être entre 0.5 et 10')
     try:
@@ -658,6 +662,9 @@ def main():
             report(args.state.parent/'paper_decisions.jsonl');return
         if args.timing_report:timing_report(args.state);return
         config,wallets,http,ws=settings(args.config)
+        if args.paper_diagnose and not args.check:
+            from wallet_radar_diagnostics import diagnose
+            diagnose(args.state.parent/'paper_decisions.jsonl',args.state,ReadRPC(http,None,rps=1));return
         if args.paper_buys:
             from wallet_radar_paper import BBIG, PaperObserver
             if BBIG not in wallets.values():parser.error('La simulation necessite BBIG BOSS dans les wallets suivis')

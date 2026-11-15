@@ -7,18 +7,21 @@ if ($env:OS -eq 'Windows_NT') {
 $projectRoot = Split-Path $PSScriptRoot -Parent
 
 function Send-RadarScripts {
+    param([switch]$AllowRunning)
     if (-not (Get-Command ssh.exe -ErrorAction SilentlyContinue) -or -not (Get-Command scp.exe -ErrorAction SilentlyContinue)) {
         throw 'OpenSSH Windows introuvable.'
     }
     $sources = @(
         (Join-Path $projectRoot 'scripts\configure_wallet_alerts.py'),
         (Join-Path $projectRoot 'scripts\wallet_alerts_ws.py'),
-        (Join-Path $projectRoot 'scripts\wallet_radar_paper.py')
+        (Join-Path $projectRoot 'scripts\wallet_radar_paper.py'),
+        (Join-Path $projectRoot 'scripts\wallet_radar_diagnostics.py')
     )
     foreach ($source in $sources) {
         if (-not (Test-Path -LiteralPath $source)) { throw ('Fichier manquant : ' + $source) }
     }
-    Write-Host 'Si la surveillance tourne, arrete-la avec Ctrl+C dans son autre fenetre.'
+    if ($AllowRunning) { Write-Host 'Le diagnostic peut tourner pendant la collecte ; il ne redemarre pas l''essai.' }
+    else { Write-Host 'Si la surveillance tourne, arrete-la avec Ctrl+C dans son autre fenetre.' }
     Write-Host 'Connexion au VPS. Le mot de passe habituel peut etre demande deux fois.'
     Write-Host 'Les cles API et les reglages GMGN sont conserves.'
     & scp.exe @sources bot@2.24.62.69:/home/bot/wallet-alerts/scripts/
@@ -43,6 +46,7 @@ try {
         Write-Host '3 - Tester les conditions BBIG BOSS en SIMULATION (aucun achat reel)'
         Write-Host '4 - Afficher le bilan du dernier essai de 30 tokens'
         Write-Host '5 - Arreter proprement Wallet Radar sur le VPS'
+        Write-Host '6 - Diagnostiquer les cas incomplets (lecture seule)'
         Write-Host '0 - Quitter'
         $choice = Read-Host 'Ton choix'
         if ($choice -eq '0') { break }
@@ -61,7 +65,11 @@ try {
                 Send-RadarScripts
                 & ssh.exe -t bot@2.24.62.69 '/home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_alerts_ws.py --stop'
                 if ($LASTEXITCODE -ne 0) { throw 'Arret non confirme. Verifie les messages ci-dessus avant de relancer.' }
-            } else { Write-Host 'Choisis 0, 1, 2, 3, 4 ou 5.' }
+            } elseif ($choice -eq '6') {
+                Send-RadarScripts -AllowRunning
+                & ssh.exe -t bot@2.24.62.69 '/home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_alerts_ws.py --paper-diagnose'
+                if ($LASTEXITCODE -ne 0) { throw 'Diagnostic indisponible. Verifie les messages ci-dessus.' }
+            } else { Write-Host 'Choisis 0, 1, 2, 3, 4, 5 ou 6.' }
         } catch { Write-Host $_.Exception.Message -ForegroundColor Red }
     }
 } catch {

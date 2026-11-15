@@ -19,7 +19,7 @@ try {
     & $menu -ManageWallets
     if ($global:RadarCalls.Count -ne 2) { throw 'Manager must transfer scripts then start one SSH session' }
     $files = $global:RadarCalls[0].values
-    if ($files.Count -ne 4 -or $files[0] -notlike '*configure_wallet_alerts.py' -or $files[1] -notlike '*wallet_alerts_ws.py' -or $files[2] -notlike '*wallet_radar_paper.py') {
+    if ($files.Count -ne 5 -or $files[0] -notlike '*configure_wallet_alerts.py' -or $files[1] -notlike '*wallet_alerts_ws.py' -or $files[2] -notlike '*wallet_radar_paper.py' -or $files[3] -notlike '*wallet_radar_diagnostics.py') {
         throw 'Unexpected transfer source files'
     }
     if ($global:RadarCalls[1].values[-1] -cne '/home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/configure_wallet_alerts.py --manage-wallets') {
@@ -49,6 +49,10 @@ try {
     foreach ($answer in @('5','0')) { $global:RadarAnswers.Enqueue($answer) }
     & $menu
     if ($global:RadarCalls.Count -ne 2 -or $global:RadarCalls[0].kind -cne 'scp' -or $global:RadarCalls[1].values[-1] -notlike '*--stop') { throw 'Stop must update the helper then call its scoped stop command' }
+    $global:RadarCalls.Clear()
+    foreach ($answer in @('6','0')) { $global:RadarAnswers.Enqueue($answer) }
+    & $menu
+    if ($global:RadarCalls.Count -ne 2 -or $global:RadarCalls[0].kind -cne 'scp' -or $global:RadarCalls[1].values[-1] -notlike '*--paper-diagnose') { throw 'Read-only diagnostics dispatch missing' }
     Write-Host 'Wallet Radar Windows menu tests OK; all external actions mocked.'
 } finally {
     Remove-Item Function:\scp.exe,Function:\ssh.exe,Function:\powershell.exe,Function:\Read-Host -ErrorAction SilentlyContinue

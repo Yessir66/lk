@@ -8,6 +8,8 @@ Depuis la version **2026.11.15.3**, le menu propose aussi **3 : simulation des c
 
 Depuis **2026.11.15.4**, **5 : arreter proprement Wallet Radar sur le VPS** permet de fermer une ancienne instance encore active avant de relancer. Voir [ARRET_WALLET_RADAR.md](ARRET_WALLET_RADAR.md). Les donnees et les autres bots sont conserves.
 
+Depuis **2026.11.15.6**, **6 : diagnostiquer les cas incomplets**, en lecture seule et sans redemarrer la collecte. Voir [DIAGNOSTIC_SIMULATION.md](DIAGNOSTIC_SIMULATION.md).
+
 ## Installer le menu une seule fois
 
 1. Arrete l'ancien lanceur avec **Ctrl+C**.

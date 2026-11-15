@@ -15,14 +15,14 @@ Cette fiche décrit le dernier état connu ; le code et la configuration du dép
 
 ## État connu et wallet demandé
 
-- Version serveur du dépôt : **2026.11.15.5**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
+- Version serveur du dépôt : **2026.11.15.6**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
 - Extension Chrome : version **1.0.0**, dossier `chrome-gmgn`.
 - Dernière liste demandée : **BBIG BOSS uniquement**, adresse publique :
   `BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp`.
 - DECU et LE L ont été retirés du suivi Wallet Radar à la demande de l'utilisateur. Leur présence dans l'historique ou dans les constantes du module partagé d'analyse Discord ne signifie pas qu'ils sont encore suivis ici.
 - Les listes de wallets sont désormais modifiables par l'utilisateur. **Vérifier la liste actuelle avant toute future modification** ; ne pas réimposer cette liste historique.
 - La configuration locale `wallet_alerts_config.json` prime sur `DEFAULT_WALLETS` et le fichier d'exemple. Modifier un défaut du code ne suffit pas à migrer une configuration existante.
-- Dernier incident : version .4 et simulation bien démarrées, confirmées par capture. Bilan réel : **2/30 tokens, 2 DONNEES_INSUFFISANTES, extension de format Pump.fun inconnue, décision à 0 s**. Volume non mesuré, et non zéro volume réel. SDK officiel 4.3.1 consulté : champ final `quote_transfer_fee: u64` manquant dans le schéma de documentation initial. Correctif .5 préparé, ancien et nouveau formats testés. Il reste à l'appliquer sur le VPS et observer de nouveaux tokens ; les deux cas bloqués ne valident pas la stratégie.
+- Dernier bilan réel de la .5 : **5/30 tokens, 2 DONNEES_INSUFFISANTES, 2 NON_SUPPORTE, 1 VOLUME_INSUFFISANT**, aucun achat théorique validé. Une erreur de vérification des comptes de position à 0,364 s n'incluait pas son code. Sa cause n'est pas déterminée. Le champ de format corrigé en .5 n'est plus l'erreur affichée. Le correctif .6 prépare un diagnostic en parallèle ; il ne faut pas conclure à un besoin d'abonnement payant ni à une absence réelle de volume sans les résultats.
 
 ## Dépôt et lieux de déploiement
 
@@ -47,10 +47,11 @@ Point d'entrée conseillé : **`WALLET_RADAR.cmd` à la racine du dossier Window
 Menu principal Windows :
 
 - **1** : démarrer la surveillance et GMGN en onglet unique.
-- **2** : gérer les wallets. Transfert automatique via SCP de `configure_wallet_alerts.py`, `wallet_alerts_ws.py` et `wallet_radar_paper.py`, puis connexion SSH interactive à leur gestion. Mot de passe VPS éventuellement demandé deux fois.
+- **2** : gérer les wallets. Transfert automatique via SCP de `configure_wallet_alerts.py`, `wallet_alerts_ws.py`, `wallet_radar_paper.py` et `wallet_radar_diagnostics.py`, puis connexion SSH interactive à leur gestion. Mot de passe VPS éventuellement demandé deux fois.
 - **3** : lancer l'essai de simulation BBIG BOSS, après transfert automatique des scripts.
 - **4** : afficher le bilan hors réseau du dernier essai via SSH.
 - **5** : transférer les scripts, puis demander un arrêt propre des instances du même script sur le VPS (`--stop`). Pas de suppression du journal/verrou, pas de kill forcé ni arrêt des autres bots.
+- **6** : diagnostic en lecture seule pendant la collecte, sans arrêt ni réinitialisation : maximum 4 cas, 8 lectures RPC à 1/s. Codes HTTP/RPC sans messages privés, formats de comptes, plateformes, événements et cotations. Comptes interrogés actuellement, pas reconstruction historique ; un ancien refus temporaire peut ne plus être reproductible. Guide `DIAGNOSTIC_SIMULATION.md`.
 - **0** : quitter le menu.
 
 Dans la gestion distante des wallets :
@@ -191,6 +192,8 @@ Dernière validation de la version .3 : **301 tests Python**, tests de lancement
 Correctif .4 : **305 tests Python passent**, dont un arrêt SIGINT d'un processus de test isolé avec conservation d'un autre processus Python ; menu 5 validé avec SSH/SCP simulés. L'arrêt réel sur le VPS reste à effectuer par l'utilisateur.
 
 Correctif .5 : **307 tests Python passent**. Tous les noms et types du schema TradeEvent sont compares au SDK officiel 4.3.1 ; fixture archivee de 405 octets entierement lue, nouveau champ et compatibilite des anciens evenements verifies. Test de progression du nouveau format jusqu'a une decision theorique, sans ordre. Aucun resultat reel des prochains tokens corrige n'est encore acquis.
+
+Correctif .6 : **312 tests Python passent**, dont codes de fournisseur sans secrets, comptes binaires/PumpSwap identifies, recherche d'un achat plutot qu'une vente dans l'historique, preservation du journal et maintien du mode --check hors reseau. Menu 6 teste avec SCP/SSH simules. Le diagnostic reel reste a executer par l'utilisateur ; aucune cause precise de l'echec de position n'est encore confirmee.
 
 Commandes usuelles dans le dépôt :
 

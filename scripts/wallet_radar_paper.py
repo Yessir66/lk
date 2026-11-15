@@ -354,17 +354,22 @@ class PaperObserver:
             price_task.cancel();await asyncio.gather(price_task,return_exceptions=True)
 
 
-def report(path):
-    if not path.is_file():
-        print('Aucun essai enregistre. Demarrer le menu 3 de Wallet Radar.');return
+def latest_session(path):
     events=[];session=None;limit=30
+    if not path.is_file():return {},limit
     with path.open(encoding='utf-8') as handle:
         for line in handle:
             try:row=json.loads(line)
             except (ValueError,TypeError):continue
             if row.get('type')=='paper_session':session=row.get('session_id');limit=row.get('limit',30);events=[]
             elif row.get('type')=='paper_decision' and row.get('session_id')==session:events.append(row)
-    latest={row['mint']:row for row in events}
+    return {row['mint']:row for row in events},limit
+
+
+def report(path):
+    if not path.is_file():
+        print('Aucun essai enregistre. Demarrer le menu 3 de Wallet Radar.');return
+    latest,limit=latest_session(path)
     outcomes=Counter(row['code'] for row in latest.values())
     print(f'WALLET RADAR - SIMULATION : {len(latest)}/{limit} tokens distincts, dernier essai.')
     for code,count in sorted(outcomes.items()):print(f'{code} : {count}')
