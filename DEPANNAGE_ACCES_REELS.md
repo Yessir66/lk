@@ -1,4 +1,17 @@
-# Wallet Radar 2026.11.16.7 — controle des acces sans ordre
+# Wallet Radar 2026.11.16.8 — controle des acces sans ordre
+
+Apres un nouveau HTTP400 non JSON depuis le VPS, le menu10 ajoute automatiquement une comparaison **en lecture seule** : meme cotation fixe SOL/USDC sans cle API, puis avec une cle volontairement factice. Deux GET uniquement, sans acces au wallet de signature, sans construction, sans envoi, sans changement automatique du mode d'authentification des ordres. Les cotations reelles gardent la cle enregistree ; aucun contournement d'authentification n'est active.
+
+Le rapport signale aussi, sans aucune valeur : cle contenant URL/guillemets/caracteres non ASCII, et presence ou absence d'un proxy declare dans l'environnement. Le proxy n'est pas desactive ou modifie. Il affiche seulement les statuts des requetes et confirme si une reponse200 est bien une cotation coherente.
+
+- Sans cle200 valide et cle factice401 : le service repond et rejette normalement une cle fausse. Le refus observe avec la cle enregistree depend de cette requete authentifiee ; verifier le format/type/permissions de la cle. Cela ne prouve pas a lui seul qu'elle doit etre regeneree.
+- Sans cle400 egalement : la cle n'est pas necessaire pour reproduire le refus. Une nouvelle cle n'est pas justifiee par ce seul resultat.
+- Sans cle200 et cle factice400 : l'en-tete d'authentification influence le refus meme avec une fausse cle ; verifier l'acces ou l'intermediaire avant de conclure.
+- Autres statuts : resultat non concluant, conserver les cles.
+
+Le **menu11** remplace uniquement la cle API Jupiter par saisie masquee puis refait le controle. Il ne lit ni ne reecrit `wallet.json`. Il peut servir a recopier correctement la cle actuelle, sans forcement en creer une nouvelle. Une cle contenant URL, guillemets, espaces, caracteres non ASCII ou format excessif est refusee avant enregistrement. Ne pas utiliser ce menu pour la cle privee du wallet.
+
+Installer comme les correctifs precedents, puis choisir **10**, pas 7 ni8. Envoyer uniquement les lignes de comparaison. Le budget, les positions et toutes les cles existantes restent conserves au transfert des scripts.
 
 La capture suivante conserve HTTP400 sans motif reconnu. La .7 utilise pour Jupiter **curl_cffi, deja installe et utilise par la surveillance**, a la place de urllib. Elle retire Content-Type des GET sans corps, garde Accept/application/json, la meme cle, le meme hote, la verification TLS, les quotas et les parametres de cotation. Les redirections sont refusees. Aucun nouvel ordre ou essai de signature dans le menu10.
 

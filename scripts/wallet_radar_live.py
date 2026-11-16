@@ -89,6 +89,32 @@ def quote_path(source,dest,amount):
 
 class TradeError(Exception):
     """Messages are fixed and contain no keys, URLs or provider bodies."""
+    def __init__(self,message,status=None):
+        super().__init__(message);self.status=status
+
+
+def key_format_problem(api):
+    if not api or any(c.isspace() or ord(c)<33 or ord(c)>126 for c in api):return 'caracteres non ASCII, espaces ou caracteres de controle'
+    if api.startswith(('http://','https://')):return 'URL copiee au lieu de la cle seule'
+    if api.startswith(('"',"'",'{','[')):return 'guillemets ou objet copie au lieu de la cle seule'
+    return None
+
+
+def update_jupiter():
+    # Only this API credential is touched; never read or rewrite the wallet key.
+    api=getpass.getpass('Nouvelle cle API Jupiter seule (saisie masquee) : ').strip()
+    problem=key_format_problem(api)
+    if problem or len(api)>512:raise TradeError('Cle Jupiter non enregistree : '+(problem or 'format trop long')+'.')
+    PRIVATE.mkdir(mode=0o700,exist_ok=True)
+    if PRIVATE.is_symlink():raise TradeError('Dossier prive symbolique refuse.')
+    os.chmod(PRIVATE,0o700)
+    path=PRIVATE/'jupiter_api_key.txt'
+    fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_TRUNC|getattr(os,'O_NOFOLLOW',0),0o600)
+    try:
+        os.fchmod(fd,0o600)
+        with os.fdopen(fd,'w',closefd=False) as handle:handle.write(api+'\n');handle.flush();os.fsync(fd)
+    finally:os.close(fd)
+    print('Cle Jupiter mise a jour localement. Cle wallet inchangee ; aucun ordre envoye.')
 
 
 def secure_read(path):
@@ -234,7 +260,8 @@ class Transport:
                     detail=('delai depasse' if isinstance(reason,(TimeoutError,socket.timeout)) or (jupiter and code==28) else
                             'certificat/TLS' if isinstance(reason,ssl.SSLError) or (jupiter and code==60) else
                             'resolution DNS' if isinstance(reason,socket.gaierror) or (jupiter and code==6) else 'connexion ou format JSON indisponible')
-                raise TradeError(label+' : '+detail+'. URL, cles et reponse privee masquees.') from None
+                status=code if isinstance(code,int) and not isinstance(code,bool) and 100<=code<=599 else None
+                raise TradeError(label+' : '+detail+'. URL, cles et reponse privee masquees.',status=status) from None
             if not isinstance(value,dict) or value.get('error') is not None:
                 error=value.get('error') if isinstance(value,dict) else None
                 code=error.get('code') if isinstance(error,dict) else None
@@ -256,6 +283,45 @@ class Transport:
     def jup(self,path,body=None):
         label='Jupiter/cotation' if path.startswith('/swap/v1/quote?') else 'Jupiter/construction' if path=='/swap/v1/swap-instructions' else 'Jupiter'
         return self.request('https://api.jup.ag'+path,body,jupiter=True,label=label)
+
+    def quote_probe(self,kind):
+        """Two fixed diagnostic GETs only. Never used by order construction/send."""
+        if kind not in ('public','invalid'):raise TradeError('Controle de cotation non autorise.')
+        with self.locks['jup']:
+            time.sleep(max(0,self.next_jup-time.monotonic()));self.next_jup=time.monotonic()+1
+            headers={'Accept':'application/json'}
+            if kind=='invalid':headers['x-api-key']='wallet-radar-invalid-key-probe'
+            try:
+                response=self.jupiter_http.request('GET','https://api.jup.ag'+quote_path(SOL,USDC,1000000),
+                    headers=headers,timeout=5,allow_redirects=False)
+                status=response.status_code
+                if not isinstance(status,int) or isinstance(status,bool) or not 100<=status<=599:return {'status':None,'valid':False}
+                valid=False
+                if status==200:
+                    try:quote_check(response.json(),SOL,USDC,1000000);valid=True
+                    except Exception:pass
+                return {'status':status,'valid':valid}
+            except Exception:return {'status':None,'valid':False}
+
+    def compare_quotes(self):
+        print('COMPARAISON LECTURE SEULE : aucun wallet signe, aucun ordre.',flush=True)
+        problem=key_format_problem(self.key)
+        print('Format cle enregistree : '+(problem if problem else 'aucun defaut simple detecte (validite non prouvee)'),flush=True)
+        proxy=any(os.environ.get(name) for name in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy'))
+        print('Proxy declare dans l environnement : '+('oui' if proxy else 'non')+' (valeurs masquees).',flush=True)
+        results={}
+        for kind,label in [('public','SANS CLE'),('invalid','CLE FACTICE')]:
+            result=self.quote_probe(kind);results[kind]=result
+            print(label+' : '+('HTTP '+str(result['status']) if result['status'] else 'connexion indisponible')+
+                  (' ; cotation valide' if result['valid'] else ''),flush=True)
+        if results['public']['valid'] and results['invalid']['status']==401:
+            print('Le service repond et rejette normalement la cle factice. Verifier le format/type/acces de la cle enregistree ; menu 11 pour remplacer seulement Jupiter.',flush=True)
+        elif results['public']['status']==400:
+            print('Le refus 400 existe aussi sans cle : une regeneration de cle n est pas justifiee par ce resultat seul.',flush=True)
+        elif results['public']['valid'] and results['invalid']['status']==400:
+            print('Le refus depend de l entete d authentification, meme factice ; verifier acces/intermediaire avant regeneration.',flush=True)
+        else:print('Comparaison non concluante. Conserver les cles et relever uniquement ces statuts.',flush=True)
+        return results
 
     def send(self,raw,deadline=None,capture=None):
         return self.request(self.url,{'jsonrpc':'2.0','id':1,'method':'sendTransaction','params':[
@@ -605,9 +671,11 @@ def main():
     parser.add_argument('--setup-if-missing',action='store_true',help='Conserver les cles locales deja configurees')
     parser.add_argument('--report',action='store_true')
     parser.add_argument('--check',action='store_true',help='Verifier les acces en lecture seule, sans signature ou ordre')
+    parser.add_argument('--update-jupiter',action='store_true',help='Remplacer localement la cle API Jupiter seule, sans toucher au wallet')
     args=parser.parse_args()
     try:
-        if args.setup or args.setup_if_missing:setup(reuse=args.setup_if_missing)
+        if args.update_jupiter:update_jupiter()
+        elif args.setup or args.setup_if_missing:setup(reuse=args.setup_if_missing)
         elif args.check:
             from wallet_alerts_ws import settings
             _,wallets,http,_=settings(ROOT/'wallet_alerts_config.json')
@@ -618,7 +686,12 @@ def main():
             balance=transport.rpc('getBalance',[OWNER,{'commitment':'confirmed'}])['value']
             print('RPC : OK. Solde SOL : '+str(Decimal(balance)/10**9),flush=True)
             print('CONTROLE 2/3 : Jupiter/cotation (client curl_cffi)...',flush=True)
-            q=transport.jup(quote_path(SOL,USDC,1000000))
+            try:q=transport.jup(quote_path(SOL,USDC,1000000))
+            except TradeError as exc:
+                if exc.status==400:
+                    print(str(exc),flush=True);transport.compare_quotes()
+                    raise TradeError('Controle arrete apres comparaison ; aucun ordre envoye.') from None
+                raise
             quote_check(q,SOL,USDC,1000000)
             print('Jupiter/cotation : OK.',flush=True)
             print('CONTROLE 3/3 : Jupiter/construction non signee...',flush=True)

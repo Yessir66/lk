@@ -67,6 +67,26 @@ class BudgetTest(unittest.TestCase):
 
 
 class InstructionTest(unittest.TestCase):
+    def test_comparison_reports_statuses_without_exposing_saved_key(self):
+        transport=live.Transport('https://unused.invalid','PRIVATE_SAVED_KEY')
+        output=StringIO()
+        with patch.object(transport,'quote_probe',side_effect=[{'status':200,'valid':True},{'status':401,'valid':False}]) as probe,patch('sys.stdout',output):
+            transport.compare_quotes()
+        self.assertEqual([call.args[0] for call in probe.call_args_list],['public','invalid'])
+        self.assertIn('SANS CLE : HTTP 200',output.getvalue());self.assertIn('CLE FACTICE : HTTP 401',output.getvalue())
+        self.assertNotIn('PRIVATE_SAVED_KEY',output.getvalue())
+
+    def test_probe_only_gets_fixed_quote_without_saved_key(self):
+        transport=live.Transport('https://unused.invalid','PRIVATE_SAVED_KEY')
+        response=Mock(status_code=200);response.json.return_value=quote(live.SOL,live.USDC,1000000)
+        with patch.object(transport.jupiter_http,'request',return_value=response) as client,patch.object(live.time,'sleep'):
+            self.assertTrue(transport.quote_probe('public')['valid'])
+            transport.quote_probe('invalid')
+        for call in client.call_args_list:
+            self.assertEqual(call.args[0],'GET');self.assertEqual(call.args[1],'https://api.jup.ag'+live.quote_path(live.SOL,live.USDC,1000000))
+            self.assertNotIn('PRIVATE_SAVED_KEY',str(call));self.assertNotIn('json',call.kwargs)
+        self.assertNotIn('x-api-key',client.call_args_list[0].kwargs['headers'])
+        with self.assertRaises(live.TradeError):transport.quote_probe('sendTransaction')
     def test_jupiter_get_uses_curl_without_get_content_type_and_never_sends_order(self):
         transport=live.Transport('https://unused.invalid','FAKE_TEST_KEY')
         response=Mock(status_code=200);response.json.return_value=quote()
@@ -370,6 +390,24 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
 
 
 class SetupAndCheckTest(unittest.TestCase):
+    def test_update_jupiter_does_not_read_or_rewrite_wallet(self):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(live,'PRIVATE',Path(tmp)):
+            wallet=Path(tmp)/'wallet.json';wallet.write_text('private-wallet-must-stay-untouched')
+            before=(wallet.read_bytes(),wallet.stat().st_mtime_ns)
+            with patch.object(live.getpass,'getpass',return_value='NEW_FAKE_API_KEY'),patch.object(live,'load_signer') as signer,patch('builtins.print'):
+                live.update_jupiter()
+            signer.assert_not_called()
+            self.assertEqual((wallet.read_bytes(),wallet.stat().st_mtime_ns),before)
+            api=Path(tmp)/'jupiter_api_key.txt';self.assertEqual(api.read_text().strip(),'NEW_FAKE_API_KEY')
+            self.assertEqual(api.stat().st_mode&0o777,0o600)
+
+    def test_http400_check_compares_quotes_and_never_builds_order(self):
+        transport=Mock();transport.rpc.return_value={'value':0}
+        transport.jup.side_effect=live.TradeError('Jupiter/cotation HTTP 400',status=400)
+        with patch.object(sys,'argv',['wallet_radar_live.py','--check']),patch.object(live,'load_signer'),patch.object(live,'secure_read',return_value='FAKE_TEST_KEY'),patch.object(live,'Transport',return_value=transport),patch('wallet_alerts_ws.settings',return_value=({}, {'BBIG BOSS':live.BBIG},'https://unused.invalid','wss://unused.invalid')),patch('builtins.print'):
+            with self.assertRaises(SystemExit):live.main()
+        transport.compare_quotes.assert_called_once();transport.jup.assert_called_once();transport.send.assert_not_called()
+
     def test_setup_reuses_existing_keys_without_prompt_or_overwrite(self):
         from solders.keypair import Keypair
         key=Keypair.from_seed(bytes([4])*32)
