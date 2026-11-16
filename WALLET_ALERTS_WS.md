@@ -1,4 +1,4 @@
-# Wallet Radar — 2026.11.16.1
+# Wallet Radar — 2026.11.16.2
 
 Le bot porte desormais le nom **Wallet Radar**. Voir [WALLET_RADAR.md](WALLET_RADAR.md) pour le menu Windows permettant d'ajouter, retirer et renommer les wallets sans commandes manuelles.
 

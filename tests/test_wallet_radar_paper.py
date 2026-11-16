@@ -174,6 +174,48 @@ class PaperDecisionsTest(unittest.TestCase):
         self.assertEqual(self.c.terminal,'DONNEES_INSUFFISANTES')
         self.assertIsNone(self.prices.dollars(event(quote_mint=CREATOR),1000))
 
+    def test_pump_quote_uses_six_decimals_and_its_own_usd_price(self):
+        self.c.baseline=100
+        self.prices.update_pump({'pump-fun':{'usd':'0.004','last_updated_at':1000}},1000)
+        self.d.observe(event(1.2,quote_mint=p.PUMP_TOKEN,quote_amount=100000*10**6))
+        self.assertEqual(self.c.volume,400)
+        self.assertEqual(self.c.terminal,'ACHAT_SIMULE')
+
+    def test_pending_price_is_revalued_before_deadline_without_resetting_t0(self):
+        self.c.baseline=100
+        self.d.observe(event(.2,quote_mint=p.PUMP_TOKEN,quote_amount=100000*10**6))
+        self.assertEqual(self.c.volume,0);self.assertEqual(len(self.c.pending_prices),1)
+        self.prices.update_pump({'pump-fun':{'usd':'0.004','last_updated_at':1001}},1001)
+        self.d.tick(101.5)
+        self.assertEqual(self.c.t0,100);self.assertEqual(self.c.volume,400)
+        self.assertEqual(self.c.terminal,'ACHAT_SIMULE')
+        self.assertNotIn('COURS_PUMP_USD_ABSENT_OU_PERIME',self.output[-1]['missing_reasons'])
+        self.d.tick(102);self.assertEqual(self.c.volume,400)
+
+    def test_price_arriving_after_deadline_cannot_qualify_old_buys(self):
+        self.c.baseline=100
+        self.d.observe(event(.2,quote_mint=p.PUMP_TOKEN,quote_amount=100000*10**6))
+        self.prices.update_pump({'pump-fun':{'usd':'0.004','last_updated_at':1003}},1003)
+        self.d.tick(103.1)
+        self.assertEqual(self.c.terminal,'DONNEES_INSUFFISANTES')
+        self.assertEqual(self.c.volume,0)
+        self.assertNotIn('ACHAT_SIMULE',self.codes())
+
+    def test_pending_pump_buys_are_deduplicated_before_price_arrives(self):
+        self.c.baseline=100
+        value=event(.2,quote_mint=p.PUMP_TOKEN,quote_amount=100000*10**6)
+        self.d.observe(value);self.d.observe(value)
+        self.prices.update_pump({'pump-fun':{'usd':'0.004','last_updated_at':1001}},1001)
+        self.d.tick(101.5)
+        self.assertEqual(self.c.buys,1);self.assertEqual(self.c.volume,400)
+
+    def test_new_price_does_not_clear_unrelated_unknown_position(self):
+        self.c.baseline=100;self.c.unknown_position=True
+        self.d.observe(event(.2,quote_mint=p.PUMP_TOKEN,quote_amount=100000*10**6))
+        self.prices.update_pump({'pump-fun':{'usd':'0.004','last_updated_at':1001}},1001)
+        self.d.tick(101.5);self.d.tick(103.1)
+        self.assertEqual(self.c.volume,400);self.assertEqual(self.c.terminal,'DONNEES_INSUFFISANTES')
+
     def test_disconnect_abandons_current_decisions(self):
         self.c.baseline=100;self.d.interrupted(100.3)
         self.buy(1.5,700)
@@ -290,6 +332,11 @@ class NativeDecoderTest(unittest.TestCase):
         for price,published in [('NaN',1000),('100',1),('0',1000),('100',1001)]:
             with self.subTest(price=price,published=published),self.assertRaises(ValueError):
                 p.Prices().update({'solana':{'usd':price,'last_updated_at':published}},1000)
+
+    def test_pump_price_rejects_invalid_and_stale_prices(self):
+        for price,published in [('NaN',1000),('-1',1000),('0.004',900),('0.004',1001)]:
+            with self.subTest(price=price,published=published),self.assertRaises(ValueError):
+                p.Prices().update_pump({'pump-fun':{'usd':price,'last_updated_at':published}},1000)
 
     def test_report_uses_last_session_only(self):
         with tempfile.TemporaryDirectory() as folder:

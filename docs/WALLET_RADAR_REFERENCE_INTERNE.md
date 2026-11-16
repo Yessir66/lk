@@ -15,7 +15,7 @@ Cette fiche décrit le dernier état connu ; le code et la configuration du dép
 
 ## État connu et wallet demandé
 
-- Version serveur du dépôt : **2026.11.16.1**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
+- Version serveur du dépôt : **2026.11.16.2**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
 - Extension Chrome : version **1.0.0**, dossier `chrome-gmgn`.
 - Dernière liste demandée : **BBIG BOSS uniquement**, adresse publique :
   `BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp`.
@@ -25,6 +25,9 @@ Cette fiche décrit le dernier état connu ; le code et la configuration du dép
 - Dernieres captures du 16 novembre : diagnostic sur un token Pump.fun avec 1 evenement BBIG BOSS, cotation SOL, zero octet inconnu, 1 compte JSON parse et abonnement a 17 ms. Bilan du meme essai ensuite a **5/30 : 2 DONNEES_INSUFFISANTES, 1 SORTIE_TOTALE_1S a 0,82 s, 2 VOLUME_INSUFFISANT** (environ 232,34 USD et 14,10 USD observes). Un cas incomplet affiche environ 146,92 USD, l'autre non mesure. Aucun achat theorique positif. La sortie a 0,82 s teste bien le premier filtre observe ; les causes exactes des anciens cas incomplets ne sont pas prouvees par ces captures.
 - L'utilisateur se plaint d'un rattrapage massif (anciennes transactions de dizaines de minutes). Correctif 2026.11.16.1 prepare : `--live-only` par defaut dans les lanceurs Windows, sans aucune tache de collecte/decodage historique, ni suppression des donnees. Les interruptions ne sont plus rattrapees dans ce mode. Tests du mode direct verifient que les anciennes files restent conservees mais ne consomment aucun RPC.
 - Defaut identifie dans le code : toute instruction non decodee invalidait le volume, meme creation/fermeture de compte ou vente apres 1 s. Classification corrigee, vraie transaction d'achat/swap non decodee et mouvement de position inconnu avant 1 s restent incomplets. Causes detaillees `missing_reasons` ajoutees aux futurs evenements. Le defaut peut expliquer des cas mais ne constitue pas une preuve de la cause des anciennes captures. Guide `DIRECT_ET_CAUSES_SIMULATION.md`.
+- Captures suivantes : bilan a 12/30, **2 achats theoriques**, 6 incomplets, 2 sorties avant 1 s et 2 volumes insuffisants. Le signal ApBjDAxW... affichait 540,17 USD et **1,133 s** ; l'autre 400,33 USD et **1,640 s**. L'utilisateur pensait voir un achat apres 11 s : les lignes jaunes n'affichent pas d'heure, les heures noires suivantes concernent des ventes BBIG BOSS ; le bilan confirme seulement le delai de decision VPS, pas la livraison des notifications Windows.
+- Dernier diagnostic a **20/30**, 4 cas examines : Pump.fun reconnu, 1 evenement BBIG BOSS chacun, 0 octet inconnu, 1 compte JSON parse, abonnement 13–14 ms. **Deux cotations sont PUMP**, une autre devise non identifiee et une SOL. PUMP n'etait pas valorise en USD. Le cas SOL n'est pas explique par cela ; les comptes lisibles au diagnostic ne prouvent pas leur disponibilite au moment du signal.
+- Correctif 2026.11.16.2 prepare : PUMP (`pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn`) a **6 decimales**, metadonnees du contrat verifiees sur CoinGecko. Meme requete publique pour SOL et PUMP, cours positifs finis horodates de moins de 90 s. Montants en attente revalorises seulement avant la limite de 3 s, sans reset T0 ni double compte. Autres devises inconnues toujours refusees. **325 tests passent** ; aucun nouveau resultat VPS corrige n'est encore acquis. Guide `COTATION_PUMP_USD.md`. Comme l'essai est a 20/30, laisser finir si souhaite avant une mise a jour qui redemarre un nouvel essai ; ne pas pretendre conserver le meme compteur lors du redemarrage.
 
 ## Dépôt et lieux de déploiement
 

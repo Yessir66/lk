@@ -17,7 +17,10 @@ BWAM='bwamJzztZsepfkteWRChggmXuiiCQvpLqPietdNfSXa'
 PUMP='6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'
 SOL='So11111111111111111111111111111111111111112'
 USDC='EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+PUMP_TOKEN='pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn'
 ZERO='11111111111111111111111111111111'
+PRICE_REASONS={'DEVISE_COTATION_NON_SUPPORTEE','COURS_SOL_USD_ABSENT_OU_PERIME',
+               'COURS_PUMP_USD_ABSENT_OU_PERIME','MONTANT_COTATION_INVALIDE'}
 DISCRIMINATOR=bytes([189,219,127,211,78,230,97,238])
 ALPHABET='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 # Official ABI: pump-public-docs 639b87f + @pump-fun/pump-sdk 4.3.1, src/idl/pump.json.
@@ -95,7 +98,9 @@ def native_trades(value,slot,wall,mono):
 
 
 class Prices:
-    def __init__(self):self.usd=None;self.published=0;self.received=0
+    def __init__(self):
+        self.usd=None;self.published=0;self.received=0
+        self.pump_usd=None;self.pump_published=0
 
     def update(self,data,now):
         row=data.get('solana',{});price=Decimal(str(row.get('usd','0')));published=row.get('last_updated_at')
@@ -103,20 +108,34 @@ class Prices:
             raise ValueError('Stale SOL/USD price')
         self.usd=price;self.published=published;self.received=now
 
+    def update_pump(self,data,now):
+        row=data.get('pump-fun',{});price=Decimal(str(row.get('usd','0')));published=row.get('last_updated_at')
+        if not price.is_finite() or price<=0 or not isinstance(published,(int,float)) or not 0<=now-published<=90:
+            raise ValueError('Stale PUMP/USD price')
+        self.pump_usd=price;self.pump_published=published
+
     def dollars(self,event,now):
         mint=event.get('quote_mint',ZERO)
         if mint==USDC:return Decimal(event.get('quote_amount',0))/10**6
+        if mint==PUMP_TOKEN:
+            if self.pump_usd is None or not 0<=now-self.pump_published<=90:return None
+            # Official CoinGecko contract metadata: Pump.fun PUMP token has 6 decimals.
+            return Decimal(event.get('quote_amount',0))/10**6*self.pump_usd
         if mint not in (ZERO,SOL):return None
         amount=event.get('quote_amount') if mint==SOL else event.get('sol_amount')
         if not amount or self.usd is None or not 0<=now-self.published<=90:return None
         return Decimal(amount)/10**9*self.usd
 
     async def run(self):
-        url='https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd&include_last_updated_at=true'
+        url='https://api.coingecko.com/api/v3/simple/price?ids=solana,pump-fun&vs_currencies=usd&include_last_updated_at=true'
         def fetch():
             with urllib.request.urlopen(url,timeout=5) as response:return json.load(response)
         while True:
-            try:self.update(await asyncio.to_thread(fetch),time.time())
+            try:
+                data=await asyncio.to_thread(fetch);now=time.time()
+                for update in (self.update,self.update_pump):
+                    try:update(data,now)
+                    except (ValueError,TypeError,ArithmeticError):pass
             except Exception:pass  # No credentials, provider bodies or URLs in console errors.
             await asyncio.sleep(15)
 
@@ -140,6 +159,7 @@ class Candidate:
     terminal:str|None=None
     subscribed_at:float|None=None
     reasons:set=field(default_factory=set)
+    pending_prices:list=field(default_factory=list)
 
 
 class Decisions:
@@ -193,15 +213,22 @@ class Decisions:
         if event['user']==BBIG:
             c.movements.append((now,event['token_amount'] if event['is_buy'] else -event['token_amount']))
         if event['is_buy']:
-            dollars=self.prices.dollars(event,event['wall'])
+            c.pending_prices.append(event)
+        self.tick(now)
+
+    def value_pending(self,c,now):
+        wall=c.wall+max(0,now-c.t0);remaining=[]
+        c.reasons.difference_update(PRICE_REASONS)
+        for event in c.pending_prices:
+            dollars=self.prices.dollars(event,wall)
             if dollars is None or dollars<=0:
-                c.unknown_volume=True
-                quote=event.get('quote_mint',ZERO)
-                if quote not in (ZERO,SOL,USDC):c.reasons.add('DEVISE_COTATION_NON_SUPPORTEE')
-                elif quote in (ZERO,SOL) and (self.prices.usd is None or not 0<=event['wall']-self.prices.published<=90):c.reasons.add('COURS_SOL_USD_ABSENT_OU_PERIME')
+                remaining.append(event);quote=event.get('quote_mint',ZERO)
+                if quote not in (ZERO,SOL,USDC,PUMP_TOKEN):c.reasons.add('DEVISE_COTATION_NON_SUPPORTEE')
+                elif quote==PUMP_TOKEN and (self.prices.pump_usd is None or not 0<=wall-self.prices.pump_published<=90):c.reasons.add('COURS_PUMP_USD_ABSENT_OU_PERIME')
+                elif quote in (ZERO,SOL) and (self.prices.usd is None or not 0<=wall-self.prices.published<=90):c.reasons.add('COURS_SOL_USD_ABSENT_OU_PERIME')
                 else:c.reasons.add('MONTANT_COTATION_INVALIDE')
             else:c.volume+=dollars;c.buys+=1
-        self.tick(now)
+        c.pending_prices=remaining
 
     def confirmed(self,trade,tx,mono,account_snapshot=None):
         if (trade.get('wallet')!=BBIG or trade.get('kind')!='buy' or trade.get('source')!='websocket'
@@ -235,6 +262,7 @@ class Decisions:
         for c in self.candidates.values():
             if c.terminal:continue
             elapsed=now-c.t0
+            if 0<=elapsed<=3:self.value_pending(c,now)
             balance=c.baseline
             if balance is not None:
                 if balance==0:
@@ -248,7 +276,7 @@ class Decisions:
                 if c.terminal:continue
             if elapsed>3:
                 if balance is None:c.reasons.add('POSITION_INITIALE_NON_VALIDEE')
-                code='DONNEES_INSUFFISANTES' if balance is None or c.unknown_position or c.unknown_volume else 'VOLUME_INSUFFISANT'
+                code='DONNEES_INSUFFISANTES' if balance is None or c.unknown_position or c.unknown_volume or c.pending_prices else 'VOLUME_INSUFFISANT'
                 self.notify(c,code,'Fin des 3 s : '+('donnees incompletes.' if code=='DONNEES_INSUFFISANTES' else '400 USD non observes.'),now,True);continue
             if elapsed>=1 and balance is not None and not c.unknown_position:
                 if not c.gate:
@@ -406,4 +434,4 @@ def report(path):
         print(mint[:8]+'... '+row['code']+' ; volume USD observe '+volume+
               ' ; decision a '+str(row.get('elapsed_s','?'))+' s ; '+str(row.get('message','')))
     print('Aucun achat reel. Volumes observes a reception processed, pas historique exhaustif ni prix executable.')
-    print('SOL/USD indicatif CoinGecko horodate (maximum 90 s) ; USDC valorise nominalement a 1 USD.')
+    print('SOL/USD et PUMP/USD indicatifs CoinGecko horodates (maximum 90 s) ; USDC nominal 1 USD.')
