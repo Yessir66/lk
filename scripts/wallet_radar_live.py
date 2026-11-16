@@ -42,6 +42,44 @@ RENT=Decimal('.50')
 # Principal + buy fee/rent + three exit attempts' fees + exit rent.
 # Charge the entire envelope permanently, even after a failed transaction/positive exit.
 ENVELOPE=BUY+FEE+RENT+3*FEE+RENT
+JUPITER_ERRORS={
+    'COULD_NOT_FIND_ANY_ROUTE':'aucune route trouvee',
+    'NO_ROUTES_FOUND':'aucune route trouvee',
+    'TOKEN_NOT_TRADABLE':'token non negociable',
+    'AMOUNT_TOO_SMALL':'montant trop petit',
+    'AMOUNT_TOO_LARGE':'montant trop grand',
+    'ROUTE_PLAN_DOES_NOT_CONSUME_ALL_THE_AMOUNT':'route incompatible avec le montant',
+    'NOT_SUPPORTED':'option non prise en charge',
+    'INVALID_QUERY_PARAMETER':'parametre refuse',
+    'INVALID_API_KEY':'acces API refuse',
+    'UNAUTHORIZED':'acces API refuse',
+    'CANNOT_COMPUTE_OTHER_AMOUNT_THRESHOLD':'minimum de reception non calculable',
+    'FAILED_TO_GET_SWAP_AND_ACCOUNT_METAS':'construction de route indisponible',
+    'BLOCKHASH_NOT_FOUND':'blockhash indisponible'}
+
+
+def jupiter_reason(data):
+    """Only known machine codes/static descriptions can leave a provider response."""
+    if not isinstance(data,dict):return None
+    code=data.get('errorCode')
+    if isinstance(code,str) and code in JUPITER_ERRORS:return code+' : '+JUPITER_ERRORS[code]
+    # Some quote errors have no errorCode. Classify known text, never echo it.
+    error=data.get('error')
+    if isinstance(error,str):
+        text=error.lower()
+        if 'restrict_intermediate_tokens' in text or 'restrictintermediatetokens' in text:
+            return 'parametre restrictIntermediateTokens refuse ou requis'
+        if 'could not find any route' in text or 'no routes found' in text:return 'aucune route trouvee'
+        if 'not tradable' in text:return 'token non negociable'
+        if 'amount too small' in text:return 'montant trop petit'
+        if 'query' in text and ('deserialize' in text or 'parse' in text):return 'format de parametre de cotation refuse'
+    return None
+
+
+def quote_path(source,dest,amount):
+    query=urllib.parse.urlencode(dict(inputMint=source,outputMint=dest,amount=amount,slippageBps=SLIPPAGE,
+        swapMode='ExactIn',onlyDirectRoutes='true',restrictIntermediateTokens='true',asLegacyTransaction='true'))
+    return '/swap/v1/quote?'+query
 
 
 class TradeError(Exception):
@@ -164,6 +202,11 @@ class Transport:
                 if isinstance(code,int) and not isinstance(code,bool):
                     if code==429:setattr(self,'pause_'+name,time.monotonic()+60)
                     detail='HTTP '+str(code)
+                    if jupiter:
+                        try:
+                            safe=jupiter_reason(json.loads(exc.read(8192)))
+                            if safe:detail+=' ; '+safe
+                        except Exception:pass
                 else:
                     reason=getattr(exc,'reason',exc)
                     detail=('delai depasse' if isinstance(reason,(TimeoutError,socket.timeout)) else
@@ -174,6 +217,9 @@ class Transport:
                 error=value.get('error') if isinstance(value,dict) else None
                 code=error.get('code') if isinstance(error,dict) else None
                 detail=' ; code RPC '+str(code) if isinstance(code,int) and not isinstance(code,bool) else ''
+                if jupiter:
+                    safe=jupiter_reason(value)
+                    if safe:detail+=' ; '+safe
                 if code==429:setattr(self,'pause_'+name,time.monotonic()+60)
                 raise TradeError(label+' : reponse refusee ou invalide'+detail+'.')
             return value
@@ -322,9 +368,7 @@ class Executor:
             except asyncio.QueueFull:self.notify(mint,'ACHAT_IGNORE','Autre decision deja en cours.')
 
     async def quote(self,source,dest,amount):
-        query=urllib.parse.urlencode(dict(inputMint=source,outputMint=dest,amount=amount,slippageBps=SLIPPAGE,
-                                        swapMode='ExactIn',onlyDirectRoutes='true',asLegacyTransaction='true'))
-        q=await self.jup('/swap/v1/quote?'+query);quote_check(q,source,dest,amount);return q
+        q=await self.jup(quote_path(source,dest,amount));quote_check(q,source,dest,amount);return q
 
     async def holdings(self,mint):
         result=await self.rpc('getTokenAccountsByOwner',[OWNER,{'mint':mint},{'encoding':'jsonParsed','commitment':'confirmed'}])
@@ -552,7 +596,7 @@ def main():
             balance=transport.rpc('getBalance',[OWNER,{'commitment':'confirmed'}])['value']
             print('RPC : OK. Solde SOL : '+str(Decimal(balance)/10**9),flush=True)
             print('CONTROLE 2/3 : Jupiter/cotation...',flush=True)
-            q=transport.jup('/swap/v1/quote?'+urllib.parse.urlencode(dict(inputMint=SOL,outputMint=USDC,amount=1000000,slippageBps=SLIPPAGE,swapMode='ExactIn',onlyDirectRoutes='true',asLegacyTransaction='true')))
+            q=transport.jup(quote_path(SOL,USDC,1000000))
             quote_check(q,SOL,USDC,1000000)
             print('Jupiter/cotation : OK.',flush=True)
             print('CONTROLE 3/3 : Jupiter/construction non signee...',flush=True)

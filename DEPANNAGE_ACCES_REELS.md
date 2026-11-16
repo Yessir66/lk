@@ -1,4 +1,10 @@
-# Wallet Radar 2026.11.16.5 — controle des acces sans ordre
+# Wallet Radar 2026.11.16.6 — controle des acces sans ordre
+
+Derniere capture : RPC/getBalance **OK**, puis Jupiter/cotation **HTTP 400**, avant toute construction/signature/envoi. Le refus concerne la demande de cotation ; ce code ne prouve pas a lui seul une mauvaise cle API. La meme demande GET publique fonctionne depuis le cloud : le refus du VPS n'est pas encore reproduit ici.
+
+La .6 precise `restrictIntermediateTokens=true` en plus des routes directes et du format legacy, dans un constructeur de requete commun au controle et aux cotations reelles. Les routes ne sont pas elargies et le glissement reste 20 %. Le montant de controle reste 0,001 SOL, sans ordre ; les achats reels restent 1 USD.
+
+Les erreurs Jupiter affichent maintenant un **code metier connu** (`COULD_NOT_FIND_ANY_ROUTE`, `AMOUNT_TOO_SMALL`, etc.) avec un libelle fixe, ou la classification d'un message de parametre reconnu. Les textes bruts, codes inconnus, URL, cles et corps de reponse ne sont toujours pas affiches. Si le refus persiste au menu 10, transmettre cette ligne precise. Aucune ressaisie de cle, aucun nouvel approvisionnement ou changement de wallet n'est demande par ce correctif.
 
 La capture du VPS confirme « Signature configuree pour E23vf... Aucun ordre envoye », puis un echec fournisseur generique. La cle wallet a donc passe le controle d'adresse, mais l'acces RPC/Jupiter n'est pas encore valide. Le message de la .4 ne permet pas de savoir quel appel echoue. Ne pas supposer que la cle wallet est incorrecte ou que le wallet doit etre recree.
 

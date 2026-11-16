@@ -67,6 +67,27 @@ class BudgetTest(unittest.TestCase):
 
 
 class InstructionTest(unittest.TestCase):
+    def test_known_jupiter_error_code_is_safe_but_arbitrary_body_is_never_printed(self):
+        transport=live.Transport('https://unused.invalid','FAKE')
+        data={'errorCode':'COULD_NOT_FIND_ANY_ROUTE','error':'PRIVATE_KEY_AND_BODY'}
+        exc=urllib.error.HTTPError('https://private.invalid/SECRET_URL',400,'SECRET_REASON',{},StringIO(json.dumps(data)))
+        with patch('urllib.request.urlopen',side_effect=exc):
+            with self.assertRaises(live.TradeError) as caught:transport.jup(live.quote_path(live.SOL,MINT,1000))
+        message=str(caught.exception)
+        self.assertIn('HTTP 400',message);self.assertIn('COULD_NOT_FIND_ANY_ROUTE',message)
+        self.assertNotIn('PRIVATE',message);self.assertNotIn('SECRET',message)
+        self.assertIsNone(live.jupiter_reason({'errorCode':'PRIVATE_FAKE_CODE','error':'PRIVATE_BODY'}))
+        self.assertIsNone(live.jupiter_reason({'errorCode':[],'error':'PRIVATE_BODY'}))
+        self.assertEqual(live.jupiter_reason({'error':'PRIVATE: restrict_intermediate_tokens cannot be false'}),
+                         'parametre restrictIntermediateTokens refuse ou requis')
+
+    def test_quote_parameters_are_shared_and_keep_direct_routes_and_slippage(self):
+        from urllib.parse import parse_qs,urlsplit
+        values=parse_qs(urlsplit(live.quote_path(live.SOL,MINT,1000)).query)
+        for name in ('onlyDirectRoutes','restrictIntermediateTokens','asLegacyTransaction'):
+            self.assertEqual(values[name],['true'])
+        self.assertEqual(values['slippageBps'],['2000']);self.assertEqual(values['amount'],['1000'])
+
     def test_provider_error_identifies_stage_and_status_without_secret(self):
         transport=live.Transport('https://unused.invalid/?api-key=PRIVATE_RPC','PRIVATE_JUPITER')
         exc=urllib.error.HTTPError('https://private.invalid/PRIVATE_URL',403,'PRIVATE_BODY',{},None)

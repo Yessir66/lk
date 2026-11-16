@@ -15,7 +15,7 @@ Cette fiche décrit le dernier état connu ; le code et la configuration du dép
 
 ## État connu et wallet demandé
 
-- Version serveur du dépôt : **2026.11.16.5**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
+- Version serveur du dépôt : **2026.11.16.6**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
 - Extension Chrome : version **1.0.0**, dossier `chrome-gmgn`.
 - Dernière liste demandée : **BBIG BOSS uniquement**, adresse publique :
   `BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp`.
@@ -223,6 +223,8 @@ Autres cas :
 Les scripts `discord_*` sont partagés avec d'autres bots : ne pas changer leurs listes globales pour remplacer seulement la liste de Wallet Radar.
 
 ## Vérification et livraison
+
+Version 2026.11.16.6 : capture menu10 RPC/getBalance OK (solde public ~0.55278 SOL), Jupiter/cotation HTTP400, construction non atteinte. Aucun besoin prouve de changer le wallet/cle ou de rajouter SOL. Cinq variantes GET publiques (avec/sans direct/legacy et montants 0.001/0.014SOL) toutes HTTP200 depuis cloud ; refus VPS non reproduit. Ajout restrictIntermediateTokens=true explicite (aucun elargissement car routes restent directes) via quote_path partage controle/reel. Codes metier Jupiter connus/libelles fixes extraits de reponse HTTP JSON bornee8Ko, autres messages/codes inconnus jamais affiches. Classification statique de certains messages sans errorCode (restriction intermediaires, parse query, montant, token, absence route), jamais corps brut. **359 tests complets passent**, puis 29 tests cibles apres ajout classification du message sans code. Archive `wallet_radar_jupiter_400_2026.11.16.6.zip`. Nouvelle verification menu10 sur VPS encore necessaire ; ne pas dire que cause ou acces/authentification resolus sans resultat. Pas d'ordre envoye.
 
 Version 2026.11.16.5 : capture menu7 apres installation dependances OK et signature configuree, puis « Requete fournisseur indisponible ». Source RPC/cotation/construction et statut inconnus dans ancienne sortie ; ne pas conclure a une mauvaise cle. Correctif ajoute etapes1/3 RPC getBalance,2/3 Jupiterquote,3/3 construction non signee ; labels fixes + codes HTTP/RPC ou DNS/TLS/delai, sans URL/entetes/corps fournisseur. Menu10 controle avec cles existantes, en lecture seule, sans journal/ordre. Menu7 utilise --setup-if-missing et ne redemande ni reecrit les cles presentes valides ; --setup manuel peut toujours servir au renouvellement explicite. **357 tests passent** (5 nouveaux sur erreurs sans secrets, pause429, conservation byte/mtime des cles et controle sans signature/envoi), menu Windows mock OK. Un test ancien sur un intervalle de 20ms a echoue une fois sous charge ; reexecution complete357 OK sans changement de ce code. Archive `wallet_radar_diagnostic_acces_2026.11.16.5.zip`, guide `DEPANNAGE_ACCES_REELS.md`. Cause reelle du refus encore a obtenir via menu10 sur VPS ; pas d'activation ou d'ordre affirme.
 
