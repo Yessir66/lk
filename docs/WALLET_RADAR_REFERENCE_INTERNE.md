@@ -15,7 +15,7 @@ Cette fiche décrit le dernier état connu ; le code et la configuration du dép
 
 ## État connu et wallet demandé
 
-- Version serveur du dépôt : **2026.11.16.8**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
+- Version serveur du dépôt : **2026.11.16.9**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
 - Extension Chrome : version **1.0.0**, dossier `chrome-gmgn`.
 - Dernière liste demandée : **BBIG BOSS uniquement**, adresse publique :
   `BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp`.
@@ -87,7 +87,7 @@ Menu principal Windows :
 - **8** : lancer explicitement l'essai reel, suivi SL/TP tant que processus actif.
 - **9** : lire le bilan du journal reel sans ordre ni reinitialisation.
 - **10** : transferer puis controler les acces RPC/Jupiter avec les cles deja stockees, sans signature/envoi ni ressaisie.
-- **11** : remplacer uniquement la cle API Jupiter par saisie locale masquee, puis controle ; ne lit/reecrit jamais wallet.json.
+- **11** : remplacer uniquement la cle API Jupiter par saisie locale **visible** (demande utilisateur), puis controle ; ne lit/reecrit jamais wallet.json.
 - **0** : quitter le menu.
 
 Dans la gestion distante des wallets :
@@ -224,6 +224,8 @@ Autres cas :
 Les scripts `discord_*` sont partagés avec d'autres bots : ne pas changer leurs listes globales pour remplacer seulement la liste de Wallet Radar.
 
 ## Vérification et livraison
+
+Version 2026.11.16.9 : dernier diagnostic reel .8 affiche formatcle avec caracteres nonASCII/espaces/controle, sanscle200valide, clefactice401, proxydeclare non. Cela isole un defaut de format de la cle API enregistree ; pas besoin prouve d'une nouvelle cle, recopier cleAPIseule au menu11. Utilisateur demande explicitement de VOIR ce qu'il colle pour Jupiter. Deux saisies API utilisent input visible (premiereconfig7 et remplacement11), cle wallet restegetpassmasquee. Cles existantes pas affichees ; fichiers0600 et aucune reecriture wallet par11. Tests existants du remplacementAPI ajustentmockinput et interdisentgetpasswallet, testreutilisationaucunprompt couvreaussiinput. Archive `wallet_radar_jupiter_visible_2026.11.16.9.zip`. Ne pas redemander consentement pour cette visibilite deja autorisee ; ne jamais demander de capture de l'ecran pendant clevisible, seulement sortiecontrole.
 
 Version 2026.11.16.8 : capture .7 confirme RPC OK et Jupiterquote400 nonJSON, changement de client n'a pas resolu. Ajout sur --check apresHTTP400 uniquement de deux GET controles memequote sanscle/clefactice, pas de signature/construction/envoi/fallback trading anonyme. Rapport formatcle (flags URL/guillemets/ASCII, aucune valeur) et presenceproxy (aucune URL, aucune desactivation). Statuts publics/invalides distinguent refus reproductible sanscle vs dependentauthentification, sans conclure automatiquementcleinvalide. TradeError porte maintenant statusHTTP safe pour cette branche uniquement. Menu11 --update-jupiter touche le seul fichier API0600, ne lit ni reecrit wallet.json ; peut recopier proprement cle actuelle, pas forcement besoinnouvelle. **366 tests passent**, menus PowerShell mocksOK (4 nouveaux tests probesGETsanssecret, comparaison, cleAPIseulewalletinchangemtime, --check400noconstruction). Archive `wallet_radar_comparaison_jupiter_2026.11.16.8.zip`. Resultats comparatifs du VPS encore attendus, aucun ordre reel connu. Ne plus proposer des changements de parametres sans evidence de la comparaison.
 

@@ -1,4 +1,6 @@
-# Wallet Radar 2026.11.16.8 — controle des acces sans ordre
+# Wallet Radar 2026.11.16.9 — controle des acces sans ordre
+
+A la demande explicite de l'utilisateur, **la cle API Jupiter est maintenant visible pendant sa saisie locale**, au menu11 et lors de la premiere configuration au menu7. La cle privee du wallet reste saisie avec getpass (masquee). Les cles deja enregistrees ne sont pas affichees et ne sont pas ajoutees aux journaux. Le remplacement API conserve le wallet. Eviter de partager une capture ou un enregistrement du terminal contenant cette saisie visible ; partager seulement le resultat du controle.
 
 Apres un nouveau HTTP400 non JSON depuis le VPS, le menu10 ajoute automatiquement une comparaison **en lecture seule** : meme cotation fixe SOL/USDC sans cle API, puis avec une cle volontairement factice. Deux GET uniquement, sans acces au wallet de signature, sans construction, sans envoi, sans changement automatique du mode d'authentification des ordres. Les cotations reelles gardent la cle enregistree ; aucun contournement d'authentification n'est active.
 

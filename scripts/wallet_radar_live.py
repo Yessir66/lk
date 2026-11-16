@@ -102,7 +102,7 @@ def key_format_problem(api):
 
 def update_jupiter():
     # Only this API credential is touched; never read or rewrite the wallet key.
-    api=getpass.getpass('Nouvelle cle API Jupiter seule (saisie masquee) : ').strip()
+    api=input('Nouvelle cle API Jupiter seule (saisie VISIBLE) : ').strip()
     problem=key_format_problem(api)
     if problem or len(api)>512:raise TradeError('Cle Jupiter non enregistree : '+(problem or 'format trop long')+'.')
     PRIVATE.mkdir(mode=0o700,exist_ok=True)
@@ -140,13 +140,13 @@ def load_signer():
 
 def setup(reuse=False):
     from solders.keypair import Keypair
-    print('Saisie locale sur le VPS, masquee. Ne jamais envoyer la cle dans le chat.')
+    print('Saisie locale : cle wallet masquee ; cle API Jupiter visible. Ne pas envoyer de cle dans le chat.')
     if reuse and (PRIVATE/'wallet.json').exists():key=load_signer()
     else:
         raw=getpass.getpass('Cle privee du wallet de test (base58 ou tableau JSON) : ').strip()
         key=Keypair.from_bytes(bytes(json.loads(raw))) if raw.startswith('[') else Keypair.from_base58_string(raw)
     if str(key.pubkey())!=OWNER:raise TradeError('Cle refusee : autre adresse publique.')
-    api=secure_read(PRIVATE/'jupiter_api_key.txt') if reuse and (PRIVATE/'jupiter_api_key.txt').exists() else getpass.getpass('Cle API Jupiter gratuite (saisie masquee) : ').strip()
+    api=secure_read(PRIVATE/'jupiter_api_key.txt') if reuse and (PRIVATE/'jupiter_api_key.txt').exists() else input('Cle API Jupiter gratuite (saisie VISIBLE) : ').strip()
     if not api or len(api)>512 or any(c.isspace() for c in api):raise TradeError('Cle Jupiter invalide.')
     PRIVATE.mkdir(mode=0o700,exist_ok=True)
     if PRIVATE.is_symlink():raise TradeError('Dossier prive symbolique refuse.')

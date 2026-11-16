@@ -1,5 +1,7 @@
 # Wallet Radar
 
+**2026.11.16.9 : saisie API Jupiter visible** au menu11, selon le choix de l'utilisateur. La cle privee du wallet reste masquee et inchangee. Voir [DEPANNAGE_ACCES_REELS.md](DEPANNAGE_ACCES_REELS.md).
+
 **2026.11.16.8 : menu 10** pour verifier RPC/Jupiter sans ordre et sans ressaisir les cles. En cas de HTTP400, comparaison de cotations sans cle/cle factice. **Menu11** pour remplacer uniquement la cle API Jupiter si necessaire, wallet conserve. Voir [DEPANNAGE_ACCES_REELS.md](DEPANNAGE_ACCES_REELS.md).
 
 **2026.11.16.4 : essais reels explicites.** Les menus **7 / 8 / 9** configurent localement la signature, lancent l'essai reel de 1 USD avec budget reserve cumule de 15 USD, puis affichent les transactions/delais. Voir [ESSAIS_REELS_WALLET_RADAR.md](ESSAIS_REELS_WALLET_RADAR.md). Le menu 3 reste en simulation. Le SL/TP necessite que le processus reste actif.

@@ -394,7 +394,7 @@ class SetupAndCheckTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp,patch.object(live,'PRIVATE',Path(tmp)):
             wallet=Path(tmp)/'wallet.json';wallet.write_text('private-wallet-must-stay-untouched')
             before=(wallet.read_bytes(),wallet.stat().st_mtime_ns)
-            with patch.object(live.getpass,'getpass',return_value='NEW_FAKE_API_KEY'),patch.object(live,'load_signer') as signer,patch('builtins.print'):
+            with patch('builtins.input',return_value='NEW_FAKE_API_KEY'),patch.object(live.getpass,'getpass',side_effect=AssertionError('Wallet must not be requested')),patch.object(live,'load_signer') as signer,patch('builtins.print'):
                 live.update_jupiter()
             signer.assert_not_called()
             self.assertEqual((wallet.read_bytes(),wallet.stat().st_mtime_ns),before)
@@ -415,7 +415,7 @@ class SetupAndCheckTest(unittest.TestCase):
             wallet=Path(tmp)/'wallet.json';wallet.write_text(json.dumps(list(bytes(key))));wallet.chmod(0o600)
             api=Path(tmp)/'jupiter_api_key.txt';api.write_text('FAKE_TEST_KEY');api.chmod(0o600)
             before=[(p.read_bytes(),p.stat().st_mtime_ns) for p in (wallet,api)]
-            with patch.object(live.getpass,'getpass',side_effect=AssertionError('No prompt allowed')),patch('builtins.print'):
+            with patch('builtins.input',side_effect=AssertionError('No API prompt allowed')),patch.object(live.getpass,'getpass',side_effect=AssertionError('No prompt allowed')),patch('builtins.print'):
                 live.setup(reuse=True)
             self.assertEqual(before,[(p.read_bytes(),p.stat().st_mtime_ns) for p in (wallet,api)])
 
