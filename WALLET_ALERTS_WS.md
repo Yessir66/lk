@@ -1,6 +1,8 @@
-# Wallet Radar — 2026.11.15.5
+# Wallet Radar — 2026.11.16.1
 
 Le bot porte desormais le nom **Wallet Radar**. Voir [WALLET_RADAR.md](WALLET_RADAR.md) pour le menu Windows permettant d'ajouter, retirer et renommer les wallets sans commandes manuelles.
+
+Les lanceurs utilisent desormais `--live-only` : aucune collecte historique ni aucun decodage d'anciennes files en rattrapage. Les donnees existantes sont conservees. Voir [DIRECT_ET_CAUSES_SIMULATION.md](DIRECT_ET_CAUSES_SIMULATION.md).
 
 Le menu **3** teste désormais les conditions BBIG BOSS en simulation sur **30 tokens distincts**, sans achat réel ; le menu **4** affiche le bilan. Voir [SIMULATION_BBIG_BOSS.md](SIMULATION_BBIG_BOSS.md) pour la couverture Pump.fun et les limites de mesure.
 

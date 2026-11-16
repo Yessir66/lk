@@ -18,7 +18,7 @@ from discord_token_telegram import TelegramSender, amounts
 from discord_solana_watch import StateLock
 
 ROOT=Path(__file__).resolve().parents[1]
-VERSION='2026.11.15.6'
+VERSION='2026.11.16.1'
 DEFAULT_WALLETS={'BBIG BOSS':'BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp'}
 BACKFILL_PAGE_SIZE=1000
 BACKFILL_MAX_PAGES=10
@@ -202,11 +202,12 @@ def notification(journal,message,subscriptions,now,*,monotonic=None,names=None):
 
 
 class Service:
-    def __init__(self,journal,wallets,rpc,ws_url,*,sender=None,early=False,max_age=120,browser_events=False,paper=None):
+    def __init__(self,journal,wallets,rpc,ws_url,*,sender=None,early=False,max_age=120,browser_events=False,paper=None,live_only=False):
         self.journal,self.wallets,self.rpc,self.ws_url=journal,wallets,rpc,ws_url
         self.names={w:n for n,w in wallets.items()};self.sender=sender;self.early=early;self.max_age=max_age
         self.browser_events=browser_events
         self.paper=paper
+        self.live_only=live_only
         self.paper_checks=set()
         self.rpc_condition=asyncio.Condition();self.rpc_waiters=[];self.rpc_sequence=0;self.rpc_busy=False
         interval=getattr(rpc,'interval',None)
@@ -450,8 +451,10 @@ class Service:
             label=failure_label(exc)
             rpc_code=getattr(exc,'rpc_code',None)
             if isinstance(rpc_code,int):label+=' ; RPC '+str(rpc_code)
-            if c and not c.terminal:self.paper.decisions.notify(c,'DONNEES_INSUFFISANTES',
-                'Verification des comptes de position indisponible ('+label+').',time.monotonic(),True)
+            if c and not c.terminal:
+                c.reasons.add('ERREUR_VERIFICATION_POSITION')
+                self.paper.decisions.notify(c,'DONNEES_INSUFFISANTES',
+                    'Verification des comptes de position indisponible ('+label+').',time.monotonic(),True)
 
     async def deliver_one(self,now):
         if not self.sender:return False
@@ -480,8 +483,9 @@ class Service:
             if not await self.decode_one(time.time(),background):await asyncio.sleep(.05 if background else .01)
 
     async def run(self):
-        tasks=[asyncio.create_task(fn()) for fn in (self.websocket,self.backfill,self.worker,self.notifier)]
-        tasks.append(asyncio.create_task(self.worker(background=True)))
+        tasks=[asyncio.create_task(fn()) for fn in (self.websocket,self.worker,self.notifier)]
+        if not self.live_only:
+            tasks.extend([asyncio.create_task(self.backfill()),asyncio.create_task(self.worker(background=True))])
         if self.paper:tasks.append(asyncio.create_task(self.paper.run()))
         try:await asyncio.gather(*tasks)
         finally:
@@ -653,6 +657,7 @@ def main():
     parser.add_argument('--paper-report',action='store_true',help='Bilan hors reseau du dernier essai de 30 tokens')
     parser.add_argument('--stop',action='store_true',help='Arreter proprement les instances de ce script appartenant au compte Linux courant')
     parser.add_argument('--paper-diagnose',action='store_true',help='Diagnostiquer au maximum 4 cas de simulation, requetes en lecture seule')
+    parser.add_argument('--live-only',action='store_true',help='Suivre uniquement les nouvelles transactions ; ne pas rattraper ni decoder les anciennes files')
     args=parser.parse_args()
     if not .5<=args.rpc_rps<=10:parser.error('--rpc-rps doit être entre 0.5 et 10')
     try:
@@ -671,7 +676,9 @@ def main():
             args.early=True
         print('Wallet Radar '+VERSION+' — lecture seule, aucun achat ni publication.',flush=True)
         print('Wallets : '+', '.join(wallets),flush=True)
-        print(f'RPC HTTPS : plafond local {args.rpc_rps:g}/s ; rattrapage au maximum 1/s, priorité aux événements directs.',flush=True)
+        if args.live_only:
+            print(f'RPC HTTPS : plafond local {args.rpc_rps:g}/s ; mode DIRECT UNIQUEMENT, rattrapage desactive.',flush=True)
+        else:print(f'RPC HTTPS : plafond local {args.rpc_rps:g}/s ; rattrapage au maximum 1/s, priorité aux événements directs.',flush=True)
         sender=None
         if args.telegram:
             token=os.getenv('TELEGRAM_BOT_TOKEN') or config.get('telegram_bot_token')
@@ -692,7 +699,7 @@ def main():
             try:
                 paper=PaperObserver(ws,args.state.parent/'paper_decisions.jsonl') if args.paper_buys else None
                 asyncio.run(Service(journal,wallets,MeasuredRPC(http,None,rps=args.rpc_rps),ws,sender=sender,
-                                    early=args.early,browser_events=args.browser_events,paper=paper).run())
+                                    early=args.early,browser_events=args.browser_events,paper=paper,live_only=args.live_only).run())
             finally:journal.db.close()
     except KeyboardInterrupt:print('Surveillance arrêtée.',flush=True)
     except Exception as exc:

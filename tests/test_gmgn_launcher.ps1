@@ -10,11 +10,13 @@ try {
     [void](New-Item -ItemType File -Path (Join-Path $temp 'Google/Chrome/Application/chrome.exe'))
     foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name,$temp,'Process') }
     $global:GmgnOpened = [System.Collections.Generic.List[string]]::new()
+    $global:GmgnRemoteCommands = [System.Collections.Generic.List[string]]::new()
     function global:Start-Process {
         param($FilePath,$ArgumentList)
         $global:GmgnOpened.Add([string]$ArgumentList[1])
     }
     function global:ssh.exe {
+        $global:GmgnRemoteCommands.Add([string]$args[-1])
         $global:LASTEXITCODE = 0
         'WEBSOCKET CONNECTE (mock)'
         $item = @{v=1;type='verified_buy';mint=('A'*32);wallet=('B'*32);signature=('C'*88);detected_at=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()}
@@ -41,6 +43,7 @@ try {
     $events = @(Get-Content -LiteralPath (Join-Path $state ('gmgn-events-' + $session + '.jsonl')))
     if ($events.Count -ne 2) { throw 'Expected exactly two distinct public buy events in bridge journal' }
     foreach ($line in $events) { if (($line | ConvertFrom-Json).type -cne 'verified_buy') { throw 'Non-buy entered bridge' } }
+    foreach ($command in $global:GmgnRemoteCommands) { if ($command -notmatch ' --live-only(?: |$)') { throw 'Live-only mode must be enabled by every Windows launch' } }
     Write-Host 'Launcher integration OK: recent buys, duplicate suppression and persistent restart tested with mocks.'
 } finally {
     foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name,$original[$name],'Process') }

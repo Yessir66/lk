@@ -30,6 +30,27 @@ class WalletAlertTest(unittest.IsolatedAsyncioTestCase):
         self.service=w.Service(self.journal,dict(w.WATCHED),self.rpc,'wss://unused.invalid',sender=self.sender)
         self.service.call=AsyncMock(return_value=self.tx)
 
+    async def test_live_only_starts_no_backfill_tasks_and_preserves_old_queue(self):
+        self.journal.observe(WALLET,SIGNATURE,self.at,1,'rattrapage',True)
+        self.service.live_only=True
+        entered=asyncio.Event()
+        async def socket():
+            entered.set();await asyncio.Future()
+        async def idle(*args,**kwargs):await asyncio.Future()
+        self.service.websocket=AsyncMock(side_effect=socket)
+        self.service.worker=AsyncMock(side_effect=idle)
+        self.service.notifier=AsyncMock(side_effect=idle)
+        self.service.backfill=AsyncMock(side_effect=idle)
+        task=asyncio.create_task(self.service.run())
+        await asyncio.wait_for(entered.wait(),1);await asyncio.sleep(0)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):await task
+        self.service.backfill.assert_not_awaited()
+        self.service.worker.assert_awaited_once_with()
+        self.service.call.assert_not_awaited()
+        self.assertIsNone(self.journal.due(self.at+10,False))
+        self.assertEqual(self.journal.db.execute('SELECT state FROM events').fetchone()[0],'pending')
+
     def test_browser_event_contains_only_public_verified_buy_identifiers(self):
         trade=w.trades_in(self.tx,WALLET,SIGNATURE)[0]
         event=w.browser_event(trade,self.at+1)

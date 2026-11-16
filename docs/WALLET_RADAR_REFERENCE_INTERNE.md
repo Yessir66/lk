@@ -1,6 +1,6 @@
 # Wallet Radar — fiche interne de reprise
 
-Mise à jour : **15 novembre 2026, Europe/Paris**. À lire au début d'une reprise concernant ce bot, y compris après compression de la conversation. Le fichier `AGENTS.md` à la racine pointe vers cette fiche.
+Mise à jour : **16 novembre 2026, Europe/Paris**. À lire au début d'une reprise concernant ce bot, y compris après compression de la conversation. Le fichier `AGENTS.md` à la racine pointe vers cette fiche.
 
 Cette fiche décrit le dernier état connu ; le code et la configuration du déploiement priment si l'utilisateur les a modifiés depuis. Elle ne contient aucun secret.
 
@@ -15,14 +15,16 @@ Cette fiche décrit le dernier état connu ; le code et la configuration du dép
 
 ## État connu et wallet demandé
 
-- Version serveur du dépôt : **2026.11.15.6**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
+- Version serveur du dépôt : **2026.11.16.1**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
 - Extension Chrome : version **1.0.0**, dossier `chrome-gmgn`.
 - Dernière liste demandée : **BBIG BOSS uniquement**, adresse publique :
   `BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp`.
 - DECU et LE L ont été retirés du suivi Wallet Radar à la demande de l'utilisateur. Leur présence dans l'historique ou dans les constantes du module partagé d'analyse Discord ne signifie pas qu'ils sont encore suivis ici.
 - Les listes de wallets sont désormais modifiables par l'utilisateur. **Vérifier la liste actuelle avant toute future modification** ; ne pas réimposer cette liste historique.
 - La configuration locale `wallet_alerts_config.json` prime sur `DEFAULT_WALLETS` et le fichier d'exemple. Modifier un défaut du code ne suffit pas à migrer une configuration existante.
-- Dernier bilan réel de la .5 : **5/30 tokens, 2 DONNEES_INSUFFISANTES, 2 NON_SUPPORTE, 1 VOLUME_INSUFFISANT**, aucun achat théorique validé. Une erreur de vérification des comptes de position à 0,364 s n'incluait pas son code. Sa cause n'est pas déterminée. Le champ de format corrigé en .5 n'est plus l'erreur affichée. Le correctif .6 prépare un diagnostic en parallèle ; il ne faut pas conclure à un besoin d'abonnement payant ni à une absence réelle de volume sans les résultats.
+- Dernieres captures du 16 novembre : diagnostic sur un token Pump.fun avec 1 evenement BBIG BOSS, cotation SOL, zero octet inconnu, 1 compte JSON parse et abonnement a 17 ms. Bilan du meme essai ensuite a **5/30 : 2 DONNEES_INSUFFISANTES, 1 SORTIE_TOTALE_1S a 0,82 s, 2 VOLUME_INSUFFISANT** (environ 232,34 USD et 14,10 USD observes). Un cas incomplet affiche environ 146,92 USD, l'autre non mesure. Aucun achat theorique positif. La sortie a 0,82 s teste bien le premier filtre observe ; les causes exactes des anciens cas incomplets ne sont pas prouvees par ces captures.
+- L'utilisateur se plaint d'un rattrapage massif (anciennes transactions de dizaines de minutes). Correctif 2026.11.16.1 prepare : `--live-only` par defaut dans les lanceurs Windows, sans aucune tache de collecte/decodage historique, ni suppression des donnees. Les interruptions ne sont plus rattrapees dans ce mode. Tests du mode direct verifient que les anciennes files restent conservees mais ne consomment aucun RPC.
+- Defaut identifie dans le code : toute instruction non decodee invalidait le volume, meme creation/fermeture de compte ou vente apres 1 s. Classification corrigee, vraie transaction d'achat/swap non decodee et mouvement de position inconnu avant 1 s restent incomplets. Causes detaillees `missing_reasons` ajoutees aux futurs evenements. Le defaut peut expliquer des cas mais ne constitue pas une preuve de la cause des anciennes captures. Guide `DIRECT_ET_CAUSES_SIMULATION.md`.
 
 ## Dépôt et lieux de déploiement
 
@@ -67,6 +69,8 @@ Les changements valides sont enregistrés immédiatement et atomiquement, sans t
 Au démarrage : Chrome ouvert dans le bon profil, extension active, onglet GMGN réservé, PC connecté, fenêtre du lanceur maintenue ouverte. L'ancien `windows/LANCER_GMGN_ONGLET_UNIQUE.cmd` fonctionne encore mais n'est plus le point d'entrée privilégié. `windows/GERER_WALLETS.cmd` ouvre directement la gestion.
 
 Le lanceur démarre lui-même le Python distant via SSH avec **`--early --browser-events`**, sans `--telegram`. Une seule instance par journal. Avec BBIG BOSS seul : **1 wallet et 2 abonnements** (processed + confirmed), pas deux wallets.
+
+Depuis 2026.11.16.1, il ajoute aussi **`--live-only`** dans tous les lancements Windows (normal et simulation). Pas de tache de rattrapage ni de worker historique ; aucune ancienne file n'est effacee. Les menus 1 et 3 synchronisent les scripts avant lancement pour que ce nouvel argument soit accepte par le serveur. Le mode manuel sans l'argument garde la reconciliation historique pour compatibilite.
 
 L'utilisateur confond parfois les fenêtres : toujours préciser **PowerShell Windows : `PS C:\…>`** ou **VPS SSH : `bot@…`** avant une commande. Ne pas demander d'exécuter `scp C:\…` à l'invite Linux. Préférer le menu aux commandes manuelles quand il suffit.
 
@@ -194,6 +198,8 @@ Correctif .4 : **305 tests Python passent**, dont un arrêt SIGINT d'un processu
 Correctif .5 : **307 tests Python passent**. Tous les noms et types du schema TradeEvent sont compares au SDK officiel 4.3.1 ; fixture archivee de 405 octets entierement lue, nouveau champ et compatibilite des anciens evenements verifies. Test de progression du nouveau format jusqu'a une decision theorique, sans ordre. Aucun resultat reel des prochains tokens corrige n'est encore acquis.
 
 Correctif .6 : **312 tests Python passent**, dont codes de fournisseur sans secrets, comptes binaires/PumpSwap identifies, recherche d'un achat plutot qu'une vente dans l'historique, preservation du journal et maintien du mode --check hors reseau. Menu 6 teste avec SCP/SSH simules. Le diagnostic reel reste a executer par l'utilisateur ; aucune cause precise de l'echec de position n'est encore confirmee.
+
+Version 2026.11.16.1 : **319 tests Python passent**, plus tests des lanceurs et du menu Windows avec mocks. Cas de non-rattrapage sans perte de donnees, operations annexes, vente apres 1 s, vrai swap non decode, mouvement de position avant 1 s et logs tronques couverts. Aucun ordre reel. Correctif encore a appliquer et observer sur le VPS.
 
 Commandes usuelles dans le dépôt :
 

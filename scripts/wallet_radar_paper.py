@@ -139,6 +139,7 @@ class Candidate:
     unknown_position:bool=False
     terminal:str|None=None
     subscribed_at:float|None=None
+    reasons:set=field(default_factory=set)
 
 
 class Decisions:
@@ -148,11 +149,12 @@ class Decisions:
     def notify(self,c,code,message,now,terminal=False):
         if c.terminal:return
         if terminal:c.terminal=code
+        if code=='DONNEES_INSUFFISANTES' and c.reasons:message+=' Causes : '+', '.join(sorted(c.reasons))+'.'
         self.emit(dict(v=1,type='paper_decision',mode='SIMULATION',code=code,mint=c.mint,
             message=message,initial_signature=c.signature,usd_total=str(c.volume),buys=c.buys,
             amount_usd='25',elapsed_s=round(max(0,now-c.t0),3),
             subscription_gap_ms=round((c.subscribed_at-c.t0)*1000) if c.subscribed_at is not None else None,
-            ordering='processed_receipt',coverage='observed_lower_bound',at=time.time()))
+            ordering='processed_receipt',coverage='observed_lower_bound',missing_reasons=sorted(c.reasons),at=time.time()))
 
     def observe(self,event):
         now=event['mono'];mint=event['mint'];c=self.candidates.get(mint)
@@ -168,8 +170,10 @@ class Decisions:
             self.notify(c,'SUIVI','Achat BBIG BOSS observe ; analyse 1 s / 3 s en simulation.',now)
             if c.creator==BWAM:self.notify(c,'DEV_EXCLU','Createur declare bwam : token exclu.',now,True)
             elif event.get('unparsed_tail_bytes'):
+                c.reasons.add('FORMAT_EVENEMENT_INCONNU')
                 self.notify(c,'DONNEES_INSUFFISANTES','Extension du format Pump.fun non reconnue ; aucune decision.',now,True)
             elif len([x for x in self.candidates.values() if not x.terminal])>8:
+                c.reasons.add('CAPACITE_SIMULTANEE_DEPASSEE')
                 self.notify(c,'DONNEES_INSUFFISANTES','Trop de signaux simultanes pour cet essai.',now,True)
             return
         if c.terminal or event['signature']==c.signature:return
@@ -178,16 +182,24 @@ class Decisions:
         c.seen.add(identity)
         if event['slot']<c.slot or not 0<=now-c.t0<=3:return
         if event.get('unparsed_tail_bytes'):
-            c.unknown_volume=True
-            if event['user']==BBIG and now-c.t0<=1:c.unknown_position=True
+            if event['is_buy']:
+                c.unknown_volume=True;c.reasons.add('FORMAT_EVENEMENT_INCONNU')
+            if event['user']==BBIG and now-c.t0<=1:
+                c.unknown_position=True;c.reasons.add('FORMAT_EVENEMENT_INCONNU')
             return
         if event['creator']!=c.creator:
+            c.reasons.add('CREATEUR_MODIFIE')
             self.notify(c,'DONNEES_INSUFFISANTES','Le createur declare a change pendant la fenetre.',now,True);return
         if event['user']==BBIG:
             c.movements.append((now,event['token_amount'] if event['is_buy'] else -event['token_amount']))
         if event['is_buy']:
             dollars=self.prices.dollars(event,event['wall'])
-            if dollars is None or dollars<=0:c.unknown_volume=True
+            if dollars is None or dollars<=0:
+                c.unknown_volume=True
+                quote=event.get('quote_mint',ZERO)
+                if quote not in (ZERO,SOL,USDC):c.reasons.add('DEVISE_COTATION_NON_SUPPORTEE')
+                elif quote in (ZERO,SOL) and (self.prices.usd is None or not 0<=event['wall']-self.prices.published<=90):c.reasons.add('COURS_SOL_USD_ABSENT_OU_PERIME')
+                else:c.reasons.add('MONTANT_COTATION_INVALIDE')
             else:c.volume+=dollars;c.buys+=1
         self.tick(now)
 
@@ -201,21 +213,21 @@ class Decisions:
         owned={b['accountIndex'] for side in ('preTokenBalances','postTokenBalances') for b in meta.get(side,[])
                if b.get('mint')==c.mint and b.get('owner')==BBIG}
         balances=[b for b in meta.get('postTokenBalances',[]) if b.get('mint')==c.mint and b.get('accountIndex') in owned]
-        if not owned:c.unknown_position=True;return
+        if not owned:c.unknown_position=True;c.reasons.add('POSITION_INITIALE_ABSENTE');return
         # Transaction balances alone omit other token accounts owned by the wallet.
         keys=tx.get('transaction',{}).get('message',{}).get('accountKeys',[])
         addresses={keys[i].get('pubkey') if isinstance(keys[i],dict) else keys[i] for i in owned if i<len(keys)}
         context=(account_snapshot or {}).get('context',{}).get('slot')
         accounts=(account_snapshot or {}).get('value')
         if not isinstance(context,int) or context<c.slot or not isinstance(accounts,list):
-            c.unknown_position=True;self.tick(mono);return
+            c.unknown_position=True;c.reasons.add('SNAPSHOT_POSITION_INVALIDE');self.tick(mono);return
         for account in accounts:
             info=account.get('account',{}).get('data',{}).get('parsed',{}).get('info',{})
             if info.get('owner')!=BBIG or info.get('mint')!=c.mint:
-                c.unknown_position=True;self.tick(mono);return
+                c.unknown_position=True;c.reasons.add('COMPTE_POSITION_NON_PARSE');self.tick(mono);return
             if int(info.get('tokenAmount',{}).get('amount','-1'))<0 or (int(info['tokenAmount']['amount'])>0 and account.get('pubkey') not in addresses):
-                c.unknown_position=True;self.tick(mono);return
-        if mono-c.t0>3:c.unknown_position=True
+                c.unknown_position=True;c.reasons.add('AUTRE_POSITION_TOKEN_NON_RECONSTITUEE');self.tick(mono);return
+        if mono-c.t0>3:c.unknown_position=True;c.reasons.add('POSITION_VALIDEE_TROP_TARD')
         c.baseline=sum(int(b['uiTokenAmount']['amount']) for b in balances)
         self.tick(mono)
 
@@ -232,9 +244,10 @@ class Decisions:
                     balance+=delta
                     if balance==0:
                         self.notify(c,'SORTIE_TOTALE_1S','BBIG BOSS a liquide sa position pendant la premiere seconde.',now,True);break
-                    if balance<0:c.unknown_position=True
+                    if balance<0:c.unknown_position=True;c.reasons.add('MOUVEMENTS_POSITION_INCOHERENTS')
                 if c.terminal:continue
             if elapsed>3:
+                if balance is None:c.reasons.add('POSITION_INITIALE_NON_VALIDEE')
                 code='DONNEES_INSUFFISANTES' if balance is None or c.unknown_position or c.unknown_volume else 'VOLUME_INSUFFISANT'
                 self.notify(c,code,'Fin des 3 s : '+('donnees incompletes.' if code=='DONNEES_INSUFFISANTES' else '400 USD non observes.'),now,True);continue
             if elapsed>=1 and balance is not None and not c.unknown_position:
@@ -246,7 +259,26 @@ class Decisions:
 
     def interrupted(self,now):
         for c in self.candidates.values():
-            if not c.terminal:self.notify(c,'DONNEES_INSUFFISANTES','Flux interrompu pendant la decision.',now,True)
+            if not c.terminal:
+                c.reasons.add('FLUX_INTERROMPU')
+                self.notify(c,'DONNEES_INSUFFISANTES','Flux interrompu pendant la decision.',now,True)
+
+    def unparsed(self,target,value,now):
+        if value.get('err') is not None:return
+        logs=[line for line in value.get('logs',[]) if isinstance(line,str)]
+        truncated=any(re.search(r'logs? truncated',line,re.I) for line in logs)
+        could_buy=any(re.search(r'Instruction: (?:Buy\w*|\w*Swap\w*|\w*Route\w*)',line,re.I) for line in logs)
+        could_move=any(re.search(r'Instruction: (?:Buy\w*|Sell\w*|\w*Swap\w*|\w*Route\w*|Transfer\w*|Burn\w*|MintTo\w*)',line,re.I) for line in logs)
+        if target[0]=='wallet' and (could_move or truncated):
+            for c in self.candidates.values():
+                if not c.terminal and 0<=now-c.t0<=1:
+                    c.unknown_position=True
+                    c.reasons.add('LOGS_TRONQUES' if truncated else 'MOUVEMENT_POSITION_NON_DECODE')
+        elif target[0]=='token' and (could_buy or truncated):
+            c=self.candidates.get(target[1])
+            if c and not c.terminal and 0<=now-c.t0<=3:
+                c.unknown_volume=True
+                c.reasons.add('LOGS_TRONQUES' if truncated else 'ACHAT_OU_SWAP_NON_DECODE')
 
 
 class PaperObserver:
@@ -322,12 +354,7 @@ class PaperObserver:
                                     if target:
                                         events=native_trades(value,(result.get('context') or {}).get('slot',0),wall,mono)
                                         for event in events:self.decisions.observe(event)
-                                        if not events and value.get('err') is None and any('Instruction: ' in str(l) for l in value.get('logs',[])):
-                                            for c in self.decisions.candidates.values():
-                                                if not c.terminal and mono-c.t0<=1 and target[0]=='wallet':c.unknown_position=True
-                                            if target[0]=='token':
-                                                c=self.decisions.candidates.get(target[1])
-                                                if c and not c.terminal:c.unknown_volume=True
+                                        if not events:self.decisions.unparsed(target,value,mono)
                             self.decisions.tick(mono)
                             if len(self.results)>=self.decisions.limit:
                                 summary=dict(type='paper_summary',session_id=self.session,tokens=len(self.results),

@@ -92,6 +92,50 @@ class PaperDecisionsTest(unittest.TestCase):
         self.buy(2,400,signature='F'*88)
         self.assertEqual(self.c.terminal,'ACHAT_SIMULE')
 
+    def test_initialization_closure_and_transfer_do_not_invalidate_buy_volume(self):
+        self.c.baseline=100
+        self.buy(.5,232)
+        self.d.tick(101)
+        for instruction in ('InitializeAccount3','CloseAccount','TransferChecked'):
+            self.d.unparsed(('token',MINT),{'err':None,'logs':['Program log: Instruction: '+instruction]},102)
+        self.d.tick(103.01)
+        self.assertEqual(self.c.terminal,'VOLUME_INSUFFISANT')
+        self.assertFalse(self.c.unknown_volume)
+
+    def test_unparsed_sale_after_one_second_does_not_block_subsequent_threshold(self):
+        self.c.baseline=100;self.d.tick(101)
+        value={'err':None,'logs':['Program log: Instruction: Sell']}
+        self.d.unparsed(('wallet',p.BBIG),value,101.8)
+        self.d.unparsed(('token',MINT),value,101.8)
+        self.buy(2,400)
+        self.assertEqual(self.c.terminal,'ACHAT_SIMULE')
+
+    def test_sell_with_unknown_appended_fields_after_first_second_does_not_invalidate_buy_volume(self):
+        self.c.baseline=100;self.d.tick(101)
+        self.d.observe(event(1.8,user=p.BBIG,is_buy=False,token_amount=100,unparsed_tail_bytes=8))
+        self.buy(2,400,signature='F'*88)
+        self.assertEqual(self.c.terminal,'ACHAT_SIMULE')
+
+    def test_unparsed_early_sale_still_invalidates_position(self):
+        self.c.baseline=100
+        self.d.unparsed(('wallet',p.BBIG),{'err':None,'logs':['Program log: Instruction: Sell']},100.8)
+        self.buy(1.5,500);self.d.tick(103.01)
+        self.assertEqual(self.c.terminal,'DONNEES_INSUFFISANTES')
+        self.assertIn('MOUVEMENT_POSITION_NON_DECODE',self.output[-1]['missing_reasons'])
+
+    def test_unparsed_swap_is_still_incomplete_and_reason_is_preserved(self):
+        self.c.baseline=100
+        self.d.unparsed(('token',MINT),{'err':None,'logs':['Program log: Instruction: SwapV2']},101.5)
+        self.d.tick(103.01)
+        self.assertEqual(self.c.terminal,'DONNEES_INSUFFISANTES')
+        self.assertIn('ACHAT_OU_SWAP_NON_DECODE',self.output[-1]['missing_reasons'])
+
+    def test_truncated_logs_remain_incomplete_even_without_instruction(self):
+        self.c.baseline=100
+        self.d.unparsed(('token',MINT),{'err':None,'logs':['Log truncated']},101.5)
+        self.d.tick(103.01)
+        self.assertIn('LOGS_TRONQUES',self.output[-1]['missing_reasons'])
+
     def test_deadline_remains_three_seconds_from_initial_event(self):
         self.c.baseline=100
         self.buy(2.9,399);self.d.tick(103.001)

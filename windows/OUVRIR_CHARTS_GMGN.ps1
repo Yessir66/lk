@@ -102,7 +102,7 @@ try {
     if (-not $SingleTab) { Start-Process -FilePath $chrome -ArgumentList @('--new-tab','https://gmgn.ai/sol') }
 
     # Fixed remote command, no credentials on the command line; no exposed web server.
-    $remote = 'exec /home/bot/wallet-alerts/.venv/bin/python -u /home/bot/wallet-alerts/scripts/wallet_alerts_ws.py --early --browser-events'
+    $remote = 'exec /home/bot/wallet-alerts/.venv/bin/python -u /home/bot/wallet-alerts/scripts/wallet_alerts_ws.py --early --browser-events --live-only'
     if ($PaperBuys) { $remote += ' --paper-buys' }
     & ssh.exe -T -o ServerAliveInterval=15 -o ServerAliveCountMax=3 bot@2.24.62.69 $remote | ForEach-Object {
         $line = [string]$_

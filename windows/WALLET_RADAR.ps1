@@ -52,6 +52,7 @@ try {
         if ($choice -eq '0') { break }
         try {
             if ($choice -eq '1') {
+                Send-RadarScripts
                 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'OUVRIR_CHARTS_GMGN.ps1') -SingleTab
             } elseif ($choice -eq '2') {
                 Invoke-WalletManager

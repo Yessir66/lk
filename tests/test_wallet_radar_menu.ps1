@@ -34,8 +34,8 @@ try {
     foreach ($answer in @('2','1','0')) { $global:RadarAnswers.Enqueue($answer) }
     function global:Read-Host { return $global:RadarAnswers.Dequeue() }
     & $menu
-    if ($global:RadarCalls.Count -ne 3 -or $global:RadarCalls[2].kind -cne 'start') { throw 'Menu did not dispatch manage and start' }
-    if ($global:RadarCalls[2].values[-1] -cne '-SingleTab') { throw 'Surveillance must keep single-tab mode' }
+    if ($global:RadarCalls.Count -ne 4 -or $global:RadarCalls[2].kind -cne 'scp' -or $global:RadarCalls[3].kind -cne 'start') { throw 'Menu must update server scripts before the normal start' }
+    if ($global:RadarCalls[3].values[-1] -cne '-SingleTab') { throw 'Surveillance must keep single-tab mode' }
     $global:RadarCalls.Clear()
     foreach ($answer in @('3','0')) { $global:RadarAnswers.Enqueue($answer) }
     & $menu

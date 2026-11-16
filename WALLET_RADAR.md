@@ -10,6 +10,8 @@ Depuis **2026.11.15.4**, **5 : arreter proprement Wallet Radar sur le VPS** perm
 
 Depuis **2026.11.15.6**, **6 : diagnostiquer les cas incomplets**, en lecture seule et sans redemarrer la collecte. Voir [DIAGNOSTIC_SIMULATION.md](DIAGNOSTIC_SIMULATION.md).
 
+Depuis **2026.11.16.1**, les lanceurs suivent **uniquement le direct** et n'affichent plus les anciennes transactions par rattrapage. Les operations annexes ne sont plus assimilees a des achats manquants ; les causes des donnees insuffisantes sont detaillees. Voir [DIRECT_ET_CAUSES_SIMULATION.md](DIRECT_ET_CAUSES_SIMULATION.md).
+
 ## Installer le menu une seule fois
 
 1. Arrete l'ancien lanceur avec **Ctrl+C**.
@@ -39,7 +41,7 @@ Le raccourci `windows\GERER_WALLETS.cmd` permet aussi d'acceder directement a ce
 
 1. Garde Chrome ouvert dans ton profil habituel, avec l'extension GMGN active et son onglet reserve.
 2. Double-clique sur **`WALLET_RADAR.cmd`**, puis choisis **1 - Demarrer la surveillance et GMGN en onglet unique**.
-3. Saisis le mot de passe VPS si demande. Garde le PC connecte et la fenetre du lanceur ouverte.
+3. Le menu transfere d'abord les scripts puis lance la connexion : le mot de passe VPS peut etre demande deux fois. Garde le PC connecte et la fenetre du lanceur ouverte.
 
 La console affiche **Wallet Radar**, puis les noms reellement suivis. Avec BBIG BOSS seul et le mode `--early`, il y a **1 wallet et 2 abonnements** : processed et confirmed. Il n'y a pas deux wallets.
 
