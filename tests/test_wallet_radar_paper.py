@@ -181,6 +181,37 @@ class PaperDecisionsTest(unittest.TestCase):
         self.assertEqual(self.c.volume,400)
         self.assertEqual(self.c.terminal,'ACHAT_SIMULE')
 
+    def test_ttwo_volume_uses_verified_six_decimals(self):
+        self.c.baseline=100
+        self.prices.update_ttwo({p.TTWO_PRICE_ID:{'usd':'200','last_updated_at':1000}},1000)
+        self.d.observe(event(1.2,quote_mint=p.TTWO,quote_amount=2*10**6))
+        self.assertEqual(self.c.volume,400)
+        self.assertEqual(self.c.terminal,'ACHAT_SIMULE')
+
+    def test_doge_volume_uses_eight_decimals_and_address_specific_candle(self):
+        self.c.baseline=100
+        candle={'meta':{'base':{'address':p.DOGE}},'data':{'attributes':{'ohlcv_list':[[960,.05,.05,.05,.05,10]]}}}
+        self.prices.update_doge(candle,1000)
+        self.d.observe(event(.2,quote_mint=p.DOGE,quote_amount=8000*10**8))
+        self.assertIsNone(self.c.terminal)
+        self.d.tick(101)
+        self.assertEqual(self.c.volume,400)
+        self.assertEqual(self.c.terminal,'ACHAT_SIMULE')
+
+    def test_ttwo_and_doge_pending_prices_keep_deadline(self):
+        for quote in (p.TTWO,p.DOGE):
+            with self.subTest(quote=quote):
+                output=[];prices=p.Prices();engine=p.Decisions(prices,output.append)
+                engine.observe(event(user=p.BBIG,signature=SIGNATURE))
+                candidate=engine.candidates[MINT];candidate.baseline=100
+                engine.observe(event(.5,quote_mint=quote,quote_amount=10**12))
+                reason='COURS_TTWO_USD_ABSENT_OU_PERIME' if quote==p.TTWO else 'COURS_DOGE_USD_ABSENT_OU_PERIME'
+                self.assertIn(reason,candidate.reasons)
+                self.assertNotIn('DEVISE_COTATION_NON_SUPPORTEE',candidate.reasons)
+                engine.tick(103.01)
+                self.assertEqual(candidate.terminal,'DONNEES_INSUFFISANTES')
+                self.assertEqual(candidate.volume,0)
+
     def test_pending_price_is_revalued_before_deadline_without_resetting_t0(self):
         self.c.baseline=100
         self.d.observe(event(.2,quote_mint=p.PUMP_TOKEN,quote_amount=100000*10**6))
@@ -338,6 +369,27 @@ class NativeDecoderTest(unittest.TestCase):
             with self.subTest(price=price,published=published),self.assertRaises(ValueError):
                 p.Prices().update_pump({'pump-fun':{'usd':price,'last_updated_at':published}},1000)
 
+    def test_ttwo_price_rejects_invalid_stale_and_future_prices(self):
+        for price,published in [('NaN',1000),('Infinity',1000),('-1',1000),('200',900),('200',1001),('200',True)]:
+            with self.subTest(price=price,published=published),self.assertRaises((ValueError,ArithmeticError)):
+                p.Prices().update_ttwo({p.TTWO_PRICE_ID:{'usd':price,'last_updated_at':published}},1000)
+
+    def test_doge_rejects_wrong_asset_missing_stale_and_invalid_candles(self):
+        import copy
+        valid={'meta':{'base':{'address':p.DOGE}},'data':{'attributes':{'ohlcv_list':[[960,.05,.05,.05,.05,10]]}}}
+        invalid=[]
+        for value in ('NaN',0,-1):
+            data=copy.deepcopy(valid);data['data']['attributes']['ohlcv_list'][0][4]=value;invalid.append(data)
+        for value in (900,1001):
+            data=copy.deepcopy(valid);data['data']['attributes']['ohlcv_list'][0][0]=value;invalid.append(data)
+        data=copy.deepcopy(valid);data['meta']['base']['address']=p.SOL;invalid.append(data)
+        invalid.extend([{}, {'meta':valid['meta'],'data':{'attributes':{'ohlcv_list':[]}}}])
+        for data in invalid:
+            with self.subTest(data=data),self.assertRaises((ValueError,ArithmeticError)):
+                p.Prices().update_doge(data,1000)
+        prices=p.Prices();prices.update_doge(valid,1000)
+        self.assertIsNone(prices.dollars(event(quote_mint=p.DOGE,quote_amount=10**8),1051))
+
     def test_report_uses_last_session_only(self):
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)/'paper.jsonl'
@@ -364,6 +416,7 @@ class ObserverProtocolTest(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as folder:
             observer=p.PaperObserver('wss://unused.invalid',Path(folder)/'paper.jsonl')
             observer.prices.run=AsyncMock()
+            observer.prices.run_doge=AsyncMock()
             sent=[];queue=asyncio.Queue();mint=p.public_key(bytes([2])*32)
             def frame(signature,raw,sub):
                 return json.dumps({'method':'logsNotification','params':{'subscription':sub,'result':{
@@ -389,5 +442,6 @@ class ObserverProtocolTest(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(asyncio.CancelledError):await asyncio.wait_for(observer.run(),3)
             self.assertEqual([row['method'] for row in sent],['logsSubscribe','logsSubscribe','logsUnsubscribe'])
             self.assertEqual(observer.results[mint],'ACHAT_SIMULE')
+            observer.prices.run_doge.assert_awaited_once()
             rows=[json.loads(line) for line in observer.path.read_text().splitlines()]
             self.assertEqual(rows[0]['limit'],30)

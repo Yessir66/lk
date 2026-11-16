@@ -15,7 +15,7 @@ Cette fiche décrit le dernier état connu ; le code et la configuration du dép
 
 ## État connu et wallet demandé
 
-- Version serveur du dépôt : **2026.11.16.2**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
+- Version serveur du dépôt : **2026.11.16.3**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
 - Extension Chrome : version **1.0.0**, dossier `chrome-gmgn`.
 - Dernière liste demandée : **BBIG BOSS uniquement**, adresse publique :
   `BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp`.
@@ -30,6 +30,12 @@ Cette fiche décrit le dernier état connu ; le code et la configuration du dép
 - Correctif 2026.11.16.2 prepare : PUMP (`pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn`) a **6 decimales**, metadonnees du contrat verifiees sur CoinGecko. Meme requete publique pour SOL et PUMP, cours positifs finis horodates de moins de 90 s. Montants en attente revalorises seulement avant la limite de 3 s, sans reset T0 ni double compte. Autres devises inconnues toujours refusees. **325 tests passent** ; aucun nouveau resultat VPS corrige n'est encore acquis. Guide `COTATION_PUMP_USD.md`. Comme l'essai est a 20/30, laisser finir si souhaite avant une mise a jour qui redemarre un nouvel essai ; ne pas pretendre conserver le meme compteur lors du redemarrage.
 
 ## Dépôt et lieux de déploiement
+
+Dernier correctif 2026.11.16.3 : les adresses copiees par l'utilisateur sont DOGE Solana `DoGEV7LASBkQbibMc5k5vKnTZoMg423GpJ5QtJEGfm7R` (8 decimales) et TTWO Backpack `TTWofwAge91oFhZs7kpQdyrVRkmevgM88xijGvQFbKo` (6). Recoupees sur Jupiter/GeckoTerminal, TTWO aussi CoinGecko. TTWO rejoint la requete de prix CoinGecko existante. DOGE utilise uniquement la bougie USD minute du pool exact GeckoTerminal, adresse de base verifiee, age <=90 s depuis le debut de la minute, polling independant 30 s. Ne pas substituer le DOGE natif. Bougie = estimation, pas prix executable ou exact du trade. Absence de prix => raison COURS_*_USD_ABSENT_OU_PERIME ; autres devises inconnues toujours refusees. **330 tests passent**, dont conversions, mauvaise adresse, prix futurs/perimes/non finis et maintien du delai. Guide `COTATIONS_DOGE_TTWO.md`, archive `wallet_radar_doge_ttwo_2026.11.16.3.zip`. Installation VPS par utilisateur encore necessaire.
+
+Dernieres captures de simulation : nouvel essai 5/30 avec 3 achats theoriques (501,58 USD a 1,452 s ; 2004,26 USD a 1,003 s ; 529,31 USD a 1,513 s) et 2 sorties totales avant 1 s. Puis 14/30, diagnostic de 2 devises inconnues ci-dessus. Notifications Windows confirmees par photos, delai de livraison non mesure.
+
+Nouvelle demande utilisateur : commencer des mini achats reels pour mesurer les intervalles. **Montant choisi : 1 USD de tokens par achat reel de test, hors frais** (reponse explicite du 16 novembre). Ne remplace pas automatiquement le montant historique 25 USD de la strategie/simulation. Pas de module d'execution reel active : limites de frais, glissement, nombre/budget d'essais, gestion de revente et wallet dedie restent a definir avant envoi. Repondre et avancer point par point comme souhaite ; ne jamais demander une cle privee dans le chat.
 
 | Élément | Chemin / référence |
 |---|---|

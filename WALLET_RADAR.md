@@ -12,7 +12,7 @@ Depuis **2026.11.15.6**, **6 : diagnostiquer les cas incomplets**, en lecture se
 
 Depuis **2026.11.16.1**, les lanceurs suivent **uniquement le direct** et n'affichent plus les anciennes transactions par rattrapage. Les operations annexes ne sont plus assimilees a des achats manquants ; les causes des donnees insuffisantes sont detaillees. Voir [DIRECT_ET_CAUSES_SIMULATION.md](DIRECT_ET_CAUSES_SIMULATION.md).
 
-Depuis **2026.11.16.2**, la simulation convertit aussi les achats cotes en **PUMP** via un cours public horodate. Voir [COTATION_PUMP_USD.md](COTATION_PUMP_USD.md). Les autres cotations inconnues restent exclues de la valorisation et aucun achat reel n'est active.
+Depuis **2026.11.16.3**, la simulation convertit aussi les achats cotes en **PUMP, TTWO et DOGE** pour les adresses verifiees. Voir [COTATIONS_DOGE_TTWO.md](COTATIONS_DOGE_TTWO.md) et [COTATION_PUMP_USD.md](COTATION_PUMP_USD.md). Le prix DOGE est indicatif, issu d'une bougie minute ; toute cotation vieille de plus de 90 s est refusee. Les autres cotations inconnues restent exclues de la valorisation et aucun achat reel n'est active.
 
 ## Installer le menu une seule fois
 

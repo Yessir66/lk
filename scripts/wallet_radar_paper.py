@@ -18,9 +18,14 @@ PUMP='6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'
 SOL='So11111111111111111111111111111111111111112'
 USDC='EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 PUMP_TOKEN='pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn'
+TTWO='TTWofwAge91oFhZs7kpQdyrVRkmevgM88xijGvQFbKo'
+DOGE='DoGEV7LASBkQbibMc5k5vKnTZoMg423GpJ5QtJEGfm7R'
+TTWO_PRICE_ID='take-two-interactive-software-backpack-securities'
+DOGE_POOL='4n9rkpKkPUGFquBh6UXqNYbaCNyBcFq9VwNbutwGX5d6'
 ZERO='11111111111111111111111111111111'
 PRICE_REASONS={'DEVISE_COTATION_NON_SUPPORTEE','COURS_SOL_USD_ABSENT_OU_PERIME',
-               'COURS_PUMP_USD_ABSENT_OU_PERIME','MONTANT_COTATION_INVALIDE'}
+               'COURS_PUMP_USD_ABSENT_OU_PERIME','COURS_TTWO_USD_ABSENT_OU_PERIME',
+               'COURS_DOGE_USD_ABSENT_OU_PERIME','MONTANT_COTATION_INVALIDE'}
 DISCRIMINATOR=bytes([189,219,127,211,78,230,97,238])
 ALPHABET='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 # Official ABI: pump-public-docs 639b87f + @pump-fun/pump-sdk 4.3.1, src/idl/pump.json.
@@ -101,6 +106,33 @@ class Prices:
     def __init__(self):
         self.usd=None;self.published=0;self.received=0
         self.pump_usd=None;self.pump_published=0
+        self.ttwo_usd=None;self.ttwo_published=0
+        self.doge_usd=None;self.doge_published=0
+
+    def update_ttwo(self,data,now):
+        row=data.get(TTWO_PRICE_ID,{})
+        price,published=self.checked_price(row.get('usd'),row.get('last_updated_at'),now)
+        self.ttwo_usd=price;self.ttwo_published=published
+
+    @staticmethod
+    def checked_price(value,published,now):
+        price=Decimal(str(value))
+        if (not price.is_finite() or price<=0 or isinstance(published,bool)
+            or not isinstance(published,(int,float)) or not 0<=now-published<=90):
+            raise ValueError('Invalid or stale USD price')
+        return price,published
+
+    def update_doge(self,data,now):
+        # Explicit token address in the request and response: never substitute native DOGE.
+        if data.get('meta',{}).get('base',{}).get('address')!=DOGE:
+            raise ValueError('Unexpected DOGE pool asset')
+        candles=data.get('data',{}).get('attributes',{}).get('ohlcv_list',[])
+        if not candles or not isinstance(candles[0],list) or len(candles[0])<6:
+            raise ValueError('Missing DOGE USD candle')
+        candle=candles[0]
+        # Age uses the minute START, conservatively, not the HTTP response date.
+        price,published=self.checked_price(candle[4],candle[0],now)
+        self.doge_usd=price;self.doge_published=published
 
     def update(self,data,now):
         row=data.get('solana',{});price=Decimal(str(row.get('usd','0')));published=row.get('last_updated_at')
@@ -117,6 +149,10 @@ class Prices:
     def dollars(self,event,now):
         mint=event.get('quote_mint',ZERO)
         if mint==USDC:return Decimal(event.get('quote_amount',0))/10**6
+        if mint in (TTWO,DOGE):
+            price,published,decimals=(self.ttwo_usd,self.ttwo_published,6) if mint==TTWO else (self.doge_usd,self.doge_published,8)
+            if price is None or not 0<=now-published<=90:return None
+            return Decimal(event.get('quote_amount',0))/10**decimals*price
         if mint==PUMP_TOKEN:
             if self.pump_usd is None or not 0<=now-self.pump_published<=90:return None
             # Official CoinGecko contract metadata: Pump.fun PUMP token has 6 decimals.
@@ -127,17 +163,27 @@ class Prices:
         return Decimal(amount)/10**9*self.usd
 
     async def run(self):
-        url='https://api.coingecko.com/api/v3/simple/price?ids=solana,pump-fun&vs_currencies=usd&include_last_updated_at=true'
+        url='https://api.coingecko.com/api/v3/simple/price?ids=solana,pump-fun,'+TTWO_PRICE_ID+'&vs_currencies=usd&include_last_updated_at=true'
         def fetch():
             with urllib.request.urlopen(url,timeout=5) as response:return json.load(response)
         while True:
             try:
                 data=await asyncio.to_thread(fetch);now=time.time()
-                for update in (self.update,self.update_pump):
+                for update in (self.update,self.update_pump,self.update_ttwo):
                     try:update(data,now)
                     except (ValueError,TypeError,ArithmeticError):pass
             except Exception:pass  # No credentials, provider bodies or URLs in console errors.
             await asyncio.sleep(15)
+
+    async def run_doge(self):
+        url=('https://api.geckoterminal.com/api/v2/networks/solana/pools/'+DOGE_POOL+
+             '/ohlcv/minute?aggregate=1&limit=1&currency=usd&token='+DOGE)
+        def fetch():
+            with urllib.request.urlopen(url,timeout=5) as response:return json.load(response)
+        while True:
+            try:self.update_doge(await asyncio.to_thread(fetch),time.time())
+            except Exception:pass
+            await asyncio.sleep(30)
 
 
 @dataclass
@@ -223,7 +269,9 @@ class Decisions:
             dollars=self.prices.dollars(event,wall)
             if dollars is None or dollars<=0:
                 remaining.append(event);quote=event.get('quote_mint',ZERO)
-                if quote not in (ZERO,SOL,USDC,PUMP_TOKEN):c.reasons.add('DEVISE_COTATION_NON_SUPPORTEE')
+                if quote not in (ZERO,SOL,USDC,PUMP_TOKEN,TTWO,DOGE):c.reasons.add('DEVISE_COTATION_NON_SUPPORTEE')
+                elif quote==TTWO and (self.prices.ttwo_usd is None or not 0<=wall-self.prices.ttwo_published<=90):c.reasons.add('COURS_TTWO_USD_ABSENT_OU_PERIME')
+                elif quote==DOGE and (self.prices.doge_usd is None or not 0<=wall-self.prices.doge_published<=90):c.reasons.add('COURS_DOGE_USD_ABSENT_OU_PERIME')
                 elif quote==PUMP_TOKEN and (self.prices.pump_usd is None or not 0<=wall-self.prices.pump_published<=90):c.reasons.add('COURS_PUMP_USD_ABSENT_OU_PERIME')
                 elif quote in (ZERO,SOL) and (self.prices.usd is None or not 0<=wall-self.prices.published<=90):c.reasons.add('COURS_SOL_USD_ABSENT_OU_PERIME')
                 else:c.reasons.add('MONTANT_COTATION_INVALIDE')
@@ -347,6 +395,7 @@ class PaperObserver:
         from websockets.asyncio.client import connect
         self.write_record(dict(type='paper_session',session_id=self.session,limit=self.decisions.limit,at=time.time()))
         price_task=asyncio.create_task(self.prices.run())
+        doge_task=asyncio.create_task(self.prices.run_doge())
         try:
             while True:
                 try:
@@ -406,7 +455,8 @@ class PaperObserver:
                     await asyncio.sleep(3)
         finally:
             self.decisions.interrupted(time.monotonic())
-            price_task.cancel();await asyncio.gather(price_task,return_exceptions=True)
+            price_task.cancel();doge_task.cancel()
+            await asyncio.gather(price_task,doge_task,return_exceptions=True)
 
 
 def latest_session(path):
@@ -434,4 +484,4 @@ def report(path):
         print(mint[:8]+'... '+row['code']+' ; volume USD observe '+volume+
               ' ; decision a '+str(row.get('elapsed_s','?'))+' s ; '+str(row.get('message','')))
     print('Aucun achat reel. Volumes observes a reception processed, pas historique exhaustif ni prix executable.')
-    print('SOL/USD et PUMP/USD indicatifs CoinGecko horodates (maximum 90 s) ; USDC nominal 1 USD.')
+    print('SOL/PUMP/TTWO USD indicatifs CoinGecko ; DOGE USD bougie minute GeckoTerminal ; age maximum 90 s ; USDC nominal 1 USD.')
