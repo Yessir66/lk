@@ -1,4 +1,4 @@
-# Wallet Radar — 2026.11.16.6
+# Wallet Radar — 2026.11.16.7
 
 **Mode d'essai reel explicite ajoute aux menus 7/8/9** : voir [ESSAIS_REELS_WALLET_RADAR.md](ESSAIS_REELS_WALLET_RADAR.md). Les indications « lecture seule » ci-dessous concernent la surveillance normale et la simulation ; elles ne s'appliquent pas au menu 8 ni a `--live-trades`.
 

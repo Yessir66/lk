@@ -67,11 +67,39 @@ class BudgetTest(unittest.TestCase):
 
 
 class InstructionTest(unittest.TestCase):
+    def test_jupiter_get_uses_curl_without_get_content_type_and_never_sends_order(self):
+        transport=live.Transport('https://unused.invalid','FAKE_TEST_KEY')
+        response=Mock(status_code=200);response.json.return_value=quote()
+        with patch.object(transport.jupiter_http,'request',return_value=response) as client,patch('urllib.request.urlopen') as standard:
+            result=transport.jup(live.quote_path(live.SOL,MINT,1000))
+        self.assertEqual(result,quote());standard.assert_not_called()
+        self.assertEqual(client.call_args.args[0],'GET')
+        headers=client.call_args.kwargs['headers']
+        self.assertNotIn('Content-Type',headers);self.assertEqual(headers['x-api-key'],'FAKE_TEST_KEY')
+        self.assertFalse(client.call_args.kwargs['allow_redirects'])
+
+    def test_curl_http_400_html_is_reported_without_echoing_body(self):
+        transport=live.Transport('https://unused.invalid','FAKE_TEST_KEY')
+        response=Mock(status_code=400,headers={'Content-Type':'text/html'},content=b'<html>PRIVATE_SECRET</html>')
+        with patch.object(transport.jupiter_http,'request',return_value=response):
+            with self.assertRaises(live.TradeError) as caught:transport.jup(live.quote_path(live.SOL,MINT,1000))
+        self.assertIn('HTTP 400',str(caught.exception));self.assertIn('HTML',str(caught.exception))
+        self.assertNotIn('PRIVATE',str(caught.exception))
+        self.assertEqual(live.jupiter_reason({'message':'API key invalid PRIVATE_SECRET'}),'cle API Jupiter absente ou refusee')
+
+    def test_curl_dns_errno_is_not_misreported_as_http_status(self):
+        transport=live.Transport('https://unused.invalid','FAKE_TEST_KEY')
+        class CurlFailure(Exception):code=6
+        with patch.object(transport.jupiter_http,'request',side_effect=CurlFailure('PRIVATE_URL')):
+            with self.assertRaises(live.TradeError) as caught:transport.jup(live.quote_path(live.SOL,MINT,1000))
+        self.assertIn('DNS',str(caught.exception));self.assertNotIn('HTTP 6',str(caught.exception))
+        self.assertNotIn('PRIVATE',str(caught.exception))
+
     def test_known_jupiter_error_code_is_safe_but_arbitrary_body_is_never_printed(self):
         transport=live.Transport('https://unused.invalid','FAKE')
         data={'errorCode':'COULD_NOT_FIND_ANY_ROUTE','error':'PRIVATE_KEY_AND_BODY'}
         exc=urllib.error.HTTPError('https://private.invalid/SECRET_URL',400,'SECRET_REASON',{},StringIO(json.dumps(data)))
-        with patch('urllib.request.urlopen',side_effect=exc):
+        with patch.object(transport.jupiter_http,'request',side_effect=exc):
             with self.assertRaises(live.TradeError) as caught:transport.jup(live.quote_path(live.SOL,MINT,1000))
         message=str(caught.exception)
         self.assertIn('HTTP 400',message);self.assertIn('COULD_NOT_FIND_ANY_ROUTE',message)
@@ -91,7 +119,7 @@ class InstructionTest(unittest.TestCase):
     def test_provider_error_identifies_stage_and_status_without_secret(self):
         transport=live.Transport('https://unused.invalid/?api-key=PRIVATE_RPC','PRIVATE_JUPITER')
         exc=urllib.error.HTTPError('https://private.invalid/PRIVATE_URL',403,'PRIVATE_BODY',{},None)
-        with patch('urllib.request.urlopen',side_effect=exc):
+        with patch.object(transport.jupiter_http,'request',side_effect=exc):
             with self.assertRaises(live.TradeError) as caught:transport.jup('/swap/v1/swap-instructions',{})
         self.assertIn('Jupiter/construction : HTTP 403',str(caught.exception))
         self.assertNotIn('PRIVATE',str(caught.exception))

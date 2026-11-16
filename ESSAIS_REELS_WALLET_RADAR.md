@@ -1,4 +1,4 @@
-# Wallet Radar 2026.11.16.6 — premier essai reel
+# Wallet Radar 2026.11.16.7 — premier essai reel
 
 En cas d'echec de verification, le **menu 10** controle les acces sans ressaisie ni ordre. Voir [DEPANNAGE_ACCES_REELS.md](DEPANNAGE_ACCES_REELS.md). Le menu 7 conserve desormais les cles valides deja enregistrees.
 
@@ -39,7 +39,7 @@ Le suivi SL/TP interroge les cotations, avec attente de deux secondes entre tour
 3. Lancer `WALLET_RADAR.cmd`, choisir **7**. Les dependances sont installees sur le VPS, puis les saisies masquees se font dans la session SSH : cle privee du wallet dedie (base58 ou tableau JSON), puis cle Jupiter. **Ne jamais les envoyer dans une conversation, capture, argument de commande ou fichier a televerser.** L'adresse derivee de la cle doit correspondre exactement au wallet ci-dessus.
 4. Le controle verifie le wallet, le RPC, une cotation et la construction d'instructions SOL/USDC **sans signature ni envoi**. Ne pas lancer 8 si cette verification echoue. Une reussite ne prouve pas qu'un futur token aura une route.
 5. Alimenter le wallet dedie en SOL pour l'essai, dans l'enveloppe souhaitee de 15 USD. Les retraits/depots manuels ne remettent pas le compteur du bot a zero. Une preparation d'achat requiert assez de SOL pour toute son enveloppe reservee.
-6. Chrome et l'extension ouverts, choisir **8**. La banniere doit afficher **2026.11.16.6 — ESSAI REEL**. Ce choix peut effectivement acheter/vendre avec les fonds du wallet.
+6. Chrome et l'extension ouverts, choisir **8**. La banniere doit afficher **2026.11.16.7 — ESSAI REEL**. Ce choix peut effectivement acheter/vendre avec les fonds du wallet.
 7. **9** dans un second menu affiche les transactions et les delais. **5** arrete le processus, donc suspend aussi les sorties : verifier la position avant de fermer. Apres un arret, le menu 8 reprend le suivi des transactions/positions persistantes.
 
 Fichiers prives sur le VPS : `/home/bot/wallet-alerts/private_wallet_radar/` (0700), `wallet.json` et `jupiter_api_key.txt` (0600). Exclus de Git et des archives. Ils ne sont jamais transmis au PC par le menu. La cle du wallet reste accessible au processus local qui doit signer ; l'acces au compte VPS doit rester prive.

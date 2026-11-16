@@ -9,6 +9,7 @@ import base64
 from decimal import Decimal, ROUND_CEILING
 import getpass
 import hashlib
+import io
 import json
 import math
 import os
@@ -21,6 +22,7 @@ import struct
 import threading
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 
 from wallet_radar_paper import PaperObserver, SOL, BBIG, USDC
@@ -64,7 +66,8 @@ def jupiter_reason(data):
     code=data.get('errorCode')
     if isinstance(code,str) and code in JUPITER_ERRORS:return code+' : '+JUPITER_ERRORS[code]
     # Some quote errors have no errorCode. Classify known text, never echo it.
-    error=data.get('error')
+    error=data.get('error') or data.get('message')
+    if isinstance(error,dict):error=error.get('message')
     if isinstance(error,str):
         text=error.lower()
         if 'restrict_intermediate_tokens' in text or 'restrictintermediatetokens' in text:
@@ -72,6 +75,8 @@ def jupiter_reason(data):
         if 'could not find any route' in text or 'no routes found' in text:return 'aucune route trouvee'
         if 'not tradable' in text:return 'token non negociable'
         if 'amount too small' in text:return 'montant trop petit'
+        if 'api key' in text and any(word in text for word in ('invalid','missing','unauthorized')):
+            return 'cle API Jupiter absente ou refusee'
         if 'query' in text and ('deserialize' in text or 'parse' in text):return 'format de parametre de cotation refuse'
     return None
 
@@ -178,6 +183,10 @@ class Transport:
         self.url=rpc_url;self.key=api_key
         self.locks={'rpc':threading.Lock(),'jup':threading.Lock()};self.next_rpc=0;self.next_jup=0
         self.pause_rpc=0;self.pause_jup=0
+        # Use the installed client already used by the wallet monitor, without
+        # changing hosts, credentials, TLS verification or authentication rules.
+        from curl_cffi import requests
+        self.jupiter_http=requests.Session(impersonate='chrome')
 
     def request(self,url,body=None,jupiter=False,deadline=None,capture=None,label='Fournisseur'):
         # Fixed host for Jupiter. Keys only in the request header, never stdout.
@@ -189,29 +198,42 @@ class Transport:
             if deadline is not None and time.monotonic()>deadline:
                 raise TradeError('Limite de trois secondes depassee avant requete.')
             setattr(self,'next_'+name,time.monotonic()+(1 if jupiter else 1/3))
-            headers={'Content-Type':'application/json'}
+            headers={'Accept':'application/json'}
+            if body is not None:headers['Content-Type']='application/json'
             if jupiter:headers['x-api-key']=self.key
             req=urllib.request.Request(url,data=json.dumps(body).encode() if body is not None else None,headers=headers)
             try:
                 if deadline is not None and time.monotonic()>deadline:raise TradeError('Limite de trois secondes depassee avant requete.')
                 if capture is not None:capture['request_at']=time.time()
-                with urllib.request.urlopen(req,timeout=5) as response:value=json.load(response)
+                if jupiter:
+                    response=self.jupiter_http.request('GET' if body is None else 'POST',url,json=body,
+                        headers=headers,timeout=5,allow_redirects=False)
+                    if response.status_code!=200:
+                        raise urllib.error.HTTPError('Jupiter',response.status_code,'Reponse refusee',response.headers,
+                                                     io.BytesIO(response.content[:8192]))
+                    value=response.json()
+                else:
+                    with urllib.request.urlopen(req,timeout=5) as response:value=json.load(response)
             except Exception as exc:
                 if isinstance(exc,TradeError):raise
                 code=getattr(exc,'code',None)
-                if isinstance(code,int) and not isinstance(code,bool):
+                if isinstance(code,int) and not isinstance(code,bool) and 100<=code<=599:
                     if code==429:setattr(self,'pause_'+name,time.monotonic()+60)
                     detail='HTTP '+str(code)
                     if jupiter:
                         try:
-                            safe=jupiter_reason(json.loads(exc.read(8192)))
+                            error_data=json.loads(exc.read(8192))
+                            safe=jupiter_reason(error_data)
                             if safe:detail+=' ; '+safe
-                        except Exception:pass
+                            else:detail+=' ; motif JSON non reconnu'
+                        except Exception:
+                            content_type=(getattr(exc,'headers',None) or {}).get('Content-Type','').lower()
+                            detail+=' ; reponse HTML' if 'text/html' in content_type else ' ; reponse non JSON'
                 else:
                     reason=getattr(exc,'reason',exc)
-                    detail=('delai depasse' if isinstance(reason,(TimeoutError,socket.timeout)) else
-                            'certificat/TLS' if isinstance(reason,ssl.SSLError) else
-                            'resolution DNS' if isinstance(reason,socket.gaierror) else 'connexion ou format JSON indisponible')
+                    detail=('delai depasse' if isinstance(reason,(TimeoutError,socket.timeout)) or (jupiter and code==28) else
+                            'certificat/TLS' if isinstance(reason,ssl.SSLError) or (jupiter and code==60) else
+                            'resolution DNS' if isinstance(reason,socket.gaierror) or (jupiter and code==6) else 'connexion ou format JSON indisponible')
                 raise TradeError(label+' : '+detail+'. URL, cles et reponse privee masquees.') from None
             if not isinstance(value,dict) or value.get('error') is not None:
                 error=value.get('error') if isinstance(value,dict) else None
@@ -595,7 +617,7 @@ def main():
             print('CONTROLE 1/3 : RPC/getBalance...',flush=True)
             balance=transport.rpc('getBalance',[OWNER,{'commitment':'confirmed'}])['value']
             print('RPC : OK. Solde SOL : '+str(Decimal(balance)/10**9),flush=True)
-            print('CONTROLE 2/3 : Jupiter/cotation...',flush=True)
+            print('CONTROLE 2/3 : Jupiter/cotation (client curl_cffi)...',flush=True)
             q=transport.jup(quote_path(SOL,USDC,1000000))
             quote_check(q,SOL,USDC,1000000)
             print('Jupiter/cotation : OK.',flush=True)

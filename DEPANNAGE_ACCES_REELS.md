@@ -1,4 +1,10 @@
-# Wallet Radar 2026.11.16.6 — controle des acces sans ordre
+# Wallet Radar 2026.11.16.7 — controle des acces sans ordre
+
+La capture suivante conserve HTTP400 sans motif reconnu. La .7 utilise pour Jupiter **curl_cffi, deja installe et utilise par la surveillance**, a la place de urllib. Elle retire Content-Type des GET sans corps, garde Accept/application/json, la meme cle, le meme hote, la verification TLS, les quotas et les parametres de cotation. Les redirections sont refusees. Aucun nouvel ordre ou essai de signature dans le menu10.
+
+Le controle affiche explicitement « client curl_cffi ». Si le refus persiste, il distingue reponse HTML, non JSON et motif JSON non reconnu ; il classe aussi les messages sous `message` (pas seulement `error`). Les erreurs de connexion curl ne sont pas confondues avec des statuts HTTP (par exemple errno6 = DNS, pas HTTP6). Aucun corps fournisseur n'est affiche.
+
+Un essai public depuis le cloud avec cle deliberement factice a donne **401**, et sans cle **200**, pour la meme cotation. Cela ne prouve pas la validite de la cle de l'utilisateur ni le fonctionnement du VPS ; il n'y a toutefois pas encore de preuve qu'une regeneration de cle soit necessaire. **Conserver la cle actuelle et tester menu10 apres installation.** Un refus d'authentification explicite pourra ensuite etre traite sans modifier la cle wallet. Les tests du client ne lancent jamais d'ordre.
 
 Derniere capture : RPC/getBalance **OK**, puis Jupiter/cotation **HTTP 400**, avant toute construction/signature/envoi. Le refus concerne la demande de cotation ; ce code ne prouve pas a lui seul une mauvaise cle API. La meme demande GET publique fonctionne depuis le cloud : le refus du VPS n'est pas encore reproduit ici.
 

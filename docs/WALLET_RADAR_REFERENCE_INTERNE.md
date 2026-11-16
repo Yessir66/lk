@@ -15,7 +15,7 @@ Cette fiche décrit le dernier état connu ; le code et la configuration du dép
 
 ## État connu et wallet demandé
 
-- Version serveur du dépôt : **2026.11.16.6**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
+- Version serveur du dépôt : **2026.11.16.7**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
 - Extension Chrome : version **1.0.0**, dossier `chrome-gmgn`.
 - Dernière liste demandée : **BBIG BOSS uniquement**, adresse publique :
   `BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp`.
@@ -223,6 +223,8 @@ Autres cas :
 Les scripts `discord_*` sont partagés avec d'autres bots : ne pas changer leurs listes globales pour remplacer seulement la liste de Wallet Radar.
 
 ## Vérification et livraison
+
+Version 2026.11.16.7 : nouvelle capture meme JupiterquoteHTTP400 sans motif classe, apres RPC OK. Utilisateur demande s'il doit refaire une cle Jupiter ; reponse pas encore, 400 insuffisant pour conclure. Client Jupiter passe de urllib a curl_cffi Session(impersonate=chrome), meme dependance0.16.3 utilisee par watcher, Content-Type seulement POST, AcceptJSON sur GET, redirectsFalse ; meme hote/cle/TLS/quotas, aucun fallback anonyme ni ordre automatique. Erreurs HTTP conserventstatut+classification et format HTML/nonJSON/JSONinconnu sans corps. Classifie message ou error, distingue curl errno6/28/60 de HTTP. GET publics depuis cloud : sans cle200, cle factice401. Test reel nouveau Transport avec cle factice aussi401 ; ne pas assimiler a verification de la vraie cle ni du VPS. **362 tests passent** (3 nouveaux GETcurl/headers, HTTP400HTMLsanssecret, errnoDNS). Archive `wallet_radar_client_jupiter_2026.11.16.7.zip`. Refaire menu10 en conservant cles, sans signature ni ordre. Cause du400VPS toujours non prouvee ; ne pas annoncer resolution sans retour.
 
 Version 2026.11.16.6 : capture menu10 RPC/getBalance OK (solde public ~0.55278 SOL), Jupiter/cotation HTTP400, construction non atteinte. Aucun besoin prouve de changer le wallet/cle ou de rajouter SOL. Cinq variantes GET publiques (avec/sans direct/legacy et montants 0.001/0.014SOL) toutes HTTP200 depuis cloud ; refus VPS non reproduit. Ajout restrictIntermediateTokens=true explicite (aucun elargissement car routes restent directes) via quote_path partage controle/reel. Codes metier Jupiter connus/libelles fixes extraits de reponse HTTP JSON bornee8Ko, autres messages/codes inconnus jamais affiches. Classification statique de certains messages sans errorCode (restriction intermediaires, parse query, montant, token, absence route), jamais corps brut. **359 tests complets passent**, puis 29 tests cibles apres ajout classification du message sans code. Archive `wallet_radar_jupiter_400_2026.11.16.6.zip`. Nouvelle verification menu10 sur VPS encore necessaire ; ne pas dire que cause ou acces/authentification resolus sans resultat. Pas d'ordre envoye.
 
