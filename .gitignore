@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 scout_config.json
 wallet_alerts_config.json
+private_wallet_radar/

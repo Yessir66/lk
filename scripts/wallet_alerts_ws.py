@@ -18,7 +18,7 @@ from discord_token_telegram import TelegramSender, amounts
 from discord_solana_watch import StateLock
 
 ROOT=Path(__file__).resolve().parents[1]
-VERSION='2026.11.16.3'
+VERSION='2026.11.16.4'
 DEFAULT_WALLETS={'BBIG BOSS':'BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp'}
 BACKFILL_PAGE_SIZE=1000
 BACKFILL_MAX_PAGES=10
@@ -636,6 +636,7 @@ def stop_watchers(script=None,timeout=30):
 
 
 def startup_failure(exc):
+    if type(exc).__module__=='wallet_radar_live' and type(exc).__name__=='TradeError':return str(exc)
     if isinstance(exc,RemoteError) and exc.args==('Cette analyse Discord est déjà lancée pour ce journal ; fermer son ancien terminal',):
         return 'Wallet Radar est deja actif sur le VPS. Choisir 5 (arret propre), puis 3 (simulation). Ne pas supprimer le verrou.'
     if isinstance(exc,TimeoutError):return 'Arret encore en cours ou delai depasse. Attendre puis reessayer le menu 5.'
@@ -654,11 +655,13 @@ def main():
     parser.add_argument('--rpc-rps',type=float,default=5,help='Plafond local partagé HTTPS, défaut 5/s ; maximum 10/s')
     parser.add_argument('--browser-events',action='store_true',help='Émettre les achats vérifiés récents pour le lanceur Chrome Windows via SSH')
     parser.add_argument('--paper-buys',action='store_true',help='SIMULATION BBIG BOSS : volume Pump.fun, aucun ordre reel')
+    parser.add_argument('--live-trades',action='store_true',help='ESSAI REEL explicite : 1 USD, budget 15 USD, signature locale requise')
     parser.add_argument('--paper-report',action='store_true',help='Bilan hors reseau du dernier essai de 30 tokens')
     parser.add_argument('--stop',action='store_true',help='Arreter proprement les instances de ce script appartenant au compte Linux courant')
     parser.add_argument('--paper-diagnose',action='store_true',help='Diagnostiquer au maximum 4 cas de simulation, requetes en lecture seule')
     parser.add_argument('--live-only',action='store_true',help='Suivre uniquement les nouvelles transactions ; ne pas rattraper ni decoder les anciennes files')
     args=parser.parse_args()
+    if args.live_trades and (args.paper_buys or not args.live_only):parser.error('--live-trades exige --live-only et exclut --paper-buys')
     if not .5<=args.rpc_rps<=10:parser.error('--rpc-rps doit être entre 0.5 et 10')
     try:
         if args.stop:stop_watchers();return
@@ -670,11 +673,11 @@ def main():
         if args.paper_diagnose and not args.check:
             from wallet_radar_diagnostics import diagnose
             diagnose(args.state.parent/'paper_decisions.jsonl',args.state,ReadRPC(http,None,rps=1));return
-        if args.paper_buys:
+        if args.paper_buys or args.live_trades:
             from wallet_radar_paper import BBIG, PaperObserver
             if BBIG not in wallets.values():parser.error('La simulation necessite BBIG BOSS dans les wallets suivis')
             args.early=True
-        print('Wallet Radar '+VERSION+' — lecture seule, aucun achat ni publication.',flush=True)
+        print('Wallet Radar '+VERSION+(' — ESSAI REEL 1 USD, budget reserve cumule 15 USD.' if args.live_trades else ' — lecture seule, aucun achat ni publication.'),flush=True)
         print('Wallets : '+', '.join(wallets),flush=True)
         if args.live_only:
             print(f'RPC HTTPS : plafond local {args.rpc_rps:g}/s ; mode DIRECT UNIQUEMENT, rattrapage desactive.',flush=True)
@@ -697,7 +700,10 @@ def main():
         with StateLock(args.state.with_suffix('.lock')):
             journal=Journal(args.state)
             try:
-                paper=PaperObserver(ws,args.state.parent/'paper_decisions.jsonl') if args.paper_buys else None
+                if args.live_trades:
+                    from wallet_radar_live import LiveObserver
+                    paper=LiveObserver(ws,args.state.parent/'paper_decisions.jsonl',http)
+                else:paper=PaperObserver(ws,args.state.parent/'paper_decisions.jsonl') if args.paper_buys else None
                 asyncio.run(Service(journal,wallets,MeasuredRPC(http,None,rps=args.rpc_rps),ws,sender=sender,
                                     early=args.early,browser_events=args.browser_events,paper=paper,live_only=args.live_only).run())
             finally:journal.db.close()

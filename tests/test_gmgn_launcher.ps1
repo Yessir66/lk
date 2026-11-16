@@ -44,6 +44,9 @@ try {
     if ($events.Count -ne 2) { throw 'Expected exactly two distinct public buy events in bridge journal' }
     foreach ($line in $events) { if (($line | ConvertFrom-Json).type -cne 'verified_buy') { throw 'Non-buy entered bridge' } }
     foreach ($command in $global:GmgnRemoteCommands) { if ($command -notmatch ' --live-only(?: |$)') { throw 'Live-only mode must be enabled by every Windows launch' } }
+    & (Join-Path $root 'windows/OUVRIR_CHARTS_GMGN.ps1') -SingleTab -LiveBuys
+    if ($global:GmgnRemoteCommands[-1] -notmatch ' --live-trades$') { throw 'Explicit live execution flag missing' }
+    if ($global:GmgnRemoteCommands[-1] -match ' --paper-buys') { throw 'Live and simulated trading mixed' }
     Write-Host 'Launcher integration OK: recent buys, duplicate suppression and persistent restart tested with mocks.'
 } finally {
     foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name,$original[$name],'Process') }

@@ -1,4 +1,6 @@
-# Wallet Radar — 2026.11.16.3
+# Wallet Radar — 2026.11.16.4
+
+**Mode d'essai reel explicite ajoute aux menus 7/8/9** : voir [ESSAIS_REELS_WALLET_RADAR.md](ESSAIS_REELS_WALLET_RADAR.md). Les indications « lecture seule » ci-dessous concernent la surveillance normale et la simulation ; elles ne s'appliquent pas au menu 8 ni a `--live-trades`.
 
 Le bot porte desormais le nom **Wallet Radar**. Voir [WALLET_RADAR.md](WALLET_RADAR.md) pour le menu Windows permettant d'ajouter, retirer et renommer les wallets sans commandes manuelles.
 

@@ -15,7 +15,9 @@ function Send-RadarScripts {
         (Join-Path $projectRoot 'scripts\configure_wallet_alerts.py'),
         (Join-Path $projectRoot 'scripts\wallet_alerts_ws.py'),
         (Join-Path $projectRoot 'scripts\wallet_radar_paper.py'),
-        (Join-Path $projectRoot 'scripts\wallet_radar_diagnostics.py')
+        (Join-Path $projectRoot 'scripts\wallet_radar_diagnostics.py'),
+        (Join-Path $projectRoot 'scripts\wallet_radar_live.py'),
+        (Join-Path $projectRoot 'requirements-wallet-radar-live.txt')
     )
     foreach ($source in $sources) {
         if (-not (Test-Path -LiteralPath $source)) { throw ('Fichier manquant : ' + $source) }
@@ -47,6 +49,9 @@ try {
         Write-Host '4 - Afficher le bilan du dernier essai de 30 tokens'
         Write-Host '5 - Arreter proprement Wallet Radar sur le VPS'
         Write-Host '6 - Diagnostiquer les cas incomplets (lecture seule)'
+        Write-Host '7 - Configurer le wallet de test REEL sur le VPS (saisie privee)'
+        Write-Host '8 - Demarrer les essais REELS : 1 USD, budget 15 USD, SL/TP'
+        Write-Host '9 - Afficher le bilan des transactions REELLES'
         Write-Host '0 - Quitter'
         $choice = Read-Host 'Ton choix'
         if ($choice -eq '0') { break }
@@ -70,7 +75,17 @@ try {
                 Send-RadarScripts -AllowRunning
                 & ssh.exe -t bot@2.24.62.69 '/home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_alerts_ws.py --paper-diagnose'
                 if ($LASTEXITCODE -ne 0) { throw 'Diagnostic indisponible. Verifie les messages ci-dessus.' }
-            } else { Write-Host 'Choisis 0, 1, 2, 3, 4, 5 ou 6.' }
+            } elseif ($choice -eq '7') {
+                Send-RadarScripts
+                & ssh.exe -t bot@2.24.62.69 '/home/bot/wallet-alerts/.venv/bin/python -m pip install -r /home/bot/wallet-alerts/scripts/requirements-wallet-radar-live.txt && /home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_radar_live.py --setup && /home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_radar_live.py --check'
+                if ($LASTEXITCODE -ne 0) { throw 'Configuration reelle incomplete. Aucun ordre lance.' }
+            } elseif ($choice -eq '8') {
+                Send-RadarScripts
+                & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'OUVRIR_CHARTS_GMGN.ps1') -SingleTab -LiveBuys
+            } elseif ($choice -eq '9') {
+                & ssh.exe -t bot@2.24.62.69 '/home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_radar_live.py --report'
+                if ($LASTEXITCODE -ne 0) { throw 'Bilan reel indisponible.' }
+            } else { Write-Host 'Choisis un numero de 0 a 9.' }
         } catch { Write-Host $_.Exception.Message -ForegroundColor Red }
     }
 } catch {

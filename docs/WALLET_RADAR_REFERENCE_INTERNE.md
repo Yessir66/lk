@@ -15,7 +15,7 @@ Cette fiche décrit le dernier état connu ; le code et la configuration du dép
 
 ## État connu et wallet demandé
 
-- Version serveur du dépôt : **2026.11.16.3**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
+- Version serveur du dépôt : **2026.11.16.4**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
 - Extension Chrome : version **1.0.0**, dossier `chrome-gmgn`.
 - Dernière liste demandée : **BBIG BOSS uniquement**, adresse publique :
   `BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp`.
@@ -37,13 +37,25 @@ Dernieres captures de simulation : nouvel essai 5/30 avec 3 achats theoriques (5
 
 Nouvelle demande utilisateur : commencer des mini achats reels pour mesurer les intervalles. **Montant choisi : 1 USD de tokens par achat reel de test, hors frais** (reponse explicite du 16 novembre). Ne remplace pas automatiquement le montant historique 25 USD de la strategie/simulation. Repondre et avancer point par point comme souhaite ; ne jamais demander une cle privee dans le chat.
 
-Parametres suivants convenus pour les futurs essais reels (pas encore implementes/actifs) :
+Parametres suivants convenus pour les essais reels (implementes dans le depot .4, pas encore configures/deployes sur le VPS) :
 
 - Wallet d'execution public **`E23vfW9oA9CnANP5wzimpo3DM3WQtMuxzUP4oxFp97Jq`** ; utilisateur confirme qu'il est reserve aux tests. BBIG BOSS reste le wallet surveille. Aucune cle de signature recue ou installee.
 - Budget total de l'essai **15 USD maximum, achats et frais compris**. Prevoir frais de sorties, reservations des operations en cours et depots de comptes ; ne pas recycler les ventes pour depasser le plafond cumule. Aucun ordre reel actuellement.
 - Utilisateur demande **SL 80 % et TP 75 %**. Interpretation annoncee : **stop-loss -80 % et take-profit +75 %**, vente totale au premier seuil atteint, par rapport au prix d'entree reel (pas au prix BBIG BOSS). Ces seuils de declenchement ne garantissent pas le prix d'execution. Vente totale est le comportement propose ; pas de fractions demandees.
 - Plafond de frais reseau/priorite **0,10 USD par achat** recommande par assistant, sans Jito pour premier essai ; l'utilisateur demande surtout rapidite et absence d'attente pour calcul. Pas encore un plafond explicitement confirme. Proposition : estimation recente en arriere-plan, usage local au signal, abandon si perimee ou plafond depasse ; depots de comptes separes mais inclus dans budget global.
-- Glissement maximal encore a definir, module de signature/envoi/suivi/revente non implemente. Pas d'activation reelle sur la seule base de ces reglages. Garder distinct le module de trading callout existant et Wallet Radar.
+- **Glissement 20 % achat/vente**, explicitement choisi par utilisateur apres discussion 75 %/5 %. L'utilisateur a ensuite dit **VAS Y** pour preparer la couche reelle. Le plafond frais .10 USD est repris comme defaut recommande. Garder distinct le module de trading callout existant et Wallet Radar.
+
+Implementation .4 : `scripts/wallet_radar_live.py`, `requirements-wallet-radar-live.txt` (solders 0.29.0), `ESSAIS_REELS_WALLET_RADAR.md`. Menus **7** installation dependances + saisie locale masquee de la cle wallet dedie et cle API Jupiter gratuite + controle sans signature/envoi ; **8** `wallet_alerts_ws.py --early --browser-events --live-only --live-trades` ; **9** bilan reel. Aucun ajout automatique de mode reel a 1 ou 3. Meme StateLock et meme processus que watcher pour que menu 5 arrete correctement l'ensemble.
+
+Execution via routes Jupiter **directes exact-in v1 uniquement**, compte utilisateur et ATA controles, aucun tx fournisseur signe aveuglement. Construit son message sans ALT avec instructions de route v1 liees aux mints, inAmount/outAmount et slippage2000 ; ATA propre, wrapping SOL et compute budget seulement. Routes v2/etendues inconnues refusees. Cotation/preparation non signee des SUIVI en parallele avec lectures RPC ; signature seulement si conditions validees, maximum 2 s d'age pour preparation. Verification de l'echeance T0+3 s aussi dans le transport apres attente du quota. Aucun envoi tardif deliberement rattrape. Confirmation peut arriver ensuite.
+
+Budget SQLite **`data/wallet_alerts_ws/live_trades.sqlite3`**, 0600, durable avant envoi, transactions signees + signatures + enveloppes + notices sans cle privee. Reserve permanente **2.40 USD par achat signe**, max six achats : 1 principal + .10 frais achat + .50 depot achat + .30 trois frais sorties + .50 depot sortie. Une seule position ouverte/incertaine/manuelle ; jamais de nouvel achat meme token apres restart. Pas de recyclage benefices/depots/liberation d'enveloppe apres echec. Compteur ne repart jamais au redemarrage ; ne pas supprimer journal pour refaire budget de cet essai. Conversions en USD indicatives a partir de SOL/USD frais ; suivi du budget en valeurs de reference, pas compte bancaire dollar.
+
+Transport reel RPC 3/s (en plus du watcher 5/s), Jupiter 1/s, verrous distincts pour chevaucher les appels independants, pause60 s apres429. Estimation priorite globale p75 toutes10 s, plancher100000 micro-lamports/CU et limite1.4M CU ; estimation age<=30 s, frais reels du message <=.10USD verifies, depot simule<=.50USD. SOL/USD frais <=90s et plafonds revalides avant signature. Poll positions 2s + temps des appels. SL/TP d'apres cotation de liquidation totale contre entree reelle de 1USD SOL, pas prix de BBIG ; frais reseau exclus du rendement. Retour reseau inconnu => conserver signature pending, pas de nouvel ordre jusqu'a reconciliation. Trois signatures de vente max apres echec/expiration prouvee, statut relu apres hauteur d'expiration. Confirmation pouvant preceder retour POST preservee (test de course).
+
+Signatures locales dans `/home/bot/wallet-alerts/private_wallet_radar/` 0700, fichiers `wallet.json` et `jupiter_api_key.txt` 0600, ignores Git/archives. Pas de cle recue dans chat/cloud et aucun ordre reel envoye. Menu7 controle wallet attendu + cotation et instructions SOL/USDC sans signature/envoi. Un GET quote public Jupiter a repondu depuis cloud ; POST construction sans cle n'a pas abouti. Acces authentifie et routes reelles encore a valider sur VPS. Ne pas pretendre les avoir testes.
+
+Apres 30 decisions conditions, les PRIX et SORTIES restent actifs, contrairement au flux de conditions qui termine son echantillon. Arreter le processus ou perdre son acces au RPC/cotation suspend le SL/TP : ce ne sont pas des ordres deposes on-chain. Modification externe du solde ou executions incoherentes => etat manual, nouvelles entrees bloquees. Notifications `RADAR_LIVE` distinctes des `RADAR_DECISION` simulation. Bilan9 delais detection/decision, preparation chevauchant la decision, HTTP commence reellement, confirmation observee (inclut polling, pas precision on-chain).
 
 | Élément | Chemin / référence |
 |---|---|
@@ -71,6 +83,9 @@ Menu principal Windows :
 - **4** : afficher le bilan hors réseau du dernier essai via SSH.
 - **5** : transférer les scripts, puis demander un arrêt propre des instances du même script sur le VPS (`--stop`). Pas de suppression du journal/verrou, pas de kill forcé ni arrêt des autres bots.
 - **6** : diagnostic en lecture seule pendant la collecte, sans arrêt ni réinitialisation : maximum 4 cas, 8 lectures RPC à 1/s. Codes HTTP/RPC sans messages privés, formats de comptes, plateformes, événements et cotations. Comptes interrogés actuellement, pas reconstruction historique ; un ancien refus temporaire peut ne plus être reproductible. Guide `DIAGNOSTIC_SIMULATION.md`.
+- **7** : configurer localement signature et API Jupiter, puis controle sans ordre.
+- **8** : lancer explicitement l'essai reel, suivi SL/TP tant que processus actif.
+- **9** : lire le bilan du journal reel sans ordre ni reinitialisation.
 - **0** : quitter le menu.
 
 Dans la gestion distante des wallets :
@@ -207,6 +222,8 @@ Autres cas :
 Les scripts `discord_*` sont partagés avec d'autres bots : ne pas changer leurs listes globales pour remplacer seulement la liste de Wallet Radar.
 
 ## Vérification et livraison
+
+Version 2026.11.16.4 : **352 tests Python passent**, dont 22 nouveaux tests du module reel hors reseau, tests PowerShell menu/lanceur avec mocks, protocole LiveBuys valide. Aucune transaction reelle depuis cloud. Archive `wallet_radar_essais_reels_2026.11.16.4.zip`, configuration de signature et validation authentifiee VPS encore a effectuer via menu7 avant8. Ne pas confondre preparation livree et activation reelle.
 
 Dernière validation de la version .3 : **301 tests Python**, tests de lancement/gestion Windows avec SSH/SCP simulés et protocole de notifications ; hôte natif testé via PowerShell portable. Les 8 tests JS de navigation avaient également passé pour la version précédente ; l'extension n'a pas changé pour ce mode. Pas de transaction ni message Telegram envoyé par ces tests. Les 30 tokens réels de l'essai ne sont pas encore collectés depuis le cloud. L'exécution complète Chrome/Windows est confirmée par l'utilisateur pour les étapes antérieures, pas par un accès direct à son PC.
 

@@ -1,10 +1,12 @@
 param(
     [switch]$Test,
     [switch]$SingleTab,
-    [switch]$PaperBuys
+    [switch]$PaperBuys,
+    [switch]$LiveBuys
 )
 
 $ErrorActionPreference = 'Stop'
+if ($PaperBuys -and $LiveBuys) { throw 'Choisir simulation OU essais reels.' }
 $prefix = 'GMGN_BUY '
 if ($env:OS -eq 'Windows_NT') {
     [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
@@ -24,6 +26,13 @@ function Get-GmgnBuy {
 
 function Get-RadarDecision {
     param([string]$Line)
+    if ($Line.StartsWith('RADAR_LIVE ')) {
+        try { $liveEvent = $Line.Substring(11) | ConvertFrom-Json } catch { return $null }
+        if (-not $LiveBuys -or $liveEvent.v -ne 1 -or $liveEvent.type -cne 'live_decision' -or $liveEvent.mode -cne 'LIVE') { return $null }
+        if ([string]$liveEvent.mint -cnotmatch '^[1-9A-HJ-NP-Za-km-z]{32,44}$') { return $null }
+        if ($liveEvent.code -cnotin @('SUIVI','DEV_EXCLU','SORTIE_TOTALE_1S','ATTENTE_VOLUME','CONDITIONS_VALIDEES','VOLUME_INSUFFISANT','DONNEES_INSUFFISANTES','NON_SUPPORTE','ACHAT_IGNORE','ORDRE_ENVOYE','ORDRE_A_VERIFIER','ORDRE_ECHOUE','ACHAT_CONFIRME','VENTE_CONFIRMEE','INTERVENTION_REQUISE','ORDRE_EXPIRE','SORTIE_INDISPONIBLE')) { return $null }
+        return $liveEvent
+    }
     if (-not $Line.StartsWith('RADAR_DECISION ')) { return $null }
     try { $event = $Line.Substring(15) | ConvertFrom-Json } catch { return $null }
     if ($event.v -ne 1 -or $event.type -cne 'paper_decision' -or $event.mode -cne 'SIMULATION') { return $null }
@@ -48,6 +57,10 @@ if ($Test) {
     if ($null -eq (Get-RadarDecision ('RADAR_DECISION ' + ($decision | ConvertTo-Json -Compress)))) { throw 'Simulation notification rejected' }
     $decision.mode = 'LIVE'
     if ($null -ne (Get-RadarDecision ('RADAR_DECISION ' + ($decision | ConvertTo-Json -Compress)))) { throw 'Live notification accepted as simulation' }
+    $real = @{v=1;type='live_decision';mode='LIVE';mint=('A'*32);code='ACHAT_CONFIRME';message='Mock confirmed'}
+    $parsedReal = Get-RadarDecision ('RADAR_LIVE ' + ($real | ConvertTo-Json -Compress))
+    if ($LiveBuys -and $null -eq $parsedReal) { throw 'Live notification rejected in live mode' }
+    if (-not $LiveBuys -and $null -ne $parsedReal) { throw 'Live notification accepted outside explicit live mode' }
     Write-Host 'Protocol tests OK; no network or browser opened.'
     exit 0
 }
@@ -86,15 +99,16 @@ try {
     }
     Write-Host 'Connexion au VPS : utilise le mot de passe habituel si SSH le demande.'
     Write-Host 'Laisse cette fenetre ouverte. Ctrl+C pour arreter.'
-    if ($PaperBuys) {
-        Write-Host 'SIMULATION 25 USD : aucun ordre reel. Notifications de decision activees.' -ForegroundColor Yellow
+    if ($PaperBuys -or $LiveBuys) {
+        if ($LiveBuys) { Write-Host 'ESSAIS REELS : 1 USD, budget 15 USD, SL -80 %, TP +75 %, glissement 20 %. Arreter suspend le SL/TP.' -ForegroundColor Yellow }
+        else { Write-Host 'SIMULATION 25 USD : aucun ordre reel. Notifications de decision activees.' -ForegroundColor Yellow }
         if ($env:OS -eq 'Windows_NT') {
             try {
                 Add-Type -AssemblyName System.Windows.Forms
                 Add-Type -AssemblyName System.Drawing
                 $radarTray = New-Object System.Windows.Forms.NotifyIcon
                 $radarTray.Icon = [System.Drawing.SystemIcons]::Information
-                $radarTray.Text = 'Wallet Radar - Simulation'
+                $radarTray.Text = if ($LiveBuys) { 'Wallet Radar - REEL' } else { 'Wallet Radar - Simulation' }
                 $radarTray.Visible = $true
             } catch { Write-Warning 'Notifications Windows indisponibles ; decisions affichees dans cette console.' }
         }
@@ -104,14 +118,16 @@ try {
     # Fixed remote command, no credentials on the command line; no exposed web server.
     $remote = 'exec /home/bot/wallet-alerts/.venv/bin/python -u /home/bot/wallet-alerts/scripts/wallet_alerts_ws.py --early --browser-events --live-only'
     if ($PaperBuys) { $remote += ' --paper-buys' }
+    if ($LiveBuys) { $remote += ' --live-trades' }
     & ssh.exe -T -o ServerAliveInterval=15 -o ServerAliveCountMax=3 bot@2.24.62.69 $remote | ForEach-Object {
         $line = [string]$_
         $decision = Get-RadarDecision $line
         if ($null -ne $decision) {
             $notice = [string]$decision.code + ' : ' + [string]$decision.message
-            Write-Host ('[SIMULATION] ' + $notice + ' CA : ' + [string]$decision.mint) -ForegroundColor Yellow
+            $decisionLabel = if ($decision.mode -ceq 'LIVE') { 'REEL' } else { 'SIMULATION' }
+            Write-Host ('[' + $decisionLabel + '] ' + $notice + ' CA : ' + [string]$decision.mint) -ForegroundColor Yellow
             if ($null -ne $radarTray) {
-                $radarTray.BalloonTipTitle = 'Wallet Radar - SIMULATION'
+                $radarTray.BalloonTipTitle = 'Wallet Radar - ' + $decisionLabel
                 $radarTray.BalloonTipText = ($notice + ' ' + [string]$decision.mint).Substring(0,[Math]::Min(240,($notice + ' ' + [string]$decision.mint).Length))
                 $radarTray.ShowBalloonTip(4000)
                 [System.Windows.Forms.Application]::DoEvents()

@@ -394,8 +394,7 @@ class PaperObserver:
     async def run(self):
         from websockets.asyncio.client import connect
         self.write_record(dict(type='paper_session',session_id=self.session,limit=self.decisions.limit,at=time.time()))
-        price_task=asyncio.create_task(self.prices.run())
-        doge_task=asyncio.create_task(self.prices.run_doge())
+        price_tasks=[asyncio.create_task(self.prices.run()),asyncio.create_task(self.prices.run_doge())] if getattr(self,'manage_prices',True) else []
         try:
             while True:
                 try:
@@ -406,7 +405,7 @@ class PaperObserver:
                         await ws.send(json.dumps({'jsonrpc':'2.0','id':1,'method':'logsSubscribe',
                             'params':[{'mentions':[BBIG]},{'commitment':'processed'}]}))
                         self.connected=False
-                        print('SIMULATION : connexion gratuite, logs Pump.fun ; aucun achat reel.',flush=True)
+                        print('CONDITIONS REELLES : flux Pump.fun.' if getattr(self,'is_live',False) else 'SIMULATION : connexion gratuite, logs Pump.fun ; aucun achat reel.',flush=True)
                         while True:
                             try:raw=await asyncio.wait_for(ws.recv(),.02)
                             except asyncio.TimeoutError:
@@ -437,7 +436,7 @@ class PaperObserver:
                                 summary=dict(type='paper_summary',session_id=self.session,tokens=len(self.results),
                                              outcomes=dict(Counter(self.results.values())),at=wall)
                                 self.write_record(summary)
-                                print(f'SIMULATION TERMINEE : bilan de {self.decisions.limit} tokens enregistre ; surveillance GMGN maintenue.',flush=True)
+                                print(f'CONDITIONS TERMINEES : {self.decisions.limit} tokens ; suivi des positions reelles maintenu.' if getattr(self,'is_live',False) else f'SIMULATION TERMINEE : bilan de {self.decisions.limit} tokens enregistre ; surveillance GMGN maintenue.',flush=True)
                                 return
                             for mint,c in self.decisions.candidates.items():
                                 if not c.terminal and mint not in requested:
@@ -455,8 +454,8 @@ class PaperObserver:
                     await asyncio.sleep(3)
         finally:
             self.decisions.interrupted(time.monotonic())
-            price_task.cancel();doge_task.cancel()
-            await asyncio.gather(price_task,doge_task,return_exceptions=True)
+            for task in price_tasks:task.cancel()
+            await asyncio.gather(*price_tasks,return_exceptions=True)
 
 
 def latest_session(path):
