@@ -14,6 +14,8 @@ import math
 import os
 from pathlib import Path
 import sqlite3
+import socket
+import ssl
 import stat
 import struct
 import threading
@@ -67,25 +69,28 @@ def load_signer():
     return key
 
 
-def setup():
+def setup(reuse=False):
     from solders.keypair import Keypair
     print('Saisie locale sur le VPS, masquee. Ne jamais envoyer la cle dans le chat.')
-    raw=getpass.getpass('Cle privee du wallet de test (base58 ou tableau JSON) : ').strip()
-    key=Keypair.from_bytes(bytes(json.loads(raw))) if raw.startswith('[') else Keypair.from_base58_string(raw)
+    if reuse and (PRIVATE/'wallet.json').exists():key=load_signer()
+    else:
+        raw=getpass.getpass('Cle privee du wallet de test (base58 ou tableau JSON) : ').strip()
+        key=Keypair.from_bytes(bytes(json.loads(raw))) if raw.startswith('[') else Keypair.from_base58_string(raw)
     if str(key.pubkey())!=OWNER:raise TradeError('Cle refusee : autre adresse publique.')
-    api=getpass.getpass('Cle API Jupiter gratuite (saisie masquee) : ').strip()
+    api=secure_read(PRIVATE/'jupiter_api_key.txt') if reuse and (PRIVATE/'jupiter_api_key.txt').exists() else getpass.getpass('Cle API Jupiter gratuite (saisie masquee) : ').strip()
     if not api or len(api)>512 or any(c.isspace() for c in api):raise TradeError('Cle Jupiter invalide.')
     PRIVATE.mkdir(mode=0o700,exist_ok=True)
     if PRIVATE.is_symlink():raise TradeError('Dossier prive symbolique refuse.')
     os.chmod(PRIVATE,0o700)
     for name,value in [('wallet.json',json.dumps(list(bytes(key)))),('jupiter_api_key.txt',api)]:
         path=PRIVATE/name
+        if reuse and path.exists():continue
         fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_TRUNC|getattr(os,'O_NOFOLLOW',0),0o600)
         try:
             os.fchmod(fd,0o600)
             with os.fdopen(fd,'w',closefd=False) as handle:handle.write(value+'\n');handle.flush();os.fsync(fd)
         finally:os.close(fd)
-    print('Signature configuree pour '+OWNER+'. Aucun ordre envoye.')
+    print('Signature configuree/conservee pour '+OWNER+'. Aucun ordre envoye.')
 
 
 class Ledger:
@@ -136,12 +141,12 @@ class Transport:
         self.locks={'rpc':threading.Lock(),'jup':threading.Lock()};self.next_rpc=0;self.next_jup=0
         self.pause_rpc=0;self.pause_jup=0
 
-    def request(self,url,body=None,jupiter=False,deadline=None,capture=None):
+    def request(self,url,body=None,jupiter=False,deadline=None,capture=None,label='Fournisseur'):
         # Fixed host for Jupiter. Keys only in the request header, never stdout.
         name='jup' if jupiter else 'rpc'
         with self.locks[name]:
             now=time.monotonic()
-            if now<getattr(self,'pause_'+name):raise TradeError('Fournisseur en pause apres limitation.')
+            if now<getattr(self,'pause_'+name):raise TradeError(label+' : pause apres limitation, attendre 60 s.')
             time.sleep(max(0,getattr(self,'next_'+name)-now))
             if deadline is not None and time.monotonic()>deadline:
                 raise TradeError('Limite de trois secondes depassee avant requete.')
@@ -154,22 +159,39 @@ class Transport:
                 if capture is not None:capture['request_at']=time.time()
                 with urllib.request.urlopen(req,timeout=5) as response:value=json.load(response)
             except Exception as exc:
-                if getattr(exc,'code',None)==429:setattr(self,'pause_'+name,time.monotonic()+60)
-                raise TradeError('Requete fournisseur indisponible ; aucun detail prive affiche.') from None
+                if isinstance(exc,TradeError):raise
+                code=getattr(exc,'code',None)
+                if isinstance(code,int) and not isinstance(code,bool):
+                    if code==429:setattr(self,'pause_'+name,time.monotonic()+60)
+                    detail='HTTP '+str(code)
+                else:
+                    reason=getattr(exc,'reason',exc)
+                    detail=('delai depasse' if isinstance(reason,(TimeoutError,socket.timeout)) else
+                            'certificat/TLS' if isinstance(reason,ssl.SSLError) else
+                            'resolution DNS' if isinstance(reason,socket.gaierror) else 'connexion ou format JSON indisponible')
+                raise TradeError(label+' : '+detail+'. URL, cles et reponse privee masquees.') from None
             if not isinstance(value,dict) or value.get('error') is not None:
-                raise TradeError('Reponse fournisseur invalide.')
+                error=value.get('error') if isinstance(value,dict) else None
+                code=error.get('code') if isinstance(error,dict) else None
+                detail=' ; code RPC '+str(code) if isinstance(code,int) and not isinstance(code,bool) else ''
+                if code==429:setattr(self,'pause_'+name,time.monotonic()+60)
+                raise TradeError(label+' : reponse refusee ou invalide'+detail+'.')
             return value
 
     def rpc(self,method,params):
-        value=self.request(self.url,{'jsonrpc':'2.0','id':1,'method':method,'params':params})
+        known={'getBalance','getLatestBlockhash','getFeeForMessage','getMultipleAccounts','getTokenAccountsByOwner',
+               'getRecentPrioritizationFees','simulateTransaction','getSignatureStatuses','getTransaction','getBlockHeight'}
+        value=self.request(self.url,{'jsonrpc':'2.0','id':1,'method':method,'params':params},label='RPC/'+method if method in known else 'RPC')
         if 'result' not in value:raise TradeError('Resultat RPC absent.')
         return value['result']
 
-    def jup(self,path,body=None):return self.request('https://api.jup.ag'+path,body,jupiter=True)
+    def jup(self,path,body=None):
+        label='Jupiter/cotation' if path.startswith('/swap/v1/quote?') else 'Jupiter/construction' if path=='/swap/v1/swap-instructions' else 'Jupiter'
+        return self.request('https://api.jup.ag'+path,body,jupiter=True,label=label)
 
     def send(self,raw,deadline=None,capture=None):
         return self.request(self.url,{'jsonrpc':'2.0','id':1,'method':'sendTransaction','params':[
-            raw,{'encoding':'base64','skipPreflight':False,'maxRetries':2}]},deadline=deadline,capture=capture)['result']
+            raw,{'encoding':'base64','skipPreflight':False,'maxRetries':2}]},deadline=deadline,capture=capture,label='RPC/envoi')['result']
 
 
 def lamports(usd,price):return int((Decimal(usd)*10**9/price).to_integral_value(rounding=ROUND_CEILING))
@@ -514,20 +536,26 @@ class LiveObserver(PaperObserver):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--setup',action='store_true')
+    parser.add_argument('--setup-if-missing',action='store_true',help='Conserver les cles locales deja configurees')
     parser.add_argument('--report',action='store_true')
     parser.add_argument('--check',action='store_true',help='Verifier les acces en lecture seule, sans signature ou ordre')
     args=parser.parse_args()
     try:
-        if args.setup:setup()
+        if args.setup or args.setup_if_missing:setup(reuse=args.setup_if_missing)
         elif args.check:
             from wallet_alerts_ws import settings
             _,wallets,http,_=settings(ROOT/'wallet_alerts_config.json')
             if BBIG not in wallets.values():raise TradeError('BBIG BOSS absent des wallets suivis.')
             load_signer()  # Verify identity only; never sign in this command.
             transport=Transport(http,secure_read(PRIVATE/'jupiter_api_key.txt'))
+            print('CONTROLE 1/3 : RPC/getBalance...',flush=True)
             balance=transport.rpc('getBalance',[OWNER,{'commitment':'confirmed'}])['value']
+            print('RPC : OK. Solde SOL : '+str(Decimal(balance)/10**9),flush=True)
+            print('CONTROLE 2/3 : Jupiter/cotation...',flush=True)
             q=transport.jup('/swap/v1/quote?'+urllib.parse.urlencode(dict(inputMint=SOL,outputMint=USDC,amount=1000000,slippageBps=SLIPPAGE,swapMode='ExactIn',onlyDirectRoutes='true',asLegacyTransaction='true')))
             quote_check(q,SOL,USDC,1000000)
+            print('Jupiter/cotation : OK.',flush=True)
+            print('CONTROLE 3/3 : Jupiter/construction non signee...',flush=True)
             payload=transport.jup('/swap/v1/swap-instructions',dict(quoteResponse=q,userPublicKey=OWNER,wrapAndUnwrapSol=True,
                                   useSharedAccounts=False,asLegacyTransaction=True,dynamicComputeUnitLimit=False))
             checked_instructions(payload,q,1)

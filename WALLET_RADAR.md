@@ -1,5 +1,7 @@
 # Wallet Radar
 
+**2026.11.16.5 : menu 10** pour verifier RPC/Jupiter sans ordre et sans ressaisir les cles. Les erreurs precisent le service et le statut sans exposer les secrets. Voir [DEPANNAGE_ACCES_REELS.md](DEPANNAGE_ACCES_REELS.md).
+
 **2026.11.16.4 : essais reels explicites.** Les menus **7 / 8 / 9** configurent localement la signature, lancent l'essai reel de 1 USD avec budget reserve cumule de 15 USD, puis affichent les transactions/delais. Voir [ESSAIS_REELS_WALLET_RADAR.md](ESSAIS_REELS_WALLET_RADAR.md). Le menu 3 reste en simulation. Le SL/TP necessite que le processus reste actif.
 
 **Wallet Radar** est le nom de reference de notre bot de surveillance Solana et d'affichage GMGN. Il detecte les achats et ventes des wallets choisis via Helius sur le VPS, puis transmet les achats verifies a Chrome sur ton PC. L'extension reutilise un onglet GMGN et conserve le graphique lorsqu'il affiche deja le meme token. Il est distinct du bot de republication de callouts et de l'analyse Discord.

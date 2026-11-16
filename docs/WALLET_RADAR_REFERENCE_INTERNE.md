@@ -15,7 +15,7 @@ Cette fiche décrit le dernier état connu ; le code et la configuration du dép
 
 ## État connu et wallet demandé
 
-- Version serveur du dépôt : **2026.11.16.4**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
+- Version serveur du dépôt : **2026.11.16.5**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
 - Extension Chrome : version **1.0.0**, dossier `chrome-gmgn`.
 - Dernière liste demandée : **BBIG BOSS uniquement**, adresse publique :
   `BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp`.
@@ -39,7 +39,7 @@ Nouvelle demande utilisateur : commencer des mini achats reels pour mesurer les 
 
 Parametres suivants convenus pour les essais reels (implementes dans le depot .4, pas encore configures/deployes sur le VPS) :
 
-- Wallet d'execution public **`E23vfW9oA9CnANP5wzimpo3DM3WQtMuxzUP4oxFp97Jq`** ; utilisateur confirme qu'il est reserve aux tests. BBIG BOSS reste le wallet surveille. Aucune cle de signature recue ou installee.
+- Wallet d'execution public **`E23vfW9oA9CnANP5wzimpo3DM3WQtMuxzUP4oxFp97Jq`** ; utilisateur confirme qu'il est reserve aux tests. BBIG BOSS reste le wallet surveille. Derniere capture : signature configuree sur le VPS et adresse validee, puis controle fournisseur echoue. Aucune cle recue dans le chat ou le cloud.
 - Budget total de l'essai **15 USD maximum, achats et frais compris**. Prevoir frais de sorties, reservations des operations en cours et depots de comptes ; ne pas recycler les ventes pour depasser le plafond cumule. Aucun ordre reel actuellement.
 - Utilisateur demande **SL 80 % et TP 75 %**. Interpretation annoncee : **stop-loss -80 % et take-profit +75 %**, vente totale au premier seuil atteint, par rapport au prix d'entree reel (pas au prix BBIG BOSS). Ces seuils de declenchement ne garantissent pas le prix d'execution. Vente totale est le comportement propose ; pas de fractions demandees.
 - Plafond de frais reseau/priorite **0,10 USD par achat** recommande par assistant, sans Jito pour premier essai ; l'utilisateur demande surtout rapidite et absence d'attente pour calcul. Pas encore un plafond explicitement confirme. Proposition : estimation recente en arriere-plan, usage local au signal, abandon si perimee ou plafond depasse ; depots de comptes separes mais inclus dans budget global.
@@ -86,6 +86,7 @@ Menu principal Windows :
 - **7** : configurer localement signature et API Jupiter, puis controle sans ordre.
 - **8** : lancer explicitement l'essai reel, suivi SL/TP tant que processus actif.
 - **9** : lire le bilan du journal reel sans ordre ni reinitialisation.
+- **10** : transferer puis controler les acces RPC/Jupiter avec les cles deja stockees, sans signature/envoi ni ressaisie.
 - **0** : quitter le menu.
 
 Dans la gestion distante des wallets :
@@ -222,6 +223,8 @@ Autres cas :
 Les scripts `discord_*` sont partagés avec d'autres bots : ne pas changer leurs listes globales pour remplacer seulement la liste de Wallet Radar.
 
 ## Vérification et livraison
+
+Version 2026.11.16.5 : capture menu7 apres installation dependances OK et signature configuree, puis « Requete fournisseur indisponible ». Source RPC/cotation/construction et statut inconnus dans ancienne sortie ; ne pas conclure a une mauvaise cle. Correctif ajoute etapes1/3 RPC getBalance,2/3 Jupiterquote,3/3 construction non signee ; labels fixes + codes HTTP/RPC ou DNS/TLS/delai, sans URL/entetes/corps fournisseur. Menu10 controle avec cles existantes, en lecture seule, sans journal/ordre. Menu7 utilise --setup-if-missing et ne redemande ni reecrit les cles presentes valides ; --setup manuel peut toujours servir au renouvellement explicite. **357 tests passent** (5 nouveaux sur erreurs sans secrets, pause429, conservation byte/mtime des cles et controle sans signature/envoi), menu Windows mock OK. Un test ancien sur un intervalle de 20ms a echoue une fois sous charge ; reexecution complete357 OK sans changement de ce code. Archive `wallet_radar_diagnostic_acces_2026.11.16.5.zip`, guide `DEPANNAGE_ACCES_REELS.md`. Cause reelle du refus encore a obtenir via menu10 sur VPS ; pas d'activation ou d'ordre affirme.
 
 Version 2026.11.16.4 : **352 tests Python passent**, dont 22 nouveaux tests du module reel hors reseau, tests PowerShell menu/lanceur avec mocks, protocole LiveBuys valide. Aucune transaction reelle depuis cloud. Archive `wallet_radar_essais_reels_2026.11.16.4.zip`, configuration de signature et validation authentifiee VPS encore a effectuer via menu7 avant8. Ne pas confondre preparation livree et activation reelle.
 

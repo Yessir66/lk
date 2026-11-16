@@ -10,6 +10,8 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.error
+from io import StringIO
 from unittest.mock import AsyncMock,Mock,patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
@@ -65,6 +67,28 @@ class BudgetTest(unittest.TestCase):
 
 
 class InstructionTest(unittest.TestCase):
+    def test_provider_error_identifies_stage_and_status_without_secret(self):
+        transport=live.Transport('https://unused.invalid/?api-key=PRIVATE_RPC','PRIVATE_JUPITER')
+        exc=urllib.error.HTTPError('https://private.invalid/PRIVATE_URL',403,'PRIVATE_BODY',{},None)
+        with patch('urllib.request.urlopen',side_effect=exc):
+            with self.assertRaises(live.TradeError) as caught:transport.jup('/swap/v1/swap-instructions',{})
+        self.assertIn('Jupiter/construction : HTTP 403',str(caught.exception))
+        self.assertNotIn('PRIVATE',str(caught.exception))
+
+    def test_rpc_error_reports_only_safe_code_and_sets_quota_pause(self):
+        transport=live.Transport('https://unused.invalid/?api-key=PRIVATE_RPC','PRIVATE_JUPITER')
+        response=Mock();response.__enter__=Mock(return_value=StringIO(json.dumps({'error':{'code':429,'message':'PRIVATE_BODY'}})));response.__exit__=Mock(return_value=False)
+        with patch('urllib.request.urlopen',return_value=response):
+            with self.assertRaises(live.TradeError) as caught:transport.rpc('getBalance',[])
+        self.assertIn('RPC/getBalance',str(caught.exception));self.assertIn('429',str(caught.exception))
+        self.assertNotIn('PRIVATE',str(caught.exception));self.assertGreater(transport.pause_rpc,time.monotonic())
+
+    def test_network_error_does_not_print_url_or_exception_text(self):
+        transport=live.Transport('https://unused.invalid/PRIVATE_RPC','PRIVATE_JUPITER')
+        with patch('urllib.request.urlopen',side_effect=urllib.error.URLError('PRIVATE_BODY')):
+            with self.assertRaises(live.TradeError) as caught:transport.rpc('getBalance',[])
+        self.assertIn('RPC/getBalance',str(caught.exception));self.assertNotIn('PRIVATE',str(caught.exception))
+
     def test_quote_mint_amount_slippage_and_minimum_are_bound(self):
         q=quote();live.quote_check(q,live.SOL,MINT,10000000)
         for key,value in [('outputMint',live.OWNER),('inAmount','9'),('slippageBps',7500),('otherAmountThreshold','1'),('swapMode','ExactOut'),('platformFee',{'feeBps':1})]:
@@ -294,6 +318,29 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
         self.e.prices.published=time.time()-100
         with self.assertRaises(live.TradeError):await self.e.prepare(MINT,'buy')
         self.e.rpc.assert_not_awaited();self.e.jup.assert_not_awaited()
+
+
+class SetupAndCheckTest(unittest.TestCase):
+    def test_setup_reuses_existing_keys_without_prompt_or_overwrite(self):
+        from solders.keypair import Keypair
+        key=Keypair.from_seed(bytes([4])*32)
+        with tempfile.TemporaryDirectory() as tmp,patch.object(live,'PRIVATE',Path(tmp)),patch.object(live,'OWNER',str(key.pubkey())):
+            wallet=Path(tmp)/'wallet.json';wallet.write_text(json.dumps(list(bytes(key))));wallet.chmod(0o600)
+            api=Path(tmp)/'jupiter_api_key.txt';api.write_text('FAKE_TEST_KEY');api.chmod(0o600)
+            before=[(p.read_bytes(),p.stat().st_mtime_ns) for p in (wallet,api)]
+            with patch.object(live.getpass,'getpass',side_effect=AssertionError('No prompt allowed')),patch('builtins.print'):
+                live.setup(reuse=True)
+            self.assertEqual(before,[(p.read_bytes(),p.stat().st_mtime_ns) for p in (wallet,api)])
+
+    def test_check_is_read_only_and_announces_all_three_steps(self):
+        q=quote(live.SOL,live.USDC,1000000)
+        transport=Mock();transport.rpc.return_value={'value':0};transport.jup.side_effect=[q,payload(q)]
+        key=Mock();output=StringIO()
+        with patch.object(sys,'argv',['wallet_radar_live.py','--check']),patch.object(live,'load_signer',return_value=key),patch.object(live,'secure_read',return_value='FAKE_TEST_KEY'),patch.object(live,'Transport',return_value=transport),patch('wallet_alerts_ws.settings',return_value=({}, {'BBIG BOSS':live.BBIG},'https://unused.invalid','wss://unused.invalid')),patch('sys.stdout',output),patch.object(live,'setup') as setup,patch.object(live,'Ledger') as ledger:
+            live.main()
+        for step in ('1/3','2/3','3/3'):self.assertIn('CONTROLE '+step,output.getvalue())
+        key.sign_message.assert_not_called();transport.send.assert_not_called();setup.assert_not_called();ledger.assert_not_called()
+        self.assertNotIn('FAKE_TEST_KEY',output.getvalue())
 
 
 if __name__=='__main__':unittest.main()

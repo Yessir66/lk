@@ -52,6 +52,7 @@ try {
         Write-Host '7 - Configurer le wallet de test REEL sur le VPS (saisie privee)'
         Write-Host '8 - Demarrer les essais REELS : 1 USD, budget 15 USD, SL/TP'
         Write-Host '9 - Afficher le bilan des transactions REELLES'
+        Write-Host '10 - Verifier les acces REELS sans ordre ni ressaisie des cles'
         Write-Host '0 - Quitter'
         $choice = Read-Host 'Ton choix'
         if ($choice -eq '0') { break }
@@ -77,7 +78,7 @@ try {
                 if ($LASTEXITCODE -ne 0) { throw 'Diagnostic indisponible. Verifie les messages ci-dessus.' }
             } elseif ($choice -eq '7') {
                 Send-RadarScripts
-                & ssh.exe -t bot@2.24.62.69 '/home/bot/wallet-alerts/.venv/bin/python -m pip install -r /home/bot/wallet-alerts/scripts/requirements-wallet-radar-live.txt && /home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_radar_live.py --setup && /home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_radar_live.py --check'
+                & ssh.exe -t bot@2.24.62.69 '/home/bot/wallet-alerts/.venv/bin/python -m pip install -r /home/bot/wallet-alerts/scripts/requirements-wallet-radar-live.txt && /home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_radar_live.py --setup-if-missing && /home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_radar_live.py --check'
                 if ($LASTEXITCODE -ne 0) { throw 'Configuration reelle incomplete. Aucun ordre lance.' }
             } elseif ($choice -eq '8') {
                 Send-RadarScripts
@@ -85,7 +86,11 @@ try {
             } elseif ($choice -eq '9') {
                 & ssh.exe -t bot@2.24.62.69 '/home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_radar_live.py --report'
                 if ($LASTEXITCODE -ne 0) { throw 'Bilan reel indisponible.' }
-            } else { Write-Host 'Choisis un numero de 0 a 9.' }
+            } elseif ($choice -eq '10') {
+                Send-RadarScripts -AllowRunning
+                & ssh.exe -t bot@2.24.62.69 '/home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_radar_live.py --check'
+                if ($LASTEXITCODE -ne 0) { throw 'Controle incomplet : relever l etape et le code affiches, sans envoyer de cle.' }
+            } else { Write-Host 'Choisis un numero de 0 a 10.' }
         } catch { Write-Host $_.Exception.Message -ForegroundColor Red }
     }
 } catch {
