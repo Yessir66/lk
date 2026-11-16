@@ -35,7 +35,15 @@ Dernier correctif 2026.11.16.3 : les adresses copiees par l'utilisateur sont DOG
 
 Dernieres captures de simulation : nouvel essai 5/30 avec 3 achats theoriques (501,58 USD a 1,452 s ; 2004,26 USD a 1,003 s ; 529,31 USD a 1,513 s) et 2 sorties totales avant 1 s. Puis 14/30, diagnostic de 2 devises inconnues ci-dessus. Notifications Windows confirmees par photos, delai de livraison non mesure.
 
-Nouvelle demande utilisateur : commencer des mini achats reels pour mesurer les intervalles. **Montant choisi : 1 USD de tokens par achat reel de test, hors frais** (reponse explicite du 16 novembre). Ne remplace pas automatiquement le montant historique 25 USD de la strategie/simulation. Pas de module d'execution reel active : limites de frais, glissement, nombre/budget d'essais, gestion de revente et wallet dedie restent a definir avant envoi. Repondre et avancer point par point comme souhaite ; ne jamais demander une cle privee dans le chat.
+Nouvelle demande utilisateur : commencer des mini achats reels pour mesurer les intervalles. **Montant choisi : 1 USD de tokens par achat reel de test, hors frais** (reponse explicite du 16 novembre). Ne remplace pas automatiquement le montant historique 25 USD de la strategie/simulation. Repondre et avancer point par point comme souhaite ; ne jamais demander une cle privee dans le chat.
+
+Parametres suivants convenus pour les futurs essais reels (pas encore implementes/actifs) :
+
+- Wallet d'execution public **`E23vfW9oA9CnANP5wzimpo3DM3WQtMuxzUP4oxFp97Jq`** ; utilisateur confirme qu'il est reserve aux tests. BBIG BOSS reste le wallet surveille. Aucune cle de signature recue ou installee.
+- Budget total de l'essai **15 USD maximum, achats et frais compris**. Prevoir frais de sorties, reservations des operations en cours et depots de comptes ; ne pas recycler les ventes pour depasser le plafond cumule. Aucun ordre reel actuellement.
+- Utilisateur demande **SL 80 % et TP 75 %**. Interpretation annoncee : **stop-loss -80 % et take-profit +75 %**, vente totale au premier seuil atteint, par rapport au prix d'entree reel (pas au prix BBIG BOSS). Ces seuils de declenchement ne garantissent pas le prix d'execution. Vente totale est le comportement propose ; pas de fractions demandees.
+- Plafond de frais reseau/priorite **0,10 USD par achat** recommande par assistant, sans Jito pour premier essai ; l'utilisateur demande surtout rapidite et absence d'attente pour calcul. Pas encore un plafond explicitement confirme. Proposition : estimation recente en arriere-plan, usage local au signal, abandon si perimee ou plafond depasse ; depots de comptes separes mais inclus dans budget global.
+- Glissement maximal encore a definir, module de signature/envoi/suivi/revente non implemente. Pas d'activation reelle sur la seule base de ces reglages. Garder distinct le module de trading callout existant et Wallet Radar.
 
 | Élément | Chemin / référence |
 |---|---|
