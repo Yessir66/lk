@@ -1,5 +1,7 @@
 # Wallet Radar
 
+**2026.11.17.2 : envoi RPC prioritaire, blockhash precharge et mesures detaillees dans9.** Voir [LATENCE_ENVOI_WALLET_RADAR.md](LATENCE_ENVOI_WALLET_RADAR.md). Installer apres cloture d'une eventuelle position pour ne pas suspendre son suivi SL/TP.
+
 **2026.11.17.1 : routes Jupiter avec intermediaires**, pour couvrir davantage de tokens tout en conservant budget, glissement et limite de temps. Voir [ROUTES_INTERMEDIAIRES_WALLET_RADAR.md](ROUTES_INTERMEDIAIRES_WALLET_RADAR.md) avant la mise a jour d'un bot reel actif.
 
 **2026.11.16.9 : saisie API Jupiter visible** au menu11, selon le choix de l'utilisateur. La cle privee du wallet reste masquee et inchangee. Voir [DEPANNAGE_ACCES_REELS.md](DEPANNAGE_ACCES_REELS.md).

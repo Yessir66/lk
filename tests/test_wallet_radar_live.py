@@ -82,6 +82,32 @@ class BudgetTest(unittest.TestCase):
 
 
 class InstructionTest(unittest.TestCase):
+    def test_send_priority_precedes_waiting_read_without_bypassing_rpc_quota(self):
+        from concurrent.futures import ThreadPoolExecutor
+        transport=live.Transport('https://unused.invalid','FAKE')
+        transport.next_rpc=time.monotonic()+2
+        order=[]
+        def use_slot(priority):
+            with transport.slot(False,priority,time.monotonic()+2,{},'RPC'):
+                order.append((priority,time.monotonic()))
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            low=pool.submit(use_slot,2)
+            with transport.rpc_condition:
+                self.assertTrue(transport.rpc_condition.wait_for(lambda:len(transport.rpc_waiters)==1,timeout=1))
+            high=pool.submit(use_slot,0)
+            with transport.rpc_condition:
+                self.assertTrue(transport.rpc_condition.wait_for(lambda:len(transport.rpc_waiters)==2,timeout=1))
+                transport.next_rpc=0;transport.rpc_condition.notify_all()
+            high.result(timeout=1);low.result(timeout=1)
+        self.assertEqual([priority for priority,_ in order],[0,2])
+        self.assertGreaterEqual(order[1][1]-order[0][1],.32)
+        self.assertFalse(transport.rpc_busy);self.assertEqual(transport.rpc_waiters,[])
+
+    def test_expired_priority_waiter_is_removed(self):
+        transport=live.Transport('https://unused.invalid','FAKE');transport.next_rpc=time.monotonic()+2
+        with self.assertRaises(live.TradeError):
+            with transport.slot(False,0,time.monotonic()+.01,{},'RPC'):self.fail('Expired request admitted')
+        self.assertEqual(transport.rpc_waiters,[]);self.assertFalse(transport.rpc_busy)
     def test_two_hop_route_allows_own_intermediate_account_only(self):
         q=indirect_quote();live.quote_check(q,live.SOL,MINT,10000000)
         p=payload(q)
@@ -260,6 +286,7 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
         self.e.preparing=None;self.e.prepared_mint=None
         self.e.transport=Mock();self.e.rpc=AsyncMock();self.e.jup=AsyncMock()
         self.e.last_notice={}
+        self.e.blockhash_cache=None;self.e.blockhash_lock=asyncio.Lock()
 
     async def asyncTearDown(self):
         if self.e.preparing and not self.e.preparing.done():
@@ -272,6 +299,40 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(.01);task.cancel();await asyncio.gather(task,return_exceptions=True)
         self.e.rpc.assert_not_awaited();self.e.transport.send.assert_not_called()
         self.assertFalse(self.e.ledger.active())
+
+    async def test_blockhash_cache_avoids_read_and_expiry_forces_refresh(self):
+        from solders.hash import Hash
+        self.e.rpc.return_value={'value':{'blockhash':str(Hash.default()),'lastValidBlockHeight':100}}
+        first=await self.e.blockhash();second=await self.e.blockhash()
+        self.assertEqual(first,second);self.e.rpc.assert_awaited_once()
+        self.e.blockhash_cache['_observed_mono']=time.monotonic()-11
+        await self.e.blockhash();self.assertEqual(self.e.rpc.await_count,2)
+
+    async def test_concurrent_blockhash_requests_share_one_read(self):
+        from solders.hash import Hash
+        async def read(*args):
+            await asyncio.sleep(.001)
+            return {'value':{'blockhash':str(Hash.default()),'lastValidBlockHeight':100}}
+        self.e.rpc.side_effect=read
+        await asyncio.gather(self.e.blockhash(),self.e.blockhash())
+        self.e.rpc.assert_awaited_once()
+
+    async def test_send_requires_durable_signature_and_records_waits_after_http(self):
+        data={'buy':{'raw':'fake','signature':'fake','height':100},'decision_wall':time.time()}
+        with self.assertRaises(live.TradeError):await self.e.send(MINT,data,'buy')
+        self.e.transport.send.assert_not_called()
+        self.e.ledger.reserve(MINT,data)
+        with patch.object(self.e.ledger,'save',wraps=self.e.ledger.save) as save:
+            def submit(raw,deadline,capture):
+                self.assertEqual(save.call_count,0)
+                capture.update(request_at=time.time(),queue_wait_ms=4,quota_wait_ms=5,http_response_ms=7)
+                return 'fake'
+            self.e.transport.send.side_effect=submit
+            await self.e.send(MINT,data,'buy')
+            self.assertEqual(save.call_count,1)
+        detail=json.loads(self.e.ledger.get(MINT)['data'])['latency_breakdown']
+        self.assertEqual(detail['file_rpc_envoi_ms'],4);self.assertEqual(detail['quota_rpc_envoi_ms'],5)
+        self.assertEqual(detail['reponse_http_apres_envoi_ms'],7)
 
     async def test_first_signal_only_prepares_unsigned_no_reservation_or_send(self):
         self.e.prepare=AsyncMock(return_value={'fake':'unsigned'})
@@ -391,11 +452,14 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
                 raise AssertionError('Unexpected method: '+method)
             self.e.rpc.side_effect=rpc
             prepared=await self.e.prepare(MINT,'buy')
+            self.assertIn('simulation',prepared['preparation_profile']['phases_ms'])
             self.e.transport.send.assert_not_called()
             self.e.prices.usd=Decimal(200)
             with self.assertRaises(live.TradeError):self.e.signed(prepared)
             self.e.prices.usd=Decimal(100)
             signed=self.e.signed(prepared)
+            prepared['blockhash_at']=time.monotonic()-16
+            with self.assertRaises(live.TradeError):self.e.signed(prepared)
             tx=VersionedTransaction.from_bytes(base64.b64decode(signed['raw']))
             self.assertEqual(tx.verify_with_results(),[True])
             self.assertEqual(str(tx.message.account_keys[0]),str(key.pubkey()))
@@ -459,6 +523,20 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
 
 
 class SetupAndCheckTest(unittest.TestCase):
+    def test_report_reads_old_records_and_new_latency_without_modifying_budget(self):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(live,'ROOT',Path(tmp)):
+            path=Path(tmp)/'data/wallet_alerts_ws/live_trades.sqlite3';ledger=live.Ledger(path)
+            ledger.reserve(MINT,{'buy':{'signature':'fake'},'latency_breakdown':{'preparation_restante_ms':100},
+                'preparation_profile':{'phases_ms':{'simulation':10},'transport':{'RPC/test':[{'quota_wait_ms':5}]},'blockhash_cache_hit':True}})
+            ledger.save('old-mint','closed',{'buy':{'signature':'old-fake'}},reserve='0')
+            ledger.notice({'at':time.time(),'mint':MINT,'code':'ACHAT_IGNORE','message':'Preparation trop lente',
+                           'execution_version':live.EXECUTION_VERSION,'latency_breakdown':{'preparation_restante_ms':1900}})
+            ledger.db.close();before=path.stat().st_mtime_ns;output=StringIO()
+            with patch.object(sys,'argv',['wallet_radar_live.py','--report']),patch('sys.stdout',output):live.main()
+            self.assertEqual(path.stat().st_mtime_ns,before)
+            self.assertIn('preparation_restante_ms',output.getvalue());self.assertIn('old-fake',output.getvalue())
+            self.assertIn('blockhash precharge : True',output.getvalue());self.assertIn('2.40 / 15',output.getvalue())
+            self.assertIn('mesures avec '+live.EXECUTION_VERSION+' : 1',output.getvalue())
     def test_update_jupiter_does_not_read_or_rewrite_wallet(self):
         with tempfile.TemporaryDirectory() as tmp,patch.object(live,'PRIVATE',Path(tmp)):
             wallet=Path(tmp)/'wallet.json';wallet.write_text('private-wallet-must-stay-untouched')

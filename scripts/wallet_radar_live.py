@@ -6,6 +6,8 @@ instructions, signers, fees, simulation and the durable budget are checked befor
 import argparse
 import asyncio
 import base64
+from contextlib import contextmanager
+from contextvars import ContextVar
 from decimal import Decimal, ROUND_CEILING
 import getpass
 import hashlib
@@ -28,6 +30,7 @@ import urllib.request
 from wallet_radar_paper import PaperObserver, SOL, BBIG, USDC
 
 ROOT=Path(__file__).resolve().parents[1]
+EXECUTION_VERSION='2026.11.17.2'
 OWNER='E23vfW9oA9CnANP5wzimpo3DM3WQtMuxzUP4oxFp97Jq'
 PRIVATE=ROOT/'private_wallet_radar'
 JUP='JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4'
@@ -45,6 +48,19 @@ RENT=Decimal('.50')
 # Principal + buy fee/rent + three exit attempts' fees + exit rent.
 # Charge the entire envelope permanently, even after a failed transaction/positive exit.
 ENVELOPE=BUY+FEE+RENT+3*FEE+RENT
+PREPARE_PROFILE=ContextVar('radar_prepare_profile',default=None)
+
+
+async def measured_phase(profile,name,operation):
+    started=time.monotonic()
+    try:return await operation
+    finally:profile['phases_ms'][name]=round((time.monotonic()-started)*1000,3)
+
+
+def record_transport(name,capture):
+    profile=PREPARE_PROFILE.get()
+    if profile is not None:
+        profile['transport'].setdefault(name,[]).append({k:v for k,v in capture.items() if k!='request_at'})
 JUPITER_ERRORS={
     'COULD_NOT_FIND_ANY_ROUTE':'aucune route trouvee',
     'NO_ROUTES_FOUND':'aucune route trouvee',
@@ -258,25 +274,63 @@ class Transport:
         self.url=rpc_url;self.key=api_key
         self.locks={'rpc':threading.Lock(),'jup':threading.Lock()};self.next_rpc=0;self.next_jup=0
         self.pause_rpc=0;self.pause_jup=0
+        self.rpc_condition=threading.Condition();self.rpc_waiters=[];self.rpc_sequence=0;self.rpc_busy=False
         # Use the installed client already used by the wallet monitor, without
         # changing hosts, credentials, TLS verification or authentication rules.
         from curl_cffi import requests
         self.jupiter_http=requests.Session(impersonate='chrome')
 
-    def request(self,url,body=None,jupiter=False,deadline=None,capture=None,label='Fournisseur'):
+    @contextmanager
+    def slot(self,jupiter,priority,deadline,capture,label):
+        queue_ms=0.0;quota_ms=0.0
+        if jupiter:
+            start=time.monotonic()
+            with self.locks['jup']:
+                capture['queue_wait_ms']=(time.monotonic()-start)*1000
+                if time.monotonic()<self.pause_jup:raise TradeError(label+' : pause apres limitation, attendre 60 s.',status=429)
+                start=time.monotonic();time.sleep(max(0,self.next_jup-start))
+                capture['quota_wait_ms']=(time.monotonic()-start)*1000
+                self.next_jup=time.monotonic()+1
+                yield
+            return
+        condition=self.rpc_condition
+        with condition:
+            self.rpc_sequence+=1;ticket=(priority,self.rpc_sequence)
+            self.rpc_waiters.append(ticket);condition.notify_all()
+            try:
+                while True:
+                    now=time.monotonic()
+                    if deadline is not None and now>deadline:raise TradeError('Limite de trois secondes depassee avant requete.')
+                    if now<self.pause_rpc:raise TradeError(label+' : pause apres limitation, attendre 60 s.',status=429)
+                    if self.rpc_busy or min(self.rpc_waiters)!=ticket:
+                        started=time.monotonic();condition.wait(timeout=max(.001,deadline-now) if deadline is not None else None)
+                        queue_ms+=(time.monotonic()-started)*1000;continue
+                    delay=self.next_rpc-now
+                    if delay>0:
+                        started=time.monotonic();condition.wait(timeout=min(delay,max(.001,deadline-now)) if deadline is not None else delay)
+                        quota_ms+=(time.monotonic()-started)*1000;continue
+                    self.rpc_waiters.remove(ticket);self.rpc_busy=True;self.next_rpc=time.monotonic()+1/3
+                    break
+            except BaseException:
+                self.rpc_waiters.remove(ticket);condition.notify_all();raise
+            finally:
+                capture['queue_wait_ms']=round(queue_ms,3);capture['quota_wait_ms']=round(quota_ms,3)
+        try:yield
+        finally:
+            with condition:self.rpc_busy=False;condition.notify_all()
+
+    def request(self,url,body=None,jupiter=False,deadline=None,capture=None,label='Fournisseur',priority=1):
         # Fixed host for Jupiter. Keys only in the request header, never stdout.
         name='jup' if jupiter else 'rpc'
-        with self.locks[name]:
-            now=time.monotonic()
-            if now<getattr(self,'pause_'+name):raise TradeError(label+' : pause apres limitation, attendre 60 s.')
-            time.sleep(max(0,getattr(self,'next_'+name)-now))
+        capture=capture if capture is not None else {}
+        with self.slot(jupiter,priority,deadline,capture,label):
             if deadline is not None and time.monotonic()>deadline:
                 raise TradeError('Limite de trois secondes depassee avant requete.')
-            setattr(self,'next_'+name,time.monotonic()+(1 if jupiter else 1/3))
             headers={'Accept':'application/json'}
             if body is not None:headers['Content-Type']='application/json'
             if jupiter:headers['x-api-key']=self.key
             req=urllib.request.Request(url,data=json.dumps(body).encode() if body is not None else None,headers=headers)
+            http_started=time.monotonic()
             try:
                 if deadline is not None and time.monotonic()>deadline:raise TradeError('Limite de trois secondes depassee avant requete.')
                 if capture is not None:capture['request_at']=time.time()
@@ -311,6 +365,8 @@ class Transport:
                             'resolution DNS' if isinstance(reason,socket.gaierror) or (jupiter and code==6) else 'connexion ou format JSON indisponible')
                 status=code if isinstance(code,int) and not isinstance(code,bool) and 100<=code<=599 else None
                 raise TradeError(label+' : '+detail+'. URL, cles et reponse privee masquees.',status=status) from None
+            finally:
+                if 'request_at' in capture:capture['http_response_ms']=round((time.monotonic()-http_started)*1000,3)
             if not isinstance(value,dict) or value.get('error') is not None:
                 error=value.get('error') if isinstance(value,dict) else None
                 code=error.get('code') if isinstance(error,dict) else None
@@ -322,16 +378,18 @@ class Transport:
                 raise TradeError(label+' : reponse refusee ou invalide'+detail+'.')
             return value
 
-    def rpc(self,method,params):
+    def rpc(self,method,params,capture=None):
         known={'getBalance','getLatestBlockhash','getFeeForMessage','getMultipleAccounts','getTokenAccountsByOwner',
                'getRecentPrioritizationFees','simulateTransaction','getSignatureStatuses','getTransaction','getBlockHeight'}
-        value=self.request(self.url,{'jsonrpc':'2.0','id':1,'method':method,'params':params},label='RPC/'+method if method in known else 'RPC')
+        priority=2 if method in ('getRecentPrioritizationFees','getLatestBlockhash','getSignatureStatuses','getTransaction','getBlockHeight') else 1
+        value=self.request(self.url,{'jsonrpc':'2.0','id':1,'method':method,'params':params},capture=capture,
+                           label='RPC/'+method if method in known else 'RPC',priority=priority)
         if 'result' not in value:raise TradeError('Resultat RPC absent.')
         return value['result']
 
-    def jup(self,path,body=None):
+    def jup(self,path,body=None,capture=None):
         label='Jupiter/cotation' if path.startswith('/swap/v1/quote?') else 'Jupiter/construction' if path=='/swap/v1/swap-instructions' else 'Jupiter'
-        return self.request('https://api.jup.ag'+path,body,jupiter=True,label=label)
+        return self.request('https://api.jup.ag'+path,body,jupiter=True,label=label,capture=capture)
 
     def quote_probe(self,kind):
         """Two fixed diagnostic GETs only. Never used by order construction/send."""
@@ -374,7 +432,7 @@ class Transport:
 
     def send(self,raw,deadline=None,capture=None):
         return self.request(self.url,{'jsonrpc':'2.0','id':1,'method':'sendTransaction','params':[
-            raw,{'encoding':'base64','skipPreflight':False,'maxRetries':2}]},deadline=deadline,capture=capture,label='RPC/envoi')['result']
+            raw,{'encoding':'base64','skipPreflight':False,'maxRetries':2}]},deadline=deadline,capture=capture,label='RPC/envoi',priority=0)['result']
 
 
 def lamports(usd,price):return int((Decimal(usd)*10**9/price).to_integral_value(rounding=ROUND_CEILING))
@@ -466,9 +524,43 @@ class Executor:
         self.priority=None;self.priority_at=0;self.preparing=None;self.prepared_mint=None
         self.jobs=asyncio.Queue(maxsize=1)
         self.last_notice={}
+        self.blockhash_cache=None;self.blockhash_lock=asyncio.Lock()
 
-    async def rpc(self,method,params):return await asyncio.to_thread(self.transport.rpc,method,params)
-    async def jup(self,path,body=None):return await asyncio.to_thread(self.transport.jup,path,body)
+    async def rpc(self,method,params):
+        capture={}
+        try:return await asyncio.to_thread(self.transport.rpc,method,params,capture)
+        finally:record_transport('RPC/'+method,capture)
+
+    async def jup(self,path,body=None):
+        capture={}
+        try:return await asyncio.to_thread(self.transport.jup,path,body,capture)
+        finally:record_transport('Jupiter/cotation' if path.startswith('/swap/v1/quote?') else 'Jupiter/construction',capture)
+
+    async def blockhash(self,refresh=False):
+        if not refresh and self.blockhash_cache and time.monotonic()-self.blockhash_cache['_observed_mono']<=10:
+            profile=PREPARE_PROFILE.get()
+            if profile is not None:profile['blockhash_cache_hit']=True
+            return self.blockhash_cache
+        async with self.blockhash_lock:
+            if not refresh and self.blockhash_cache and time.monotonic()-self.blockhash_cache['_observed_mono']<=10:
+                profile=PREPARE_PROFILE.get()
+                if profile is not None:profile['blockhash_cache_hit']=True
+                return self.blockhash_cache
+            result=await self.rpc('getLatestBlockhash',[{'commitment':'confirmed'}])
+            try:
+                from solders.hash import Hash
+                Hash.from_string(result['value']['blockhash'])
+                height=result['value']['lastValidBlockHeight']
+                if not isinstance(height,int) or isinstance(height,bool) or height<=0:raise ValueError()
+            except Exception:raise TradeError('Blockhash ou hauteur de validite invalide.') from None
+            self.blockhash_cache=dict(result,_observed_mono=time.monotonic())
+            return self.blockhash_cache
+
+    async def refresh_blockhash(self):
+        while True:
+            try:await self.blockhash(refresh=True)
+            except Exception:pass
+            await asyncio.sleep(5)
 
     def price(self):
         value=self.prices.usd
@@ -479,7 +571,7 @@ class Executor:
         if code=='SORTIE_INDISPONIBLE':
             if time.monotonic()-self.last_notice.get(mint,0)<30:return
             self.last_notice[mint]=time.monotonic()
-        event=dict(v=1,type='live_decision',mode='LIVE',mint=mint,code=code,message=message,at=time.time(),**details)
+        event=dict(v=1,type='live_decision',mode='LIVE',mint=mint,code=code,message=message,at=time.time(),execution_version=EXECUTION_VERSION,**details)
         self.ledger.notice(event)
         print('RADAR_LIVE '+json.dumps(event,separators=(',',':')),flush=True)
 
@@ -526,6 +618,16 @@ class Executor:
         return checked_lookups(keys,result)
 
     async def prepare(self,mint,side,quantity=None,q=None):
+        profile={'phases_ms':{},'transport':{},'blockhash_cache_hit':False}
+        self.last_preparation_profile=(mint,profile)
+        token=PREPARE_PROFILE.set(profile)
+        try:
+            prepared=await self.prepare_transaction(mint,side,quantity,q,profile)
+            prepared['preparation_profile']=profile
+            return prepared
+        finally:PREPARE_PROFILE.reset(token)
+
+    async def prepare_transaction(self,mint,side,quantity,q,profile):
         from solders.hash import Hash
         from solders.message import MessageV0,to_bytes_versioned
         from solders.pubkey import Pubkey
@@ -539,28 +641,28 @@ class Executor:
         source,dest=(SOL,mint) if side=='buy' else (mint,SOL)
         # Independent reads overlap the HTTP quote/build path, with separate rate buckets.
         owned,q,block,balance_result=await asyncio.gather(
-            self.holdings(mint) if side=='buy' else asyncio.sleep(0,result=0),
-            self.quote(source,dest,amount) if q is None else asyncio.sleep(0,result=q),
-            self.rpc('getLatestBlockhash',[{'commitment':'confirmed'}]),
-            self.rpc('getBalance',[OWNER,{'commitment':'confirmed'}]))
+            measured_phase(profile,'position',self.holdings(mint) if side=='buy' else asyncio.sleep(0,result=0)),
+            measured_phase(profile,'cotation',self.quote(source,dest,amount) if q is None else asyncio.sleep(0,result=q)),
+            measured_phase(profile,'blockhash',self.blockhash()),
+            measured_phase(profile,'solde_SOL',self.rpc('getBalance',[OWNER,{'commitment':'confirmed'}])))
         if side=='buy' and owned!=0:raise TradeError('Position preexistante sur ce token : achat ignore.')
         balance=balance_result['value']
         if side=='buy' and balance<lamports(ENVELOPE,price):raise TradeError('SOL insuffisant pour achat, depots et reserve de sortie.')
         quote_check(q,source,dest,amount)
-        payload=await self.jup('/swap/v1/swap-instructions',dict(quoteResponse=q,userPublicKey=OWNER,
-                    wrapAndUnwrapSol=True,useSharedAccounts=False,asLegacyTransaction=False,dynamicComputeUnitLimit=False))
+        payload=await measured_phase(profile,'construction_Jupiter',self.jup('/swap/v1/swap-instructions',dict(quoteResponse=q,userPublicKey=OWNER,
+                    wrapAndUnwrapSol=True,useSharedAccounts=False,asLegacyTransaction=False,dynamicComputeUnitLimit=False)))
         instructions=checked_instructions(payload,q,self.priority)
-        tables=await self.lookups(payload)
+        tables=await measured_phase(profile,'tables_adresses',self.lookups(payload))
         message=MessageV0.try_compile(Pubkey.from_string(OWNER),instructions,tables,Hash.from_string(block['value']['blockhash']))
         unsigned=VersionedTransaction.populate(message,[Signature.default()])
         if len(bytes(unsigned))>1232:raise TradeError('Route trop volumineuse apres compression des adresses.')
-        fee=(await self.rpc('getFeeForMessage',[base64.b64encode(to_bytes_versioned(message)).decode(),{'commitment':'confirmed'}]))['value']
+        fee=(await measured_phase(profile,'verification_frais',self.rpc('getFeeForMessage',[base64.b64encode(to_bytes_versioned(message)).decode(),{'commitment':'confirmed'}])))['value']
         if fee is None or fee>fee_lamports:raise TradeError('Frais reseau au-dessus du plafond.')
         created=list({a['pubkey'] for row in payload.get('setupInstructions',[]) if row['programId']==ATA for a in row['accounts'][1:2]})
-        previous=(await self.rpc('getMultipleAccounts',[created,{'encoding':'base64','commitment':'confirmed'}]))['value'] if created else []
-        result=await self.rpc('simulateTransaction',[base64.b64encode(bytes(unsigned)).decode(),{
+        previous=(await measured_phase(profile,'comptes_avant_simulation',self.rpc('getMultipleAccounts',[created,{'encoding':'base64','commitment':'confirmed'}])))['value'] if created else []
+        result=await measured_phase(profile,'simulation',self.rpc('simulateTransaction',[base64.b64encode(bytes(unsigned)).decode(),{
             'encoding':'base64','sigVerify':False,'commitment':'confirmed',
-            'accounts':{'encoding':'base64','addresses':[OWNER]+created}}])
+            'accounts':{'encoding':'base64','addresses':[OWNER]+created}}]))
         sim=result['value']
         if sim.get('err') is not None:raise TradeError('Simulation de transaction refusee.')
         post=sim.get('accounts') or []
@@ -573,13 +675,14 @@ class Executor:
         if debit>cap:raise TradeError('Depense SOL simulee au-dessus du plafond achat/frais/depots.')
         return dict(message=base64.b64encode(to_bytes_versioned(message)).decode(),height=block['value']['lastValidBlockHeight'],
                     amount=amount,price=str(price),fee_lamports=fee,rent_lamports=rent,
-                    prepared=time.monotonic(),prepare_ms=round((time.monotonic()-start)*1000),side=side)
+                    prepared=time.monotonic(),prepare_ms=round((time.monotonic()-start)*1000),side=side,
+                    blockhash_at=block['_observed_mono'])
 
     def signed(self,p):
         from solders.message import from_bytes_versioned
         from solders.transaction import VersionedTransaction
         price=self.price()
-        if (time.monotonic()-p['prepared']>2 or time.monotonic()-self.priority_at>30
+        if (time.monotonic()-p['prepared']>2 or time.monotonic()-p['blockhash_at']>15 or time.monotonic()-self.priority_at>30
             or p['fee_lamports']>lamports(FEE,price) or p['rent_lamports']>lamports(RENT,price)
             or (p['side']=='buy' and p['amount']>lamports(BUY,price))):
             raise TradeError('Preparation perimee ou plafond USD depasse avant signature.')
@@ -589,40 +692,63 @@ class Executor:
     async def buy_loop(self):
         while True:
             mint,deadline,elapsed=await self.jobs.get()
+            decision_mono=deadline-max(0,3-elapsed)
+            latency={'file_decision_ms':round(max(0,time.monotonic()-decision_mono)*1000,3)}
             try:
                 if self.ledger.active() or self.ledger.get(mint) or self.ledger.used()+ENVELOPE>BUDGET:
                     raise TradeError('Position active, token deja traite ou budget insuffisant.')
                 if self.prepared_mint!=mint or self.preparing is None:raise TradeError('Preparation non disponible pour ce signal.')
                 remaining=deadline-time.monotonic()
                 if remaining<=0:raise TradeError('Limite de trois secondes depassee.')
-                p=await asyncio.wait_for(asyncio.shield(self.preparing),remaining)
+                waiting=time.monotonic()
+                try:p=await asyncio.wait_for(asyncio.shield(self.preparing),remaining)
+                finally:latency['preparation_restante_ms']=round((time.monotonic()-waiting)*1000,3)
                 if time.monotonic()>deadline or time.monotonic()-p['prepared']>2:raise TradeError('Preparation trop ancienne ou limite de trois secondes depassee.')
                 # Recheck the USD reference, priority freshness and fee cap before signing.
-                current_price=self.price()
+                checking=time.monotonic();current_price=self.price()
                 if time.monotonic()-self.priority_at>30:raise TradeError('Priorite perimee.')
                 tx=self.signed(p)
+                latency['verifications_signature_ms']=round((time.monotonic()-checking)*1000,3)
                 data=dict(buy=tx,buy_amount=p['amount'],entry_usd=str(Decimal(p['amount'])/10**9*current_price),
                           price=str(current_price),decision_elapsed_s=elapsed,prepare_ms=p['prepare_ms'],sell_attempts=0,
-                          decision_wall=time.time()-(3-elapsed-(deadline-time.monotonic())),signed_at=time.time())
+                          decision_wall=time.time()-(3-elapsed-(deadline-time.monotonic())),signed_at=time.time(),
+                          latency_breakdown=latency,preparation_profile=p.get('preparation_profile'),execution_version=EXECUTION_VERSION)
                 if time.monotonic()>deadline:raise TradeError('Limite de trois secondes depassee avant envoi.')
+                storing=time.monotonic()
                 self.ledger.reserve(mint,data)  # Durable BEFORE any possible network submission.
+                latency['journal_avant_envoi_ms']=round((time.monotonic()-storing)*1000,3)
                 # All sends below use the saved signature; errors never create a second buy.
                 await self.send(mint,data,'buy',deadline)
             except asyncio.CancelledError:raise
             except Exception as exc:
-                self.notify(mint,'ACHAT_IGNORE',str(exc) if isinstance(exc,TradeError) else 'Preparation impossible ; aucun nouvel ordre.')
+                reason=str(exc) if isinstance(exc,TradeError) else 'Preparation non terminee avant la limite de trois secondes.' if isinstance(exc,TimeoutError) else 'Preparation impossible ; aucun nouvel ordre.'
+                last=getattr(self,'last_preparation_profile',None)
+                self.notify(mint,'ACHAT_IGNORE',reason,latency_breakdown=latency,
+                            preparation_profile=last[1] if last and last[0]==mint else None)
 
     async def send(self,mint,data,side,deadline=None):
-        data[side]['queued_at']=time.time();self.ledger.save(mint,side+'_pending',data)
+        # The exact signature must already be durable. Do not repeat the same
+        # synchronous write on the critical path just to add a queue timestamp.
+        current=self.ledger.get(mint)
+        if not current or current['state']!=side+'_pending' or json.loads(current['data']).get(side,{}).get('signature')!=data[side]['signature']:
+            raise TradeError('Signature non enregistree durablement ; envoi refuse.')
+        data[side]['queued_at']=time.time()
         capture={}
         try:
             try:result=await asyncio.to_thread(self.transport.send,data[side]['raw'],deadline,capture)
             finally:
+                current=self.ledger.get(mint);saved=json.loads(current['data'])
+                saved[side]['queued_at']=data[side]['queued_at']
+                if side=='buy':
+                    breakdown=dict(data.get('latency_breakdown') or saved.get('latency_breakdown') or {})
+                    for raw,name in [('queue_wait_ms','file_rpc_envoi_ms'),('quota_wait_ms','quota_rpc_envoi_ms'),
+                                     ('http_response_ms','reponse_http_apres_envoi_ms')]:
+                        if raw in capture:breakdown[name]=round(capture[raw],3)
+                    saved['latency_breakdown']=breakdown
                 if 'request_at' in capture:
                     data[side]['send_at']=capture['request_at']
-                    current=self.ledger.get(mint);saved=json.loads(current['data'])
                     saved[side]['send_at']=capture['request_at']
-                    self.ledger.save(mint,current['state'],saved)
+                self.ledger.save(mint,current['state'],saved)
             if result!=data[side]['signature']:raise TradeError('Signature renvoyee incoherente.')
             self.notify(mint,'ORDRE_ENVOYE',side+' : transaction envoyee, confirmation attendue.',signature=result,
                         prepare_ms=data.get('prepare_ms'),decision_to_send_ms=round((data[side]['send_at']-data['decision_wall'])*1000) if data[side].get('send_at') and side=='buy' else None)
@@ -695,7 +821,7 @@ class Executor:
             await asyncio.sleep(2)
 
     async def run(self):
-        tasks=[asyncio.create_task(fn()) for fn in (self.fees,self.buy_loop,self.positions)]
+        tasks=[asyncio.create_task(fn()) for fn in (self.fees,self.refresh_blockhash,self.buy_loop,self.positions)]
         try:await asyncio.gather(*tasks)
         finally:
             for task in tasks:task.cancel()
@@ -776,6 +902,26 @@ def main():
                 if buy.get('send_at') and value.get('decision_wall'):metrics['decision_envoi_HTTP_ms']=round((buy['send_at']-value['decision_wall'])*1000)
                 if buy.get('send_at') and value.get('confirmed_at'):metrics['envoi_confirmation_observee_ms']=round((value['confirmed_at']-buy['send_at'])*1000)
                 print('Mesures locales :',json.dumps(metrics))
+                if value.get('latency_breakdown'):
+                    print('Detail validation/envoi (ms ; reponse HTTP apres envoi) :',json.dumps(value['latency_breakdown']))
+                profile=value.get('preparation_profile')
+                if profile:
+                    print('Preparation (phases paralleles, ne pas additionner) :',json.dumps(profile.get('phases_ms',{})),
+                          '; blockhash precharge :',profile.get('blockhash_cache_hit',False))
+                    totals={}
+                    for name,entries in profile.get('transport',{}).items():
+                        group=totals.setdefault(name.split('/')[0],{'file_ms':0,'quota_ms':0,'reponse_ms':0})
+                        for item in entries:
+                            for key,field in [('queue_wait_ms','file_ms'),('quota_wait_ms','quota_ms'),('http_response_ms','reponse_ms')]:group[field]+=item.get(key,0)
+                    print('Preparation : cumul reseau par fournisseur (ms) :',json.dumps(totals))
+            ignored=[]
+            for raw, in db.execute("SELECT data FROM notices WHERE code='ACHAT_IGNORE' ORDER BY rowid DESC"):
+                try:record=json.loads(raw)
+                except (TypeError,ValueError):continue
+                if record.get('execution_version')==EXECUTION_VERSION:ignored.append(record)
+            print('Achats ignores mesures avec '+EXECUTION_VERSION+' :',len(ignored))
+            for record in ignored[:5]:
+                print(record['mint'],record['message'],'; detail (ms) :',json.dumps(record.get('latency_breakdown',{})))
             db.close()
         else:parser.print_help()
     except Exception as exc:raise SystemExit(str(exc) if isinstance(exc,TradeError) else 'Configuration impossible ; verifier la cle locale, les permissions et les dependances.') from None
