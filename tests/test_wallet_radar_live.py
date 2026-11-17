@@ -443,6 +443,77 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):await self.e.positions()
         self.assertEqual(json.loads(self.e.ledger.get(MINT)['data'])['exit_reason'],'SL')
 
+    async def test_time_limit_sells_entire_position_without_sl_or_tp(self):
+        confirmed=time.time()-61
+        data={'quantity':42,'entry_usd':'1','sell_attempts':0,'confirmed_at':confirmed,'exit_deadline':confirmed+60}
+        self.e.ledger.save(MINT,'open',data,reserve=live.ENVELOPE)
+        self.e.holdings=AsyncMock(return_value=42);self.e.quote=AsyncMock(return_value={'outAmount':'10000000'})
+        self.e.prepare=AsyncMock(return_value={'fake':'unsigned'});self.e.signed=Mock(return_value={'signature':'fake','raw':'fake','height':100})
+        self.e.send=AsyncMock(side_effect=asyncio.CancelledError())
+        with self.assertRaises(asyncio.CancelledError):await self.e.positions()
+        row=self.e.ledger.get(MINT);saved=json.loads(row['data'])
+        self.assertEqual(row['state'],'sell_pending');self.assertEqual(saved['exit_reason'],'TIMEOUT_60S')
+        self.assertEqual(saved['exit_deadline'],confirmed+60)
+        self.e.prepare.assert_awaited_once_with(MINT,'sell',42,{'outAmount':'10000000'})
+        self.assertEqual(Decimal(row['reserved']),live.ENVELOPE)
+
+    async def test_time_limit_never_sells_early_and_old_positions_use_original_confirmation(self):
+        confirmed=time.time()-59
+        data={'quantity':42,'entry_usd':'1','sell_attempts':0,'confirmed_at':confirmed}
+        self.e.ledger.save(MINT,'open',data,reserve=live.ENVELOPE)
+        self.e.holdings=AsyncMock(return_value=42);self.e.quote=AsyncMock(return_value={'outAmount':'10000000'})
+        self.e.prepare=AsyncMock()
+        task=asyncio.create_task(self.e.positions());await asyncio.sleep(.01);task.cancel();await asyncio.gather(task,return_exceptions=True)
+        self.e.prepare.assert_not_awaited();self.assertEqual(self.e.ledger.get(MINT)['state'],'open')
+        self.assertEqual(live.exit_deadline(data),confirmed+60)
+        self.assertIsNone(live.exit_deadline({'confirmed_at':float('nan')}))
+        self.assertIsNone(live.exit_deadline({'confirmed_at':True}))
+
+    async def test_timeout_decision_survives_quote_failure_and_restart(self):
+        confirmed=time.time()-61
+        self.e.ledger.save(MINT,'open',{'quantity':42,'entry_usd':'1','sell_attempts':0,'confirmed_at':confirmed},reserve=live.ENVELOPE)
+        self.e.holdings=AsyncMock(return_value=42);self.e.quote=AsyncMock(side_effect=live.TradeError('NO_ROUTES_FOUND'))
+        task=asyncio.create_task(self.e.positions());await asyncio.sleep(.01);task.cancel();await asyncio.gather(task,return_exceptions=True)
+        self.e.transport.send.assert_not_called()
+        other=live.Ledger(Path(self.tmp.name)/'live.sqlite3')
+        try:
+            row=other.get(MINT);data=json.loads(row['data'])
+            self.assertEqual(row['state'],'open');self.assertEqual(data['exit_reason'],'TIMEOUT_60S')
+            self.assertEqual(live.exit_deadline(data),confirmed+60);self.assertEqual(data['sell_attempts'],0)
+        finally:other.db.close()
+
+    async def test_confirmation_sets_absolute_deadline_without_resetting_on_failed_sell(self):
+        self.e.ledger.reserve(MINT,{'buy':{'signature':'fake','height':100},'sell_attempts':0})
+        self.e.rpc.side_effect=[{'value':[{'confirmationStatus':'confirmed'}]}, {'meta':{'err':None,'postTokenBalances':[
+            {'owner':live.OWNER,'mint':MINT,'uiTokenAmount':{'amount':'42'}}]}}]
+        await self.e.reconcile(self.e.ledger.get(MINT));data=json.loads(self.e.ledger.get(MINT)['data'])
+        self.assertEqual(data['exit_deadline'],data['confirmed_at']+60)
+        data['sell_attempts']=1;data['sell']={'signature':'failed','height':100};data['exit_reason']='TIMEOUT_60S'
+        self.e.ledger.save(MINT,'sell_pending',data)
+        self.e.rpc.side_effect=[{'value':[{'confirmationStatus':'confirmed'}]}, {'meta':{'err':{'InstructionError':[0,'Custom']}}}]
+        await self.e.reconcile(self.e.ledger.get(MINT));saved=json.loads(self.e.ledger.get(MINT)['data'])
+        self.assertEqual(self.e.ledger.get(MINT)['state'],'open');self.assertEqual(saved['exit_deadline'],data['exit_deadline'])
+        self.assertEqual(saved['exit_reason'],'TIMEOUT_60S')
+
+    async def test_time_limit_crossed_during_quote_is_handled_in_same_iteration(self):
+        clock=[100000.0]
+        self.e.ledger.save(MINT,'open',{'quantity':42,'entry_usd':'1','sell_attempts':0,'confirmed_at':clock[0]-59.9},reserve=live.ENVELOPE)
+        self.e.holdings=AsyncMock(return_value=42);self.e.price=Mock(return_value=Decimal(100))
+        async def quote(*args):clock[0]+=.2;return {'outAmount':'10000000'}
+        self.e.quote=AsyncMock(side_effect=quote);self.e.prepare=AsyncMock(return_value={'fake':'unsigned'})
+        self.e.signed=Mock(return_value={'signature':'fake','raw':'fake','height':100});self.e.send=AsyncMock(side_effect=asyncio.CancelledError())
+        with patch.object(live.time,'time',side_effect=lambda:clock[0]):
+            with self.assertRaises(asyncio.CancelledError):await self.e.positions()
+        self.assertEqual(json.loads(self.e.ledger.get(MINT)['data'])['exit_reason'],'TIMEOUT_60S')
+
+    async def test_elapsed_timer_never_creates_second_sell_while_signature_is_pending(self):
+        data={'quantity':42,'confirmed_at':time.time()-100,'sell':{'signature':'pending'},'sell_attempts':1}
+        self.e.ledger.save(MINT,'sell_pending',data,reserve=live.ENVELOPE)
+        self.e.reconcile=AsyncMock(side_effect=asyncio.CancelledError());self.e.prepare=AsyncMock()
+        with self.assertRaises(asyncio.CancelledError):await self.e.positions()
+        self.e.prepare.assert_not_awaited();self.e.transport.send.assert_not_called()
+        self.assertEqual(self.e.ledger.get(MINT)['state'],'sell_pending')
+
     async def test_manual_balance_change_blocks_new_orders(self):
         data={'quantity':42,'entry_usd':'1','sell_attempts':0}
         self.e.ledger.save(MINT,'open',data,reserve=live.ENVELOPE)

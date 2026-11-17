@@ -50,7 +50,7 @@ try {
         Write-Host '5 - Arreter proprement Wallet Radar sur le VPS'
         Write-Host '6 - Diagnostiquer les cas incomplets (lecture seule)'
         Write-Host '7 - Configurer le wallet de test REEL sur le VPS (saisie privee)'
-        Write-Host '8 - Demarrer les essais REELS : 1 USD, budget 15 USD, SL/TP'
+        Write-Host '8 - Demarrer les essais REELS : 1 USD, budget 15 USD, SL/TP, sortie 60 s'
         Write-Host '9 - Afficher le bilan des transactions REELLES'
         Write-Host '10 - Verifier les acces REELS sans ordre ni ressaisie des cles'
         Write-Host '11 - Remplacer seulement la cle API Jupiter (wallet conserve)'

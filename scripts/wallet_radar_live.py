@@ -30,7 +30,7 @@ import urllib.request
 from wallet_radar_paper import PaperObserver, SOL, BBIG, USDC
 
 ROOT=Path(__file__).resolve().parents[1]
-EXECUTION_VERSION='2026.11.17.5'
+EXECUTION_VERSION='2026.11.17.6'
 OWNER='E23vfW9oA9CnANP5wzimpo3DM3WQtMuxzUP4oxFp97Jq'
 PRIVATE=ROOT/'private_wallet_radar'
 JUP='JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4'
@@ -45,6 +45,7 @@ SLIPPAGE=2000
 # slippage cap stays at 20%; price can still change after simulation.
 ENTRY_DRIFT_BPS=500
 QUOTE_MAX_AGE=2
+MAX_HOLD_SECONDS=60
 BUDGET=Decimal('15')
 BUY=Decimal('1')
 FEE=Decimal('.10')
@@ -460,6 +461,15 @@ class Transport:
 def lamports(usd,price):return int((Decimal(usd)*10**9/price).to_integral_value(rounding=ROUND_CEILING))
 
 
+def exit_deadline(data):
+    """Absolute durable deadline; restarting never grants another minute."""
+    value=data.get('exit_deadline')
+    if type(value) in (int,float) and math.isfinite(value) and value>0:return value
+    confirmed=data.get('confirmed_at')
+    if type(confirmed) in (int,float) and math.isfinite(confirmed) and confirmed>0:return confirmed+MAX_HOLD_SECONDS
+    return None
+
+
 def associated(mint,program=TOKEN):
     from solders.pubkey import Pubkey
     return str(Pubkey.find_program_address([bytes(Pubkey.from_string(OWNER)),bytes(Pubkey.from_string(program)),
@@ -860,8 +870,9 @@ class Executor:
             after=sum(int(b['uiTokenAmount']['amount']) for b in meta.get('postTokenBalances',[]) if b.get('owner')==OWNER and b.get('mint')==mint)
             if side=='buy' and after>before:
                 data['quantity']=after-before;data['confirmed_at']=time.time()
+                data['exit_deadline']=data['confirmed_at']+MAX_HOLD_SECONDS
                 self.ledger.save(mint,'open',data)
-                self.notify(mint,'ACHAT_CONFIRME','Achat reel confirme ; surveillance SL -80 % / TP +75 % active.',signature=tx['signature'],
+                self.notify(mint,'ACHAT_CONFIRME','Achat reel confirme ; SL -80 % / TP +75 % ; sortie totale prevue apres 60 s si encore ouverte.',signature=tx['signature'],
                             send_to_confirm_ms=round((time.time()-tx['send_at'])*1000) if tx.get('send_at') else None,quantity=str(data['quantity']))
             elif side=='sell' and before-after==data['quantity']:
                 self.ledger.save(mint,'closed',data)
@@ -887,6 +898,11 @@ class Executor:
                 try:
                     if row['state'].endswith('_pending'):await self.reconcile(row)
                     elif row['state']=='open':
+                        deadline=exit_deadline(data)
+                        if deadline is not None and time.time()>=deadline and not data.get('exit_reason'):
+                            data['exit_deadline']=deadline;data['exit_reason']='TIMEOUT_60S'
+                            # Persist the decision before any quote/RPC can fail.
+                            self.ledger.save(mint,'open',data)
                         stage='lecture du solde token'
                         quantity=await self.holdings(mint)
                         if quantity!=data['quantity']:
@@ -895,7 +911,8 @@ class Executor:
                         stage='cours SOL/USD'
                         value=Decimal(q['outAmount'])/10**9*self.price()
                         entry=Decimal(data['entry_usd'])
-                        reason=data.get('exit_reason') or ('SL' if value<=entry*Decimal('.20') else 'TP' if value>=entry*Decimal('1.75') else None)
+                        reason=data.get('exit_reason') or ('SL' if value<=entry*Decimal('.20') else 'TP' if value>=entry*Decimal('1.75') else
+                            'TIMEOUT_60S' if deadline is not None and time.time()>=deadline else None)
                         if reason:
                             data['exit_reason']=reason
                             if data['sell_attempts']>=3:
@@ -939,6 +956,7 @@ class LiveObserver(PaperObserver):
 
     async def run(self):
         print('ESSAI REEL : 1 USD/achat, budget cumule 15 USD ; SL -80 %, TP +75 %, glissement 20 %.',flush=True)
+        print('Sortie totale : SL, TP ou 60 s apres confirmation achat ; premier declenchement, delai reseau possible.',flush=True)
         print('Filtre achat : au plus 5 % de tokens en moins a la simulation ; cotation <=2 s avant signature.',flush=True)
         print('Une position a la fois. Arreter le processus suspend les sorties automatiques.',flush=True)
         tasks=[asyncio.create_task(super().run()),asyncio.create_task(self.executor.run()),
@@ -1011,7 +1029,9 @@ async def diagnose_exit(path,http):
         probe.prices.update(await asyncio.to_thread(price_data),time.time())
         value=Decimal(q['outAmount'])/10**9*probe.price();entry=Decimal(data['entry_usd'])
         if not entry.is_finite() or entry<=0:raise TradeError('Reference entree invalide.')
-        reason=data.get('exit_reason') or ('SL' if value<=entry*Decimal('.20') else 'TP' if value>=entry*Decimal('1.75') else None)
+        deadline=exit_deadline(data)
+        reason=data.get('exit_reason') or ('SL' if value<=entry*Decimal('.20') else 'TP' if value>=entry*Decimal('1.75') else
+            'TIMEOUT_60S' if deadline is not None and time.time()>=deadline else None)
         print('Valeur de liquidation estimee USD : '+str(value.quantize(Decimal('.0001')))+
               ' ; entree USD : '+str(entry)+' ; seuil ou decision sortie : '+str(reason or 'aucun'),flush=True)
         if not reason:
@@ -1163,6 +1183,8 @@ def main():
             for mint,state,data in db.execute('SELECT mint,state,data FROM trades'):
                 value=json.loads(data);buy=value.get('buy',{})
                 print(mint,state,'buy:',buy.get('signature','-'),'sell:',value.get('sell',{}).get('signature','-'))
+                if state=='open' and exit_deadline(value) is not None:
+                    print('Sortie automatique : reste environ',max(0,math.ceil(exit_deadline(value)-time.time())),'s ; motif enregistre :',value.get('exit_reason','aucun'))
                 if value.get('external_sale'):print('Vente externe verifiee :',value['external_sale']['signature'])
                 if value.get('entry_guard'):print('Controle prix avant signature (quantites brutes) :',json.dumps(value['entry_guard']))
                 metrics={'detection_decision_s':value.get('decision_elapsed_s'),'preparation_ms':value.get('prepare_ms')}

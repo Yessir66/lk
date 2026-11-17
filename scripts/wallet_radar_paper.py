@@ -22,10 +22,19 @@ TTWO='TTWofwAge91oFhZs7kpQdyrVRkmevgM88xijGvQFbKo'
 DOGE='DoGEV7LASBkQbibMc5k5vKnTZoMg423GpJ5QtJEGfm7R'
 TTWO_PRICE_ID='take-two-interactive-software-backpack-securities'
 DOGE_POOL='4n9rkpKkPUGFquBh6UXqNYbaCNyBcFq9VwNbutwGX5d6'
+MSFTX='XspzcW1PRtgf6Wj92HCiZdjzKCyFekVD8P5Ueh3dRMX'
+COST='CZEB3WNZuF2Yz1z2H81RcCk8T7fsw82KB33zqamASVsg'
+GTAVI='ERiM8NiCanarGEnWMnURAoxTuTvUXZbtJsPTirnHpump'
+GTAVI_POOL='9YbrZx4ytWsuhsbfM75r4RfPW25MGaos4CVcuXM6qBNY'
+# Exact Solana contracts and decimals cross-checked with Jupiter/GeckoTerminal;
+# stock-token CoinGecko contract metadata also confirms these mappings.
+EXTRA_QUOTES={MSFTX:('MSFTX',8,'microsoft-xstock'),COST:('COST',6,'costco-wholesale-backpack-securities'),
+              GTAVI:('GTAVI',6,None)}
 ZERO='11111111111111111111111111111111'
 PRICE_REASONS={'DEVISE_COTATION_NON_SUPPORTEE','COURS_SOL_USD_ABSENT_OU_PERIME',
                'COURS_PUMP_USD_ABSENT_OU_PERIME','COURS_TTWO_USD_ABSENT_OU_PERIME',
                'COURS_DOGE_USD_ABSENT_OU_PERIME','MONTANT_COTATION_INVALIDE'}
+PRICE_REASONS.update('COURS_'+symbol+'_USD_ABSENT_OU_PERIME' for symbol,_,_ in EXTRA_QUOTES.values())
 DISCRIMINATOR=bytes([189,219,127,211,78,230,97,238])
 ALPHABET='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 # Official ABI: pump-public-docs 639b87f + @pump-fun/pump-sdk 4.3.1, src/idl/pump.json.
@@ -108,6 +117,19 @@ class Prices:
         self.pump_usd=None;self.pump_published=0
         self.ttwo_usd=None;self.ttwo_published=0
         self.doge_usd=None;self.doge_published=0
+        self.extra_prices={}
+
+    def update_extra(self,mint,data,now):
+        _,_,coin_id=EXTRA_QUOTES[mint]
+        if coin_id is None:raise ValueError('This asset requires an address-specific candle')
+        row=data.get(coin_id,{})
+        self.extra_prices[mint]=self.checked_price(row.get('usd'),row.get('last_updated_at'),now)
+
+    def update_gtavi(self,data,now):
+        if data.get('meta',{}).get('base',{}).get('address')!=GTAVI:raise ValueError('Unexpected GTAVI pool asset')
+        candles=data.get('data',{}).get('attributes',{}).get('ohlcv_list',[])
+        if not candles or not isinstance(candles[0],list) or len(candles[0])<6:raise ValueError('Missing GTAVI USD candle')
+        self.extra_prices[GTAVI]=self.checked_price(candles[0][4],candles[0][0],now)
 
     def update_ttwo(self,data,now):
         row=data.get(TTWO_PRICE_ID,{})
@@ -148,6 +170,10 @@ class Prices:
 
     def dollars(self,event,now):
         mint=event.get('quote_mint',ZERO)
+        if mint in EXTRA_QUOTES:
+            price,published=self.extra_prices.get(mint,(None,0))
+            if price is None or not 0<=now-published<=90:return None
+            return Decimal(event.get('quote_amount',0))/10**EXTRA_QUOTES[mint][1]*price
         if mint==USDC:return Decimal(event.get('quote_amount',0))/10**6
         if mint in (TTWO,DOGE):
             price,published,decimals=(self.ttwo_usd,self.ttwo_published,6) if mint==TTWO else (self.doge_usd,self.doge_published,8)
@@ -163,7 +189,8 @@ class Prices:
         return Decimal(amount)/10**9*self.usd
 
     async def run(self):
-        url='https://api.coingecko.com/api/v3/simple/price?ids=solana,pump-fun,'+TTWO_PRICE_ID+'&vs_currencies=usd&include_last_updated_at=true'
+        ids=','.join(['solana','pump-fun',TTWO_PRICE_ID]+[coin_id for _,_,coin_id in EXTRA_QUOTES.values() if coin_id])
+        url='https://api.coingecko.com/api/v3/simple/price?ids='+ids+'&vs_currencies=usd&include_last_updated_at=true'
         def fetch():
             with urllib.request.urlopen(url,timeout=5) as response:return json.load(response)
         while True:
@@ -172,17 +199,22 @@ class Prices:
                 for update in (self.update,self.update_pump,self.update_ttwo):
                     try:update(data,now)
                     except (ValueError,TypeError,ArithmeticError):pass
+                for mint,(_,_,coin_id) in EXTRA_QUOTES.items():
+                    if coin_id:
+                        try:self.update_extra(mint,data,now)
+                        except (ValueError,TypeError,ArithmeticError):pass
             except Exception:pass  # No credentials, provider bodies or URLs in console errors.
             await asyncio.sleep(15)
 
     async def run_doge(self):
-        url=('https://api.geckoterminal.com/api/v2/networks/solana/pools/'+DOGE_POOL+
-             '/ohlcv/minute?aggregate=1&limit=1&currency=usd&token='+DOGE)
-        def fetch():
+        def fetch(url):
             with urllib.request.urlopen(url,timeout=5) as response:return json.load(response)
         while True:
-            try:self.update_doge(await asyncio.to_thread(fetch),time.time())
-            except Exception:pass
+            for mint,pool,update in ((DOGE,DOGE_POOL,self.update_doge),(GTAVI,GTAVI_POOL,self.update_gtavi)):
+                url=('https://api.geckoterminal.com/api/v2/networks/solana/pools/'+pool+
+                     '/ohlcv/minute?aggregate=1&limit=1&currency=usd&token='+mint)
+                try:update(await asyncio.to_thread(fetch,url),time.time())
+                except Exception:pass
             await asyncio.sleep(30)
 
 
@@ -269,7 +301,10 @@ class Decisions:
             dollars=self.prices.dollars(event,wall)
             if dollars is None or dollars<=0:
                 remaining.append(event);quote=event.get('quote_mint',ZERO)
-                if quote not in (ZERO,SOL,USDC,PUMP_TOKEN,TTWO,DOGE):c.reasons.add('DEVISE_COTATION_NON_SUPPORTEE')
+                if quote in EXTRA_QUOTES:
+                    symbol=EXTRA_QUOTES[quote][0];price,published=self.prices.extra_prices.get(quote,(None,0))
+                    c.reasons.add('COURS_'+symbol+'_USD_ABSENT_OU_PERIME' if price is None or not 0<=wall-published<=90 else 'MONTANT_COTATION_INVALIDE')
+                elif quote not in (ZERO,SOL,USDC,PUMP_TOKEN,TTWO,DOGE):c.reasons.add('DEVISE_COTATION_NON_SUPPORTEE')
                 elif quote==TTWO and (self.prices.ttwo_usd is None or not 0<=wall-self.prices.ttwo_published<=90):c.reasons.add('COURS_TTWO_USD_ABSENT_OU_PERIME')
                 elif quote==DOGE and (self.prices.doge_usd is None or not 0<=wall-self.prices.doge_published<=90):c.reasons.add('COURS_DOGE_USD_ABSENT_OU_PERIME')
                 elif quote==PUMP_TOKEN and (self.prices.pump_usd is None or not 0<=wall-self.prices.pump_published<=90):c.reasons.add('COURS_PUMP_USD_ABSENT_OU_PERIME')

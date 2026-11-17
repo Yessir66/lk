@@ -1,5 +1,7 @@
 # Wallet Radar
 
+**2026.11.17.6 : vente totale apres60s si la position est encore ouverte, en plus du SL/TP.** Echeance conservee au redemarrage ; conversions MSFTx, COST et GTAVI ajoutees pour les volumes observes. Voir [SORTIE_60S_ET_COTATIONS.md](SORTIE_60S_ET_COTATIONS.md).
+
 **2026.11.17.5 : preparation d'achat anticipee et filtre de reception simulee a 5 %.** Une lecture RPC de moins, solde/comptes lus pendant la construction Jupiter, controle avant signature sans cotation supplementaire. Voir [PREPARATION_RAPIDE_ET_PRIX.md](PREPARATION_RAPIDE_ET_PRIX.md). Installer apres cloture des positions puis relancer **8**.
 
 **2026.11.17.4 : menu13, rapprochement d'une vente manuelle verifiee.** Cloture le suivi local apres preuve de vente totale finalisee, conserve budget et signatures. Debloque les nouveaux achats si le mode reel est actif. Voir [RAPPROCHEMENT_VENTE_MANUELLE.md](RAPPROCHEMENT_VENTE_MANUELLE.md).

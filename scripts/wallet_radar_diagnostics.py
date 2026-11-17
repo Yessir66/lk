@@ -5,7 +5,7 @@ import sqlite3
 import time
 
 from discord_token_analysis import valid_address
-from wallet_radar_paper import latest_session, native_trades, BBIG, PUMP, SOL, USDC, PUMP_TOKEN, TTWO, DOGE, ZERO
+from wallet_radar_paper import latest_session, native_trades, BBIG, PUMP, SOL, USDC, PUMP_TOKEN, TTWO, DOGE, ZERO, EXTRA_QUOTES
 
 SWAP='pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA'
 
@@ -74,6 +74,7 @@ def diagnose(path,state_path,rpc):
             for event in events[:2]:
                 quote=event.get('quote_mint',ZERO)
                 currency={USDC:'USDC',PUMP_TOKEN:'PUMP',TTWO:'TTWO',DOGE:'DOGE'}.get(quote,'SOL' if quote in (ZERO,SOL) else 'autre '+quote)
+                if quote in EXTRA_QUOTES:currency=EXTRA_QUOTES[quote][0]+' '+quote
                 print('COTATION : '+currency+' ; octets inconnus : '+str(event.get('unparsed_tail_bytes',0)),flush=True)
             if any(isinstance(line,str) and 'truncated' in line.lower() for line in logs):print('LOGS : troncature signalee.',flush=True)
         except Exception as exc:print('TRANSACTION : '+error_label(exc),flush=True)

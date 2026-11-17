@@ -1,4 +1,6 @@
-# Wallet Radar 2026.11.17.5 — premier essai reel
+# Wallet Radar 2026.11.17.6 — premier essai reel
+
+**Sortie totale apres60secondes** depuis la confirmation d'achat observee si la position est encore ouverte. SL-80% et TP+75% peuvent sortir avant. Echeance persistante, suivi actif necessaire et delais reseau possibles. Voir [SORTIE_60S_ET_COTATIONS.md](SORTIE_60S_ET_COTATIONS.md), qui decrit aussi les nouvelles conversions MSFTx/COST/GTAVI.
 
 Preparation d'achat anticipee et filtre avant signature : [PREPARATION_RAPIDE_ET_PRIX.md](PREPARATION_RAPIDE_ET_PRIX.md). Si la simulation prevoit plus de **5 % de tokens en moins** que la cotation, l'achat est ignore ; cotation agee de2s maximum et simulation de0,5s maximum a la signature. Le glissement de transaction reste20% ; le prix peut bouger apres la simulation. Ce filtre ne garantit pas le prix final et peut faire manquer des achats.
 

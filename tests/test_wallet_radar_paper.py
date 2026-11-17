@@ -188,6 +188,46 @@ class PaperDecisionsTest(unittest.TestCase):
         self.assertEqual(self.c.volume,400)
         self.assertEqual(self.c.terminal,'ACHAT_SIMULE')
 
+    def test_new_quotes_use_exact_contract_decimals_and_usd_price(self):
+        cases=[(p.MSFTX,'500',80000000),(p.COST,'1000',400000),(p.GTAVI,'.001',400000000000)]
+        for mint,price,amount in cases:
+            with self.subTest(mint=mint):
+                prices=p.Prices();output=[];engine=p.Decisions(prices,output.append)
+                engine.observe(event(user=p.BBIG,signature=SIGNATURE));candidate=engine.candidates[MINT];candidate.baseline=100
+                if mint==p.GTAVI:prices.update_gtavi({'meta':{'base':{'address':mint}},'data':{'attributes':{'ohlcv_list':[[960,price,price,price,price,1]]}}},1000)
+                else:prices.update_extra(mint,{p.EXTRA_QUOTES[mint][2]:{'usd':price,'last_updated_at':1000}},1000)
+                engine.observe(event(1.2,quote_mint=mint,quote_amount=amount))
+                self.assertEqual(candidate.volume,400);self.assertEqual(candidate.terminal,'ACHAT_SIMULE')
+                self.assertIsNone(prices.dollars(event(quote_mint=mint,quote_amount=amount),1100))
+
+    def test_new_quote_prices_can_arrive_before_deadline_but_never_reset_or_double_count(self):
+        for mint in p.EXTRA_QUOTES:
+            with self.subTest(mint=mint):
+                prices=p.Prices();engine=p.Decisions(prices,lambda event:None)
+                engine.observe(event(user=p.BBIG,signature=SIGNATURE));candidate=engine.candidates[MINT];candidate.baseline=100
+                amount=400*10**p.EXTRA_QUOTES[mint][1]
+                engine.observe(event(.5,quote_mint=mint,quote_amount=amount))
+                self.assertIn('COURS_'+p.EXTRA_QUOTES[mint][0]+'_USD_ABSENT_OU_PERIME',candidate.reasons)
+                self.assertNotIn('DEVISE_COTATION_NON_SUPPORTEE',candidate.reasons)
+                prices.extra_prices[mint]=(Decimal(1),1000);engine.tick(102)
+                self.assertEqual(candidate.volume,400);self.assertEqual(candidate.t0,100)
+                self.assertEqual(candidate.terminal,'ACHAT_SIMULE');engine.tick(102.5);self.assertEqual(candidate.volume,400)
+                late=p.Decisions(p.Prices(),lambda event:None);late.observe(event(user=p.BBIG,signature=SIGNATURE))
+                late_candidate=late.candidates[MINT];late_candidate.baseline=100;late.observe(event(.5,quote_mint=mint,quote_amount=amount))
+                late.tick(103.01);late.prices.extra_prices[mint]=(Decimal(1),1000);late.tick(103.1)
+                self.assertEqual(late_candidate.terminal,'DONNEES_INSUFFISANTES');self.assertEqual(late_candidate.volume,0)
+
+    def test_gtavi_candle_requires_correct_address_and_fresh_finite_price(self):
+        def candle(mint,price,published):
+            return {'meta':{'base':{'address':mint}},'data':{'attributes':{'ohlcv_list':[[published,price,price,price,price,1]]}}}
+        for mint,price,published in [(p.SOL,.01,960),(p.GTAVI,0,960),(p.GTAVI,'NaN',960),(p.GTAVI,.01,900),(p.GTAVI,.01,1001)]:
+            with self.subTest(mint=mint,price=price,published=published),self.assertRaises(ValueError):
+                p.Prices().update_gtavi(candle(mint,price,published),1000)
+        for mint in (p.MSFTX,p.COST):
+            for price,published in [('NaN',1000),('-1',1000),('1',900),('1',1001)]:
+                with self.subTest(mint=mint,price=price,published=published),self.assertRaises(ValueError):
+                    p.Prices().update_extra(mint,{p.EXTRA_QUOTES[mint][2]:{'usd':price,'last_updated_at':published}},1000)
+
     def test_doge_volume_uses_eight_decimals_and_address_specific_candle(self):
         self.c.baseline=100
         candle={'meta':{'base':{'address':p.DOGE}},'data':{'attributes':{'ohlcv_list':[[960,.05,.05,.05,.05,10]]}}}
