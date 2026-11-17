@@ -1,6 +1,6 @@
 # Wallet Radar — fiche interne de reprise
 
-Mise à jour : **16 novembre 2026, Europe/Paris**. À lire au début d'une reprise concernant ce bot, y compris après compression de la conversation. Le fichier `AGENTS.md` à la racine pointe vers cette fiche.
+Mise à jour : **17 novembre 2026, Europe/Paris**. À lire au début d'une reprise concernant ce bot, y compris après compression de la conversation. Le fichier `AGENTS.md` à la racine pointe vers cette fiche.
 
 Cette fiche décrit le dernier état connu ; le code et la configuration du déploiement priment si l'utilisateur les a modifiés depuis. Elle ne contient aucun secret.
 
@@ -9,13 +9,13 @@ Cette fiche décrit le dernier état connu ; le code et la configuration du dép
 - **Nom de référence choisi avec l'utilisateur : Wallet Radar.**
 - Fonction : suivre des wallets Solana via Helius, reconnaître leurs achats et ventes, puis afficher le token acheté dans un onglet GMGN sur le PC Windows de l'utilisateur.
 - À distinguer du bot de republication de callouts pump.fun/Trojan et du bot d'analyse Discord, présents dans le même dépôt.
-- Aucun achat ni vente automatique dans le fonctionnement utilisé. L'utilisateur consulte le graphique et décide manuellement de vendre.
+- Surveillance normale en lecture seule ; mode reel explicite menu8 ensuite configure par l'utilisateur. Derniere notification reelle fournie : conditions validees puis achat ignore faute de route. Pas encore de preuve de transaction d'achat du bot confirmee dans les captures.
 - Telegram est implémenté en option explicite, mais **reste désactivé dans le lanceur utilisé**. Ne pas l'activer par défaut.
 - Les anciennes idées de momentum sur 100–300 ms n'ont pas été activées. Un mode expérimental de simulation 1 s / 3 s a ensuite été ajouté : voir la section « Simulation BBIG BOSS ». Aucun trading réel ni flux exhaustif de tous les DEX n'est activé.
 
 ## État connu et wallet demandé
 
-- Version serveur du dépôt : **2026.11.16.9**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
+- Version serveur du dépôt : **2026.11.17.1**, constante `VERSION` dans `scripts/wallet_alerts_ws.py`.
 - Extension Chrome : version **1.0.0**, dossier `chrome-gmgn`.
 - Dernière liste demandée : **BBIG BOSS uniquement**, adresse publique :
   `BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp`.
@@ -37,9 +37,9 @@ Dernieres captures de simulation : nouvel essai 5/30 avec 3 achats theoriques (5
 
 Nouvelle demande utilisateur : commencer des mini achats reels pour mesurer les intervalles. **Montant choisi : 1 USD de tokens par achat reel de test, hors frais** (reponse explicite du 16 novembre). Ne remplace pas automatiquement le montant historique 25 USD de la strategie/simulation. Repondre et avancer point par point comme souhaite ; ne jamais demander une cle privee dans le chat.
 
-Parametres suivants convenus pour les essais reels (implementes dans le depot .4, pas encore configures/deployes sur le VPS) :
+Parametres suivants convenus pour les essais reels (mode .9 configure et lance sur VPS selon captures ; correctif17.1 seulement prepare dans le depot a ce stade) :
 
-- Wallet d'execution public **`E23vfW9oA9CnANP5wzimpo3DM3WQtMuxzUP4oxFp97Jq`** ; utilisateur confirme qu'il est reserve aux tests. BBIG BOSS reste le wallet surveille. Derniere capture : signature configuree sur le VPS et adresse validee, puis controle fournisseur echoue. Aucune cle recue dans le chat ou le cloud.
+- Wallet d'execution public **`E23vfW9oA9CnANP5wzimpo3DM3WQtMuxzUP4oxFp97Jq`** ; utilisateur confirme qu'il est reserve aux tests. BBIG BOSS reste le wallet surveille. Apres recopie cle Jupiter : controlesRPC/quote/construction OK, mode8 demarre, notifications/GMGN confirmes. Aucune cle recue dans le chat ou le cloud.
 - Budget total de l'essai **15 USD maximum, achats et frais compris**. Prevoir frais de sorties, reservations des operations en cours et depots de comptes ; ne pas recycler les ventes pour depasser le plafond cumule. Aucun ordre reel actuellement.
 - Utilisateur demande **SL 80 % et TP 75 %**. Interpretation annoncee : **stop-loss -80 % et take-profit +75 %**, vente totale au premier seuil atteint, par rapport au prix d'entree reel (pas au prix BBIG BOSS). Ces seuils de declenchement ne garantissent pas le prix d'execution. Vente totale est le comportement propose ; pas de fractions demandees.
 - Plafond de frais reseau/priorite **0,10 USD par achat** recommande par assistant, sans Jito pour premier essai ; l'utilisateur demande surtout rapidite et absence d'attente pour calcul. Pas encore un plafond explicitement confirme. Proposition : estimation recente en arriere-plan, usage local au signal, abandon si perimee ou plafond depasse ; depots de comptes separes mais inclus dans budget global.
@@ -47,7 +47,7 @@ Parametres suivants convenus pour les essais reels (implementes dans le depot .4
 
 Implementation .4 : `scripts/wallet_radar_live.py`, `requirements-wallet-radar-live.txt` (solders 0.29.0), `ESSAIS_REELS_WALLET_RADAR.md`. Menus **7** installation dependances + saisie locale masquee de la cle wallet dedie et cle API Jupiter gratuite + controle sans signature/envoi ; **8** `wallet_alerts_ws.py --early --browser-events --live-only --live-trades` ; **9** bilan reel. Aucun ajout automatique de mode reel a 1 ou 3. Meme StateLock et meme processus que watcher pour que menu 5 arrete correctement l'ensemble.
 
-Execution via routes Jupiter **directes exact-in v1 uniquement**, compte utilisateur et ATA controles, aucun tx fournisseur signe aveuglement. Construit son message sans ALT avec instructions de route v1 liees aux mints, inAmount/outAmount et slippage2000 ; ATA propre, wrapping SOL et compute budget seulement. Routes v2/etendues inconnues refusees. Cotation/preparation non signee des SUIVI en parallele avec lectures RPC ; signature seulement si conditions validees, maximum 2 s d'age pour preparation. Verification de l'echeance T0+3 s aussi dans le transport apres attente du quota. Aucun envoi tardif deliberement rattrape. Confirmation peut arriver ensuite.
+Execution via routes Jupiter **exact-in v1 directes ou avec intermediaires**, compte utilisateur et ATA controles, aucun tx fournisseur signe aveuglement. Depuis17.1, graphe de route connecte acyclique <=8segments ; ATA intermediaire propre autorisee et depots toujours bornes ; jusqu'a4 tables ALT verifiees parRPC (ownerprogramme,base64,taille,deactivationMax,lastExtension<slot), message v0 compile localement, taille1232max. Instructions liees aux mints/inAmount/outAmount/slippage2000 ; wrappingSOL et compute budget seulement, routes v2 inconnues refusees. Preparation non signee au SUIVI, signature seulement si conditions validees, preparation age<=2s, echeanceT0+3 s revalidee dans transport apres quota. Aucun envoi tardif deliberement rattrape. Confirmation peut arriver ensuite.
 
 Budget SQLite **`data/wallet_alerts_ws/live_trades.sqlite3`**, 0600, durable avant envoi, transactions signees + signatures + enveloppes + notices sans cle privee. Reserve permanente **2.40 USD par achat signe**, max six achats : 1 principal + .10 frais achat + .50 depot achat + .30 trois frais sorties + .50 depot sortie. Une seule position ouverte/incertaine/manuelle ; jamais de nouvel achat meme token apres restart. Pas de recyclage benefices/depots/liberation d'enveloppe apres echec. Compteur ne repart jamais au redemarrage ; ne pas supprimer journal pour refaire budget de cet essai. Conversions en USD indicatives a partir de SOL/USD frais ; suivi du budget en valeurs de reference, pas compte bancaire dollar.
 
@@ -224,6 +224,8 @@ Autres cas :
 Les scripts `discord_*` sont partagés avec d'autres bots : ne pas changer leurs listes globales pour remplacer seulement la liste de Wallet Radar.
 
 ## Vérification et livraison
+
+Version 2026.11.17.1 : apres recopieAPIvisible, utilisateur a fourni deux controles RPC/quote/construction tousOK. Menu8 demarre, utilisateur confirme notifications et GMGN finalementfonctionnent (a annule diagnostic provisional-only ; aucun changement pour ce point). Nouvelle notification `CONDITIONS_VALIDEES` puis `ACHAT_IGNORE Jupiter NO_ROUTES_FOUND` ; pas achatconfirme. User«allons y» pour ameliorercouverture : choix routesintermediaires Jupiter, pas SDKPumpnatiffallback. onlyDirectRoutes=false, restrictIntermediateTokens=true, asLegacyTransaction=false, instructionVersion=V1 enquoteetbuild. route_mints borne8segments, graphesource→dest acyclique/sansbrancheisolee. ATAinterm propre autorisee ; tablesALT4max lues1RPCgetMultipleAccounts avantcompilation. Pasnouvelabonnement, cleschangees, budgetreset ou signeautoaucasignoré. **371 tests suite, 4 facultatifs PowerShell ignores car /tmp/powershell-radar/pwsh disparu ; 367 passent, 41 tests moteurreel passent**. 5nouveaux : ATAintermpropre/tiers, graphecyclebranche, compressionALT exacte, proprietaire/deactivation/fraicheurALT, chargementborne. Deux GET publics SOL→PUMP et SOL→DOGE donnent2segmentsvalides ; aucun ordre reel. Archive `wallet_radar_routes_intermediaires_2026.11.17.1.zip`, guide `ROUTES_INTERMEDIAIRES_WALLET_RADAR.md`. Avant arret pour installer : consulter9 et attendre cloture d'une eventuelle position/pending pour ne pas suspendreSL/TP ; budget et signatures persistent au restart, compteurconditions repart. Absence route restepossiblepourtokenpasindexe ou contraintes. VerificationVPS17.1 enattente.
 
 Version 2026.11.16.9 : dernier diagnostic reel .8 affiche formatcle avec caracteres nonASCII/espaces/controle, sanscle200valide, clefactice401, proxydeclare non. Cela isole un defaut de format de la cle API enregistree ; pas besoin prouve d'une nouvelle cle, recopier cleAPIseule au menu11. Utilisateur demande explicitement de VOIR ce qu'il colle pour Jupiter. Deux saisies API utilisent input visible (premiereconfig7 et remplacement11), cle wallet restegetpassmasquee. Cles existantes pas affichees ; fichiers0600 et aucune reecriture wallet par11. Tests existants du remplacementAPI ajustentmockinput et interdisentgetpasswallet, testreutilisationaucunprompt couvreaussiinput. Archive `wallet_radar_jupiter_visible_2026.11.16.9.zip`. Ne pas redemander consentement pour cette visibilite deja autorisee ; ne jamais demander de capture de l'ecran pendant clevisible, seulement sortiecontrole.
 

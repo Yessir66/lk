@@ -21,9 +21,24 @@ from wallet_radar_paper import Prices,public_key
 MINT=public_key(bytes([2])*32)
 
 
+def indirect_quote():
+    q=quote()
+    q['routePlan']=[{'percent':100,'swapInfo':{'inputMint':live.SOL,'outputMint':live.USDC}},
+                    {'percent':100,'swapInfo':{'inputMint':live.USDC,'outputMint':MINT}}]
+    return q
+
+
+def lookup_result(addresses,deactivation=2**64-1):
+    from solders.pubkey import Pubkey
+    raw=struct.pack('<IQQBB',1,deactivation,1,0,1)+bytes(32)+bytes(2)
+    raw+=b''.join(bytes(Pubkey.from_string(key)) for key in addresses)
+    return {'context':{'slot':10},'value':[{'owner':live.ALT_PROGRAM,'executable':False,
+        'data':[base64.b64encode(raw).decode(),'base64']}]}
+
+
 def quote(source=live.SOL,dest=MINT,amount=10000000):
     return dict(inputMint=source,outputMint=dest,inAmount=str(amount),outAmount='100000',
-                otherAmountThreshold='80000',slippageBps=2000,swapMode='ExactIn',routePlan=[{'percent':100}])
+                otherAmountThreshold='80000',slippageBps=2000,swapMode='ExactIn',routePlan=[{'percent':100,'swapInfo':{'inputMint':source,'outputMint':dest}}])
 
 
 def account(key,signer=False,writable=False):return dict(pubkey=key,isSigner=signer,isWritable=writable)
@@ -67,6 +82,52 @@ class BudgetTest(unittest.TestCase):
 
 
 class InstructionTest(unittest.TestCase):
+    def test_two_hop_route_allows_own_intermediate_account_only(self):
+        q=indirect_quote();live.quote_check(q,live.SOL,MINT,10000000)
+        p=payload(q)
+        setup=dict(programId=live.ATA,data=base64.b64encode(b'\x01').decode(),accounts=[
+            account(live.OWNER,True,True),account(live.associated(live.USDC),False,True),
+            account(live.OWNER),account(live.USDC),account(live.SYSTEM),account(live.TOKEN)])
+        p['setupInstructions'].append(setup)
+        self.assertEqual(len(live.checked_instructions(p,q,1)),5)
+        setup['accounts'][2]['pubkey']=MINT
+        with self.assertRaises(live.TradeError):live.checked_instructions(p,q,1)
+        setup['accounts'][2]['pubkey']=live.OWNER
+        setup['accounts'][3]['pubkey']=public_key(bytes([9])*32)
+        with self.assertRaises(live.TradeError):live.checked_instructions(p,q,1)
+
+    def test_cycles_disconnected_and_unfinished_route_branches_are_rejected(self):
+        unknown=public_key(bytes([9])*32)
+        extra=[{'inputMint':unknown,'outputMint':MINT}, {'inputMint':live.USDC,'outputMint':live.SOL},
+               {'inputMint':live.USDC,'outputMint':unknown}]
+        for info in extra:
+            q=indirect_quote();q['routePlan'].append({'percent':100,'swapInfo':info})
+            with self.subTest(info=info),self.assertRaises(live.TradeError):live.quote_check(q,live.SOL,MINT,10000000)
+        q=indirect_quote();q['routePlan'].append({'swapInfo':{'inputMint':live.USDC,'outputMint':unknown}})
+        q['routePlan'].append({'swapInfo':{'inputMint':unknown,'outputMint':live.USDC}})
+        with self.assertRaises(live.TradeError):live.route_mints(q)
+
+    def test_checked_lookup_compresses_the_message_and_keeps_exact_keys(self):
+        from solders.hash import Hash
+        from solders.message import MessageV0
+        from solders.pubkey import Pubkey
+        key=public_key(bytes([7])*32)
+        addresses=[live.associated(MINT),live.associated(live.SOL),MINT]
+        tables=live.checked_lookups([key],lookup_result(addresses))
+        instructions=live.checked_instructions(payload(),quote(),1)
+        plain=MessageV0.try_compile(Pubkey.from_string(live.OWNER),instructions,[],Hash.default())
+        compressed=MessageV0.try_compile(Pubkey.from_string(live.OWNER),instructions,tables,Hash.default())
+        self.assertEqual(len(compressed.address_table_lookups),1)
+        self.assertLess(len(bytes(compressed)),len(bytes(plain)))
+        self.assertEqual(list(tables[0].addresses),list(map(Pubkey.from_string,addresses)))
+
+    def test_lookup_owner_deactivation_and_recent_extension_are_checked(self):
+        key=public_key(bytes([7])*32)
+        result=lookup_result([MINT]);result['value'][0]['owner']=live.TOKEN
+        invalid=[result,lookup_result([MINT],deactivation=9),lookup_result([MINT])]
+        invalid[-1]['context']['slot']=1
+        for data in invalid:
+            with self.subTest(data=data),self.assertRaises(live.TradeError):live.checked_lookups([key],data)
     def test_comparison_reports_statuses_without_exposing_saved_key(self):
         transport=live.Transport('https://unused.invalid','PRIVATE_SAVED_KEY')
         output=StringIO()
@@ -129,11 +190,11 @@ class InstructionTest(unittest.TestCase):
         self.assertEqual(live.jupiter_reason({'error':'PRIVATE: restrict_intermediate_tokens cannot be false'}),
                          'parametre restrictIntermediateTokens refuse ou requis')
 
-    def test_quote_parameters_are_shared_and_keep_direct_routes_and_slippage(self):
+    def test_quote_parameters_allow_intermediates_and_keep_slippage_and_v1(self):
         from urllib.parse import parse_qs,urlsplit
         values=parse_qs(urlsplit(live.quote_path(live.SOL,MINT,1000)).query)
-        for name in ('onlyDirectRoutes','restrictIntermediateTokens','asLegacyTransaction'):
-            self.assertEqual(values[name],['true'])
+        self.assertEqual(values['onlyDirectRoutes'],['false']);self.assertEqual(values['asLegacyTransaction'],['false'])
+        self.assertEqual(values['restrictIntermediateTokens'],['true']);self.assertEqual(values['instructionVersion'],['V1'])
         self.assertEqual(values['slippageBps'],['2000']);self.assertEqual(values['amount'],['1000'])
 
     def test_provider_error_identifies_stage_and_status_without_secret(self):
@@ -387,6 +448,14 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
         self.e.prices.published=time.time()-100
         with self.assertRaises(live.TradeError):await self.e.prepare(MINT,'buy')
         self.e.rpc.assert_not_awaited();self.e.jup.assert_not_awaited()
+
+    async def test_lookup_fetch_is_bounded_and_only_reads_accounts(self):
+        key=public_key(bytes([7])*32)
+        self.e.rpc.return_value=lookup_result([MINT])
+        tables=await self.e.lookups({'addressLookupTableAddresses':[key]})
+        self.assertEqual(len(tables),1)
+        self.e.rpc.assert_awaited_once_with('getMultipleAccounts',[[key],{'encoding':'base64','commitment':'confirmed'}])
+        with self.assertRaises(live.TradeError):await self.e.lookups({'addressLookupTableAddresses':[key]*5})
 
 
 class SetupAndCheckTest(unittest.TestCase):

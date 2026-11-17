@@ -1,5 +1,7 @@
 # Wallet Radar
 
+**2026.11.17.1 : routes Jupiter avec intermediaires**, pour couvrir davantage de tokens tout en conservant budget, glissement et limite de temps. Voir [ROUTES_INTERMEDIAIRES_WALLET_RADAR.md](ROUTES_INTERMEDIAIRES_WALLET_RADAR.md) avant la mise a jour d'un bot reel actif.
+
 **2026.11.16.9 : saisie API Jupiter visible** au menu11, selon le choix de l'utilisateur. La cle privee du wallet reste masquee et inchangee. Voir [DEPANNAGE_ACCES_REELS.md](DEPANNAGE_ACCES_REELS.md).
 
 **2026.11.16.8 : menu 10** pour verifier RPC/Jupiter sans ordre et sans ressaisir les cles. En cas de HTTP400, comparaison de cotations sans cle/cle factice. **Menu11** pour remplacer uniquement la cle API Jupiter si necessaire, wallet conserve. Voir [DEPANNAGE_ACCES_REELS.md](DEPANNAGE_ACCES_REELS.md).

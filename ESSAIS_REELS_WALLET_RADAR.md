@@ -1,4 +1,6 @@
-# Wallet Radar 2026.11.16.9 — premier essai reel
+# Wallet Radar 2026.11.17.1 — premier essai reel
+
+Routes Jupiter avec intermediaires desormais autorisees, avec controles supplementaires et memes plafonds. Voir [ROUTES_INTERMEDIAIRES_WALLET_RADAR.md](ROUTES_INTERMEDIAIRES_WALLET_RADAR.md).
 
 Depuis la .9, l'utilisateur a demande de voir la cle API Jupiter pendant la saisie locale (menus7/11). Seule la cle wallet reste masquee. Ne pas partager les captures contenant la saisie visible de l'API.
 
@@ -26,7 +28,7 @@ Les conditions BBIG BOSS restent celles de la simulation : exclure bwam ; pas de
 
 La cotation et la construction **non signee** peuvent commencer au signal initial. La signature n'arrive qu'apres validation des conditions. Si le dossier n'est pas pret ou que l'appel d'envoi ne peut pas commencer avant T0 + 3 s, achat ignore. La confirmation peut naturellement arriver apres cette limite. Pas de rattrapage d'ordres abandonnes ou de replay d'anciens signaux.
 
-Cette premiere version utilise les **routes directes Jupiter exact-in v1** seulement. Certaines courbes recentes, certains tokens cotes en une autre devise ou certaines nouvelles variantes Jupiter peuvent ne pas avoir de route exploitable : ils seront ignores, pas forces. Les simulations de volume sont plus larges que la couverture d'execution. La construction et les verifications RPC peuvent consommer toute la fenetre ; la faible latence d'execution devra etre mesuree sur le VPS, elle n'est pas garantie par les tests hors reseau.
+Cette version utilise les **routes Jupiter exact-in v1 directes ou avec intermediaires**, avec restriction des intermediaires et plan connecte sans cycle. Les comptes intermediaires doivent appartenir au wallet ; les tables de compression d'adresses sont verifiees et lues par RPC avant compilation. Certaines courbes recentes ou variantes de route peuvent rester inexploitables et sont ignorees. Les simulations de volume sont plus larges que la couverture d'execution. La construction et les verifications RPC peuvent consommer toute la fenetre ; la faible latence d'execution doit etre mesuree sur le VPS.
 
 Le programme construit son propre message a partir d'instructions controlees : route Jupiter connue, quantites/20 % lies a la cotation, comptes associes du wallet, wrapping SOL, budget de calcul fixe. Autres programmes/signataires/destinations refuses. Validation des frais, des depots et simulation avant signature. Il ne signe pas aveuglement une transaction encodee retournee par une API. Les extensions de routes inconnues restent refusees.
 
@@ -38,10 +40,10 @@ Le suivi SL/TP interroge les cotations, avec attente de deux secondes entre tour
 
 1. Depuis l'ancien menu, **5**, attendre l'arret, puis **0**. Extraire le ZIP dans `C:\Users\Enzo\Downloads\wallet-alerts`, en acceptant les remplacements. Garder les configurations, journaux, extension et autres scripts existants.
 2. Obtenir une cle API Jupiter gratuite sur [portal.jup.ag](https://portal.jup.ag/). Elle sert a la cotation/construction ; ce n'est ni une cle de wallet ni une cle GMGN. Si les conditions de l'offre changent, ne pas souscrire un forfait payant automatiquement.
-3. Lancer `WALLET_RADAR.cmd`, choisir **7**. Les dependances sont installees sur le VPS, puis les saisies masquees se font dans la session SSH : cle privee du wallet dedie (base58 ou tableau JSON), puis cle Jupiter. **Ne jamais les envoyer dans une conversation, capture, argument de commande ou fichier a televerser.** L'adresse derivee de la cle doit correspondre exactement au wallet ci-dessus.
+3. Pour une premiere installation, lancer `WALLET_RADAR.cmd`, choisir **7**. Les dependances sont installees sur le VPS ; cle privee wallet saisie masquee et cle API Jupiter saisie visible selon le choix de l'utilisateur. Les cles existantes sont reutilisees. **Ne jamais les envoyer dans une conversation, capture, argument de commande ou fichier a televerser.** L'adresse derivee de la cle doit correspondre exactement au wallet ci-dessus. Une simple mise a jour ne demande pas de refaire cette configuration.
 4. Le controle verifie le wallet, le RPC, une cotation et la construction d'instructions SOL/USDC **sans signature ni envoi**. Ne pas lancer 8 si cette verification echoue. Une reussite ne prouve pas qu'un futur token aura une route.
 5. Alimenter le wallet dedie en SOL pour l'essai, dans l'enveloppe souhaitee de 15 USD. Les retraits/depots manuels ne remettent pas le compteur du bot a zero. Une preparation d'achat requiert assez de SOL pour toute son enveloppe reservee.
-6. Chrome et l'extension ouverts, choisir **8**. La banniere doit afficher **2026.11.16.9 — ESSAI REEL**. Ce choix peut effectivement acheter/vendre avec les fonds du wallet.
+6. Chrome et l'extension ouverts, choisir **8**. La banniere doit afficher **2026.11.17.1 — ESSAI REEL**. Ce choix peut effectivement acheter/vendre avec les fonds du wallet.
 7. **9** dans un second menu affiche les transactions et les delais. **5** arrete le processus, donc suspend aussi les sorties : verifier la position avant de fermer. Apres un arret, le menu 8 reprend le suivi des transactions/positions persistantes.
 
 Fichiers prives sur le VPS : `/home/bot/wallet-alerts/private_wallet_radar/` (0700), `wallet.json` et `jupiter_api_key.txt` (0600). Exclus de Git et des archives. Ils ne sont jamais transmis au PC par le menu. La cle du wallet reste accessible au processus local qui doit signer ; l'acces au compte VPS doit rester prive.

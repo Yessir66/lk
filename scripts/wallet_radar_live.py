@@ -36,6 +36,7 @@ TOKEN22='TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
 ATA='ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'
 SYSTEM='11111111111111111111111111111111'
 COMPUTE='ComputeBudget111111111111111111111111111111'
+ALT_PROGRAM='AddressLookupTab1e1111111111111111111111111'
 SLIPPAGE=2000
 BUDGET=Decimal('15')
 BUY=Decimal('1')
@@ -83,8 +84,56 @@ def jupiter_reason(data):
 
 def quote_path(source,dest,amount):
     query=urllib.parse.urlencode(dict(inputMint=source,outputMint=dest,amount=amount,slippageBps=SLIPPAGE,
-        swapMode='ExactIn',onlyDirectRoutes='true',restrictIntermediateTokens='true',asLegacyTransaction='true'))
+        swapMode='ExactIn',onlyDirectRoutes='false',restrictIntermediateTokens='true',asLegacyTransaction='false',instructionVersion='V1'))
     return '/swap/v1/quote?'+query
+
+
+def route_mints(q):
+    """Bounded connected acyclic flow from the quoted source to its destination."""
+    from solders.pubkey import Pubkey
+    plan=q.get('routePlan');source=q.get('inputMint');dest=q.get('outputMint')
+    if not isinstance(plan,list) or not 1<=len(plan)<=8 or source==dest:raise TradeError('Plan de route non pris en charge.')
+    graph={};nodes=set()
+    try:
+        for step in plan:
+            info=step['swapInfo'];a=info['inputMint'];b=info['outputMint']
+            Pubkey.from_string(a);Pubkey.from_string(b)
+            if a==b or a==dest or b==source:raise ValueError()
+            graph.setdefault(a,set()).add(b);nodes.update((a,b))
+    except Exception:raise TradeError('Mints du plan de route invalides.') from None
+    visiting=set();visited=set()
+    def visit(mint):
+        if mint in visiting:raise TradeError('Route cyclique refusee.')
+        if mint in visited:return
+        visiting.add(mint)
+        if mint!=dest and not graph.get(mint):raise TradeError('Branche de route sans destination finale.')
+        for target in graph.get(mint,()):visit(target)
+        visiting.remove(mint);visited.add(mint)
+    visit(source)
+    if visited!=nodes or dest not in visited:raise TradeError('Route deconnectee de la source ou destination.')
+    return nodes
+
+
+def checked_lookups(keys,result):
+    from solders.address_lookup_table_account import AddressLookupTable,AddressLookupTableAccount
+    from solders.pubkey import Pubkey
+    values=result.get('value');slot=result.get('context',{}).get('slot')
+    if not isinstance(values,list) or len(values)!=len(keys) or not isinstance(slot,int) or isinstance(slot,bool):
+        raise TradeError('Lecture des tables d adresses incomplete.')
+    tables=[]
+    for key,value in zip(keys,values):
+        if not isinstance(value,dict) or value.get('owner')!=ALT_PROGRAM or value.get('executable') is not False:
+            raise TradeError('Proprietaire de table d adresses invalide.')
+        try:
+            data=value['data']
+            if data[1]!='base64':raise ValueError()
+            raw=base64.b64decode(data[0],validate=True)
+            if not 56<=len(raw)<=56+256*32 or (len(raw)-56)%32:raise ValueError()
+            table=AddressLookupTable.deserialize(raw)
+            if table.meta.deactivation_slot!=2**64-1 or table.meta.last_extended_slot>=slot:raise ValueError()
+            tables.append(AddressLookupTableAccount(Pubkey.from_string(key),list(table.addresses)))
+        except Exception:raise TradeError('Table d adresses invalide, desactivee ou trop recente.') from None
+    return tables
 
 
 class TradeError(Exception):
@@ -347,6 +396,7 @@ def quote_check(q,source,destination,amount):
         raise TradeError('Minimum de reception incompatible avec le glissement.')
     if q.get('platformFee') and int(q['platformFee'].get('feeBps',0)):
         raise TradeError('Frais de plateforme inattendus.')
+    route_mints(q)
 
 
 def checked_instructions(payload,q,priority):
@@ -359,6 +409,7 @@ def checked_instructions(payload,q,priority):
     from solders.pubkey import Pubkey
     from solders.compute_budget import set_compute_unit_limit,set_compute_unit_price
     source,dest=q['inputMint'],q['outputMint'];amount=int(q['inAmount'])
+    permitted_mints=route_mints(q)
     valid_atas={associated(m,token) for m in (source,dest) for token in (TOKEN,TOKEN22)}
     wsol=associated(SOL)
     rows=payload.get('setupInstructions',[])+[payload.get('swapInstruction')]
@@ -391,7 +442,7 @@ def checked_instructions(payload,q,priority):
                 raise TradeError('Montants signes differents de la cotation.')
         elif pid==ATA:
             if (data not in (b'',b'\x00',b'\x01') or len(keys)<6 or keys[0]!=OWNER or keys[2]!=OWNER
-                or keys[3] not in (source,dest) or keys[4]!=SYSTEM or keys[5] not in (TOKEN,TOKEN22)
+                or keys[3] not in permitted_mints or keys[4]!=SYSTEM or keys[5] not in (TOKEN,TOKEN22)
                 or keys[1]!=associated(keys[3],keys[5])):raise TradeError('Creation de compte non autorisee.')
         elif pid==SYSTEM:
             if len(data)!=12 or struct.unpack('<I',data[:4])[0]!=2 or keys[:2]!=[OWNER,wsol]:
@@ -462,6 +513,18 @@ class Executor:
         result=await self.rpc('getTokenAccountsByOwner',[OWNER,{'mint':mint},{'encoding':'jsonParsed','commitment':'confirmed'}])
         return sum(int(a['account']['data']['parsed']['info']['tokenAmount']['amount']) for a in result['value'])
 
+    async def lookups(self,payload):
+        from solders.pubkey import Pubkey
+        keys=payload.get('addressLookupTableAddresses') or []
+        if not isinstance(keys,list) or not all(isinstance(key,str) for key in keys) or len(keys)>4 or len(keys)!=len(set(keys)):
+            raise TradeError('Liste des tables d adresses non prise en charge.')
+        if not keys:return []
+        try:
+            for key in keys:Pubkey.from_string(key)
+        except Exception:raise TradeError('Adresse de table invalide.') from None
+        result=await self.rpc('getMultipleAccounts',[keys,{'encoding':'base64','commitment':'confirmed'}])
+        return checked_lookups(keys,result)
+
     async def prepare(self,mint,side,quantity=None,q=None):
         from solders.hash import Hash
         from solders.message import MessageV0,to_bytes_versioned
@@ -485,11 +548,12 @@ class Executor:
         if side=='buy' and balance<lamports(ENVELOPE,price):raise TradeError('SOL insuffisant pour achat, depots et reserve de sortie.')
         quote_check(q,source,dest,amount)
         payload=await self.jup('/swap/v1/swap-instructions',dict(quoteResponse=q,userPublicKey=OWNER,
-                    wrapAndUnwrapSol=True,useSharedAccounts=False,asLegacyTransaction=True,dynamicComputeUnitLimit=False))
+                    wrapAndUnwrapSol=True,useSharedAccounts=False,asLegacyTransaction=False,dynamicComputeUnitLimit=False))
         instructions=checked_instructions(payload,q,self.priority)
-        message=MessageV0.try_compile(Pubkey.from_string(OWNER),instructions,[],Hash.from_string(block['value']['blockhash']))
+        tables=await self.lookups(payload)
+        message=MessageV0.try_compile(Pubkey.from_string(OWNER),instructions,tables,Hash.from_string(block['value']['blockhash']))
         unsigned=VersionedTransaction.populate(message,[Signature.default()])
-        if len(bytes(unsigned))>1232:raise TradeError('Route trop volumineuse pour cette premiere version.')
+        if len(bytes(unsigned))>1232:raise TradeError('Route trop volumineuse apres compression des adresses.')
         fee=(await self.rpc('getFeeForMessage',[base64.b64encode(to_bytes_versioned(message)).decode(),{'commitment':'confirmed'}]))['value']
         if fee is None or fee>fee_lamports:raise TradeError('Frais reseau au-dessus du plafond.')
         created=list({a['pubkey'] for row in payload.get('setupInstructions',[]) if row['programId']==ATA for a in row['accounts'][1:2]})
@@ -696,7 +760,7 @@ def main():
             print('Jupiter/cotation : OK.',flush=True)
             print('CONTROLE 3/3 : Jupiter/construction non signee...',flush=True)
             payload=transport.jup('/swap/v1/swap-instructions',dict(quoteResponse=q,userPublicKey=OWNER,wrapAndUnwrapSol=True,
-                                  useSharedAccounts=False,asLegacyTransaction=True,dynamicComputeUnitLimit=False))
+                                  useSharedAccounts=False,asLegacyTransaction=False,dynamicComputeUnitLimit=False))
             checked_instructions(payload,q,1)
             print('Wallet correct, RPC, cotation et instructions Jupiter : OK. Solde SOL :',Decimal(balance)/10**9)
             print('Aucune signature, aucun ordre envoye. Routes des futurs tokens non garanties.')
