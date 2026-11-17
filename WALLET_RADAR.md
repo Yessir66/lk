@@ -1,5 +1,7 @@
 # Wallet Radar
 
+**2026.11.17.5 : preparation d'achat anticipee et filtre de reception simulee a 5 %.** Une lecture RPC de moins, solde/comptes lus pendant la construction Jupiter, controle avant signature sans cotation supplementaire. Voir [PREPARATION_RAPIDE_ET_PRIX.md](PREPARATION_RAPIDE_ET_PRIX.md). Installer apres cloture des positions puis relancer **8**.
+
 **2026.11.17.4 : menu13, rapprochement d'une vente manuelle verifiee.** Cloture le suivi local apres preuve de vente totale finalisee, conserve budget et signatures. Debloque les nouveaux achats si le mode reel est actif. Voir [RAPPROCHEMENT_VENTE_MANUELLE.md](RAPPROCHEMENT_VENTE_MANUELLE.md).
 
 **2026.11.17.3 : menu12, diagnostic de sortie sans arreter le mode reel et sans ordre.** Voir [DIAGNOSTIC_SORTIE_WALLET_RADAR.md](DIAGNOSTIC_SORTIE_WALLET_RADAR.md). Ouvrir un second menu pour l'utiliser pendant le suivi de la position.
@@ -16,7 +18,7 @@
 
 **Wallet Radar** est le nom de reference de notre bot de surveillance Solana et d'affichage GMGN. Il detecte les achats et ventes des wallets choisis via Helius sur le VPS, puis transmet les achats verifies a Chrome sur ton PC. L'extension reutilise un onglet GMGN et conserve le graphique lorsqu'il affiche deja le meme token. Il est distinct du bot de republication de callouts et de l'analyse Discord.
 
-Il n'effectue aucun achat ni vente automatique. Le lanceur n'active pas Telegram. La decision de vente reste manuelle.
+Les achats et ventes automatiques sont reserves au **mode reel 8**. Le menu1 surveille les wallets et le menu3 simule les conditions. Le lanceur n'active pas Telegram.
 
 Depuis la version **2026.11.15.3**, le menu propose aussi **3 : simulation des conditions BBIG BOSS sur 30 tokens**, et **4 : bilan du dernier essai**. Voir [SIMULATION_BBIG_BOSS.md](SIMULATION_BBIG_BOSS.md). Aucun ordre reel n'est active.
 

@@ -100,7 +100,7 @@ try {
     Write-Host 'Connexion au VPS : utilise le mot de passe habituel si SSH le demande.'
     Write-Host 'Laisse cette fenetre ouverte. Ctrl+C pour arreter.'
     if ($PaperBuys -or $LiveBuys) {
-        if ($LiveBuys) { Write-Host 'ESSAIS REELS : 1 USD, budget 15 USD, SL -80 %, TP +75 %, glissement 20 %. Arreter suspend le SL/TP.' -ForegroundColor Yellow }
+        if ($LiveBuys) { Write-Host 'ESSAIS REELS : 1 USD, budget 15 USD, SL -80 %, TP +75 %, glissement 20 %. Filtre prix simule 5 %. Arreter suspend le SL/TP.' -ForegroundColor Yellow }
         else { Write-Host 'SIMULATION 25 USD : aucun ordre reel. Notifications de decision activees.' -ForegroundColor Yellow }
         if ($env:OS -eq 'Windows_NT') {
             try {

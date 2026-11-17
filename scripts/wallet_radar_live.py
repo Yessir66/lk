@@ -30,7 +30,7 @@ import urllib.request
 from wallet_radar_paper import PaperObserver, SOL, BBIG, USDC
 
 ROOT=Path(__file__).resolve().parents[1]
-EXECUTION_VERSION='2026.11.17.4'
+EXECUTION_VERSION='2026.11.17.5'
 OWNER='E23vfW9oA9CnANP5wzimpo3DM3WQtMuxzUP4oxFp97Jq'
 PRIVATE=ROOT/'private_wallet_radar'
 JUP='JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4'
@@ -41,6 +41,10 @@ SYSTEM='11111111111111111111111111111111'
 COMPUTE='ComputeBudget111111111111111111111111111111'
 ALT_PROGRAM='AddressLookupTab1e1111111111111111111111111'
 SLIPPAGE=2000
+# A stricter pre-sign check of the already mandatory simulation. The on-chain
+# slippage cap stays at 20%; price can still change after simulation.
+ENTRY_DRIFT_BPS=500
+QUOTE_MAX_AGE=2
 BUDGET=Decimal('15')
 BUY=Decimal('1')
 FEE=Decimal('.10')
@@ -462,6 +466,21 @@ def associated(mint,program=TOKEN):
                                          bytes(Pubkey.from_string(mint))],Pubkey.from_string(ATA))[0])
 
 
+def token_amount(account,mint):
+    """Validate the SPL/Token-2022 base account layout returned by simulation."""
+    from solders.pubkey import Pubkey
+    if account is None:return 0
+    try:
+        if account.get('owner') not in (TOKEN,TOKEN22) or account.get('executable'):raise ValueError()
+        data=account['data']
+        if not isinstance(data,list) or len(data)!=2 or data[1]!='base64':raise ValueError()
+        raw=base64.b64decode(data[0],validate=True)
+        if (len(raw)<165 or raw[:32]!=bytes(Pubkey.from_string(mint))
+                or raw[32:64]!=bytes(Pubkey.from_string(OWNER)) or raw[108]!=1):raise ValueError()
+        return struct.unpack_from('<Q',raw,64)[0]
+    except Exception:raise TradeError('Compte token simule invalide : achat ignore.') from None
+
+
 def quote_check(q,source,destination,amount):
     if (q.get('inputMint')!=source or q.get('outputMint')!=destination or q.get('swapMode')!='ExactIn'
         or int(q.get('inAmount',0))!=amount or int(q.get('slippageBps',-1))!=SLIPPAGE
@@ -657,49 +676,97 @@ class Executor:
         if 5000+math.ceil(self.priority*1_400_000/10**6)>fee_lamports:raise TradeError('Priorite estimee au-dessus du plafond de frais.')
         amount=lamports(BUY,price) if side=='buy' else int(quantity)
         source,dest=(SOL,mint) if side=='buy' else (mint,SOL)
-        # Independent reads overlap the HTTP quote/build path, with separate rate buckets.
-        owned,q,block,balance_result=await asyncio.gather(
+        # Start construction as soon as the quote is available, without waiting
+        # for unrelated RPC reads. Neither this task nor simulation can sign.
+        async def quote_and_build():
+            quoted=await measured_phase(profile,'cotation',self.quote(source,dest,amount) if q is None else asyncio.sleep(0,result=q))
+            quote_at=time.monotonic();quote_check(quoted,source,dest,amount)
+            # Quote mints bound every permitted ATA. Read wallet balance plus
+            # both token-program variants in ONE RPC during Jupiter's build/quota
+            # wait, rather than reading balance then accounts on the critical path.
+            snapshot_addresses=[OWNER]+[associated(coin,program) for coin in sorted(route_mints(quoted)) for program in (TOKEN,TOKEN22)]
+            payload,snapshot=await asyncio.gather(
+                measured_phase(profile,'construction_Jupiter',self.jup('/swap/v1/swap-instructions',dict(quoteResponse=quoted,userPublicKey=OWNER,
+                    wrapAndUnwrapSol=True,useSharedAccounts=False,asLegacyTransaction=False,dynamicComputeUnitLimit=False))),
+                measured_phase(profile,'comptes_anticipes',self.rpc('getMultipleAccounts',[
+                    snapshot_addresses,{'encoding':'base64','commitment':'confirmed'}])) if side=='buy' else asyncio.sleep(0,result=None))
+            return quoted,payload,quote_at,snapshot_addresses,snapshot
+        owned,built,block,balance_result=await asyncio.gather(
             measured_phase(profile,'position',self.holdings(mint) if side=='buy' else asyncio.sleep(0,result=0)),
-            measured_phase(profile,'cotation',self.quote(source,dest,amount) if q is None else asyncio.sleep(0,result=q)),
+            quote_and_build(),
             measured_phase(profile,'blockhash',self.blockhash()),
-            measured_phase(profile,'solde_SOL',self.rpc('getBalance',[OWNER,{'commitment':'confirmed'}])))
+            measured_phase(profile,'solde_SOL',self.rpc('getBalance',[OWNER,{'commitment':'confirmed'}]) if side!='buy' else asyncio.sleep(0,result=None)))
         if side=='buy' and owned!=0:raise TradeError('Position preexistante sur ce token : achat ignore.')
-        balance=balance_result['value']
-        if side=='buy' and balance<lamports(ENVELOPE,price):raise TradeError('SOL insuffisant pour achat, depots et reserve de sortie.')
-        quote_check(q,source,dest,amount)
-        payload=await measured_phase(profile,'construction_Jupiter',self.jup('/swap/v1/swap-instructions',dict(quoteResponse=q,userPublicKey=OWNER,
-                    wrapAndUnwrapSol=True,useSharedAccounts=False,asLegacyTransaction=False,dynamicComputeUnitLimit=False)))
+        q,payload,quote_at,snapshot_addresses,snapshot=built
         instructions=checked_instructions(payload,q,self.priority)
         tables=await measured_phase(profile,'tables_adresses',self.lookups(payload))
         message=MessageV0.try_compile(Pubkey.from_string(OWNER),instructions,tables,Hash.from_string(block['value']['blockhash']))
         unsigned=VersionedTransaction.populate(message,[Signature.default()])
         if len(bytes(unsigned))>1232:raise TradeError('Route trop volumineuse apres compression des adresses.')
-        fee=(await measured_phase(profile,'verification_frais',self.rpc('getFeeForMessage',[base64.b64encode(to_bytes_versioned(message)).decode(),{'commitment':'confirmed'}])))['value']
+        fee_params=[base64.b64encode(to_bytes_versioned(message)).decode(),{'commitment':'confirmed'}]
+        created=list(dict.fromkeys(a['pubkey'] for row in payload.get('setupInstructions',[]) if row['programId']==ATA for a in row['accounts'][1:2]))
+        addresses=[OWNER]+created;entry_guard=None
+        if side=='buy':
+            route=payload['swapInstruction'];keys=[a['pubkey'] for a in route['accounts']]
+            target=keys[3] if base64.b64decode(route['data'])[:8]==hashlib.sha256(b'global:route').digest()[:8] else keys[6]
+            addresses=list(dict.fromkeys(addresses+[target]))
+            values=snapshot['value']
+            if len(values)!=len(snapshot_addresses) or any(key not in snapshot_addresses for key in addresses):
+                raise TradeError('Comptes anticipes incomplets ou hors route.')
+            before=[values[snapshot_addresses.index(key)] for key in addresses]
+            if not before[0] or before[0].get('owner')!=SYSTEM:
+                raise TradeError('Solde wallet ou comptes avant simulation indisponibles.')
+            balance=int(before[0]['lamports'])
+            if balance<lamports(ENVELOPE,price):raise TradeError('SOL insuffisant pour achat, depots et reserve de sortie.')
+            previous=[before[addresses.index(key)] for key in created]
+            token_before=token_amount(before[addresses.index(target)],mint)
+            if token_before!=0:raise TradeError('Position apparue pendant la preparation : achat ignore.')
+            profile['anticipated_accounts']=True
+            fee=(await measured_phase(profile,'verification_frais',self.rpc('getFeeForMessage',fee_params)))['value']
+        else:
+            balance=balance_result['value']
+            fee=(await measured_phase(profile,'verification_frais',self.rpc('getFeeForMessage',fee_params)))['value']
+            previous=(await measured_phase(profile,'comptes_avant_simulation',self.rpc('getMultipleAccounts',[created,{'encoding':'base64','commitment':'confirmed'}])))['value'] if created else []
         if fee is None or fee>fee_lamports:raise TradeError('Frais reseau au-dessus du plafond.')
-        created=list({a['pubkey'] for row in payload.get('setupInstructions',[]) if row['programId']==ATA for a in row['accounts'][1:2]})
-        previous=(await measured_phase(profile,'comptes_avant_simulation',self.rpc('getMultipleAccounts',[created,{'encoding':'base64','commitment':'confirmed'}])))['value'] if created else []
-        result=await measured_phase(profile,'simulation',self.rpc('simulateTransaction',[base64.b64encode(bytes(unsigned)).decode(),{
+        simulation_options={
             'encoding':'base64','sigVerify':False,'commitment':'confirmed',
-            'accounts':{'encoding':'base64','addresses':[OWNER]+created}}]))
+            'accounts':{'encoding':'base64','addresses':addresses}}
+        snapshot_slot=((snapshot or {}).get('context') or {}).get('slot')
+        if side=='buy' and type(snapshot_slot) is int and snapshot_slot>=0:simulation_options['minContextSlot']=snapshot_slot
+        result=await measured_phase(profile,'simulation',self.rpc('simulateTransaction',[base64.b64encode(bytes(unsigned)).decode(),simulation_options]))
         sim=result['value']
         if sim.get('err') is not None:raise simulation_error(sim['err'])
         post=sim.get('accounts') or []
         if not post or post[0] is None or post[0].get('owner')!=SYSTEM:raise TradeError('Solde simule du wallet indisponible.')
-        if len(post)!=len(created)+1:raise TradeError('Comptes simules incomplets.')
-        rent=sum(max(0,(a or {}).get('lamports',0)-(b or {}).get('lamports',0)) for a,b in zip(post[1:],previous))
+        if len(post)!=len(addresses):raise TradeError('Comptes simules incomplets.')
+        simulated_created=[post[addresses.index(key)] for key in created]
+        rent=sum(max(0,(a or {}).get('lamports',0)-(b or {}).get('lamports',0)) for a,b in zip(simulated_created,previous))
         if rent>lamports(RENT,price):raise TradeError('Depot de comptes au-dessus du plafond reserve.')
         debit=balance-int(post[0]['lamports'])
         cap=lamports((BUY if side=='buy' else Decimal(0))+RENT+FEE,price)
         if debit>cap:raise TradeError('Depense SOL simulee au-dessus du plafond achat/frais/depots.')
+        if side=='buy':
+            received=token_amount(post[addresses.index(target)],mint)-token_before
+            minimum=(int(q['outAmount'])*(10000-ENTRY_DRIFT_BPS)+9999)//10000
+            if received<minimum:raise TradeError('Prix degrade : simulation sous 95 % des tokens cotes ; achat ignore avant signature.')
+            if time.monotonic()-quote_at>QUOTE_MAX_AGE:raise TradeError('Cotation de plus de 2 s : achat ignore avant signature.')
+            entry_guard={'quoted_tokens':int(q['outAmount']),'simulated_tokens':received,'minimum_simulated_tokens':minimum,
+                         'max_drift_bps':ENTRY_DRIFT_BPS,'quote_at':quote_at,'checked_at':time.monotonic()}
         return dict(message=base64.b64encode(to_bytes_versioned(message)).decode(),height=block['value']['lastValidBlockHeight'],
                     amount=amount,price=str(price),fee_lamports=fee,rent_lamports=rent,
                     prepared=time.monotonic(),prepare_ms=round((time.monotonic()-start)*1000),side=side,
-                    blockhash_at=block['_observed_mono'])
+                    blockhash_at=block['_observed_mono'],entry_guard=entry_guard)
 
     def signed(self,p):
         from solders.message import from_bytes_versioned
         from solders.transaction import VersionedTransaction
         price=self.price()
+        if p['side']=='buy':
+            guard=p.get('entry_guard')
+            if (not guard or not 0<=time.monotonic()-guard['quote_at']<=QUOTE_MAX_AGE
+                or not 0<=time.monotonic()-guard['checked_at']<=.5
+                or guard['simulated_tokens']<guard['minimum_simulated_tokens']):
+                raise TradeError('Controle du prix absent ou perime : achat ignore avant signature.')
         if (time.monotonic()-p['prepared']>2 or time.monotonic()-p['blockhash_at']>15 or time.monotonic()-self.priority_at>30
             or p['fee_lamports']>lamports(FEE,price) or p['rent_lamports']>lamports(RENT,price)
             or (p['side']=='buy' and p['amount']>lamports(BUY,price))):
@@ -731,6 +798,9 @@ class Executor:
                           price=str(current_price),decision_elapsed_s=elapsed,prepare_ms=p['prepare_ms'],sell_attempts=0,
                           decision_wall=time.time()-(3-elapsed-(deadline-time.monotonic())),signed_at=time.time(),
                           latency_breakdown=latency,preparation_profile=p.get('preparation_profile'),execution_version=EXECUTION_VERSION)
+                if p.get('entry_guard'):
+                    guard=p['entry_guard'];data['entry_guard']={key:guard[key] for key in ('quoted_tokens','simulated_tokens','minimum_simulated_tokens','max_drift_bps')}
+                    data['entry_guard']['quote_age_at_sign_ms']=round((time.monotonic()-guard['quote_at'])*1000,3)
                 if time.monotonic()>deadline:raise TradeError('Limite de trois secondes depassee avant envoi.')
                 storing=time.monotonic()
                 self.ledger.reserve(mint,data)  # Durable BEFORE any possible network submission.
@@ -869,6 +939,7 @@ class LiveObserver(PaperObserver):
 
     async def run(self):
         print('ESSAI REEL : 1 USD/achat, budget cumule 15 USD ; SL -80 %, TP +75 %, glissement 20 %.',flush=True)
+        print('Filtre achat : au plus 5 % de tokens en moins a la simulation ; cotation <=2 s avant signature.',flush=True)
         print('Une position a la fois. Arreter le processus suspend les sorties automatiques.',flush=True)
         tasks=[asyncio.create_task(super().run()),asyncio.create_task(self.executor.run()),
                asyncio.create_task(self.prices.run()),asyncio.create_task(self.prices.run_doge())]
@@ -1093,6 +1164,7 @@ def main():
                 value=json.loads(data);buy=value.get('buy',{})
                 print(mint,state,'buy:',buy.get('signature','-'),'sell:',value.get('sell',{}).get('signature','-'))
                 if value.get('external_sale'):print('Vente externe verifiee :',value['external_sale']['signature'])
+                if value.get('entry_guard'):print('Controle prix avant signature (quantites brutes) :',json.dumps(value['entry_guard']))
                 metrics={'detection_decision_s':value.get('decision_elapsed_s'),'preparation_ms':value.get('prepare_ms')}
                 if buy.get('send_at') and value.get('decision_wall'):metrics['decision_envoi_HTTP_ms']=round((buy['send_at']-value['decision_wall'])*1000)
                 if buy.get('send_at') and value.get('confirmed_at'):metrics['envoi_confirmation_observee_ms']=round((value['confirmed_at']-buy['send_at'])*1000)

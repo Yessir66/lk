@@ -44,6 +44,13 @@ def quote(source=live.SOL,dest=MINT,amount=10000000):
 def account(key,signer=False,writable=False):return dict(pubkey=key,isSigner=signer,isWritable=writable)
 
 
+def token_snapshot(amount,mint=MINT,owner=None,program=None):
+    from solders.pubkey import Pubkey
+    raw=bytearray(165);raw[:32]=bytes(Pubkey.from_string(mint));raw[32:64]=bytes(Pubkey.from_string(owner or live.OWNER))
+    struct.pack_into('<Q',raw,64,amount);raw[108]=1
+    return {'owner':program or live.TOKEN,'lamports':1513840,'data':[base64.b64encode(raw).decode(),'base64']}
+
+
 def payload(q=None):
     q=q or quote()
     keys=[live.TOKEN,live.OWNER,live.associated(q['inputMint']),live.associated(q['outputMint']),
@@ -82,6 +89,16 @@ class BudgetTest(unittest.TestCase):
 
 
 class InstructionTest(unittest.TestCase):
+    def test_simulated_token_account_requires_exact_mint_owner_and_initialized_layout(self):
+        self.assertEqual(live.token_amount(token_snapshot(123),MINT),123)
+        self.assertEqual(live.token_amount(token_snapshot(123,program=live.TOKEN22),MINT),123)
+        bad=[token_snapshot(123,mint=live.SOL),token_snapshot(123,owner=MINT),token_snapshot(123,program=live.SYSTEM),
+             {'owner':live.TOKEN,'data':['SECRET_INVALID','base64']},dict(token_snapshot(123),executable=True)]
+        frozen=token_snapshot(123);raw=bytearray(base64.b64decode(frozen['data'][0]));raw[108]=2;frozen['data'][0]=base64.b64encode(raw).decode();bad.append(frozen)
+        for account_data in bad:
+            with self.subTest(account=account_data),self.assertRaises(live.TradeError) as error:live.token_amount(account_data,MINT)
+            self.assertNotIn('SECRET',str(error.exception))
+
     def test_send_priority_precedes_waiting_read_without_bypassing_rpc_quota(self):
         from concurrent.futures import ThreadPoolExecutor
         transport=live.Transport('https://unused.invalid','FAKE')
@@ -458,13 +475,18 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
             async def rpc(method,params):
                 if method=='getLatestBlockhash':return {'value':{'blockhash':str(Hash.default()),'lastValidBlockHeight':100}}
                 if method=='getFeeForMessage':return {'value':5000}
-                if method=='getBalance':return {'value':100000000}
-                if method=='simulateTransaction':return {'value':{'err':None,'accounts':[{'owner':live.SYSTEM,'lamports':90000000}]}}
+                if method=='getMultipleAccounts':return {'context':{'slot':10},'value':[{'owner':live.SYSTEM,'lamports':100000000} if address==live.OWNER else None for address in params[0]]}
+                if method=='simulateTransaction':
+                    self.assertEqual(params[1]['minContextSlot'],10)
+                    return {'value':{'err':None,'accounts':[{'owner':live.SYSTEM,'lamports':90000000},token_snapshot(100000)]}}
                 raise AssertionError('Unexpected method: '+method)
             self.e.rpc.side_effect=rpc
             prepared=await self.e.prepare(MINT,'buy')
             self.assertIn('simulation',prepared['preparation_profile']['phases_ms'])
             self.e.transport.send.assert_not_called()
+            methods=[call.args[0] for call in self.e.rpc.call_args_list]
+            self.assertNotIn('getBalance',methods);self.assertEqual(methods.count('getMultipleAccounts'),1)
+            self.assertTrue(prepared['preparation_profile']['anticipated_accounts'])
             self.e.prices.usd=Decimal(200)
             with self.assertRaises(live.TradeError):self.e.signed(prepared)
             self.e.prices.usd=Decimal(100)
@@ -475,6 +497,99 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(tx.verify_with_results(),[True])
             self.assertEqual(str(tx.message.account_keys[0]),str(key.pubkey()))
             self.assertEqual(self.e.ledger.used(),0)
+
+    def configure_buy_preparation(self,received=100000,preexisting=0):
+        from solders.hash import Hash
+        self.e.holdings=AsyncMock(return_value=0);self.e.jup.side_effect=[quote(),payload()]
+        async def rpc(method,params):
+            if method=='getLatestBlockhash':return {'value':{'blockhash':str(Hash.default()),'lastValidBlockHeight':100}}
+            if method=='getFeeForMessage':return {'value':5000}
+            if method=='getMultipleAccounts':
+                return {'context':{'slot':20},'value':[{'owner':live.SYSTEM,'lamports':100000000} if address==live.OWNER else
+                    token_snapshot(preexisting) if preexisting and address==live.associated(MINT) else None for address in params[0]]}
+            if method=='simulateTransaction':
+                return {'value':{'err':None,'accounts':[{'owner':live.SYSTEM,'lamports':90000000},token_snapshot(received)]}}
+            raise AssertionError('Unexpected RPC: '+method)
+        self.e.rpc.side_effect=rpc
+
+    async def test_simulation_rejects_over_five_percent_quote_deterioration_without_sign_or_budget(self):
+        self.configure_buy_preparation(received=94999)
+        with patch.object(self.e,'signed') as sign:
+            with self.assertRaisesRegex(live.TradeError,'Prix degrade'):await self.e.prepare(MINT,'buy')
+            sign.assert_not_called()
+        self.assertEqual(self.e.ledger.used(),0);self.e.transport.send.assert_not_called()
+        self.configure_buy_preparation(received=95000)
+        prepared=await self.e.prepare(MINT,'buy')
+        self.assertEqual(prepared['entry_guard']['simulated_tokens'],95000)
+        self.assertEqual(prepared['entry_guard']['minimum_simulated_tokens'],95000)
+        self.assertEqual(live.SLIPPAGE,2000)
+
+    async def test_appearing_position_is_rejected_from_anticipated_accounts(self):
+        self.configure_buy_preparation(preexisting=1)
+        with self.assertRaisesRegex(live.TradeError,'Position apparue'):await self.e.prepare(MINT,'buy')
+        self.assertNotIn('simulateTransaction',[call.args[0] for call in self.e.rpc.call_args_list])
+        self.assertEqual(self.e.ledger.used(),0)
+
+    async def test_stale_quote_or_simulation_is_rejected_before_private_signer_is_used(self):
+        self.configure_buy_preparation();prepared=await self.e.prepare(MINT,'buy')
+        for field,age in (('quote_at',2.01),('checked_at',.51)):
+            with self.subTest(field=field):
+                p=dict(prepared,entry_guard=dict(prepared['entry_guard']))
+                p['entry_guard'][field]=time.monotonic()-age
+                with self.assertRaisesRegex(live.TradeError,'Controle du prix'):self.e.signed(p)
+        p=dict(prepared,entry_guard=None)
+        with self.assertRaisesRegex(live.TradeError,'Controle du prix'):self.e.signed(p)
+        self.e.transport.send.assert_not_called();self.assertEqual(self.e.ledger.used(),0)
+
+    async def test_construction_and_account_reads_do_not_wait_for_holdings(self):
+        self.configure_buy_preparation();built=asyncio.Event();snapshot=asyncio.Event()
+        original=self.e.rpc.side_effect
+        async def holdings(mint):
+            await asyncio.wait_for(built.wait(),1);await asyncio.wait_for(snapshot.wait(),1);return 0
+        async def jup(path,body=None):
+            if body is None:return quote()
+            built.set();await asyncio.wait_for(snapshot.wait(),1);return payload()
+        async def rpc(method,params):
+            if method=='getMultipleAccounts':snapshot.set()
+            return await original(method,params)
+        self.e.holdings.side_effect=holdings;self.e.jup.side_effect=jup;self.e.rpc.side_effect=rpc
+        await self.e.prepare(MINT,'buy')
+        methods=[call.args[0] for call in self.e.rpc.call_args_list]
+        self.assertLess(methods.index('getMultipleAccounts'),methods.index('getFeeForMessage'))
+        self.assertLess(methods.index('getFeeForMessage'),methods.index('simulateTransaction'))
+
+    async def test_anticipated_balance_rent_and_network_fee_checks_remain_mandatory(self):
+        for case in ('balance','rent','debit','fee','simulation'):
+            with self.subTest(case=case):
+                self.configure_buy_preparation();original=self.e.rpc.side_effect
+                if case=='rent':
+                    p=payload();p['setupInstructions'].append(dict(programId=live.ATA,data='AQ==',accounts=[
+                        account(live.OWNER,True),account(live.associated(MINT)),account(live.OWNER),account(MINT),account(live.SYSTEM),account(live.TOKEN)]))
+                    self.e.jup.side_effect=[quote(),p]
+                async def rpc(method,params):
+                    result=await original(method,params)
+                    if method=='getMultipleAccounts' and case=='balance':result['value'][0]['lamports']=1
+                    if method=='getFeeForMessage' and case=='fee':result['value']=1000000000
+                    if method=='simulateTransaction' and case=='simulation':result['value']['err']={'InstructionError':[0,{'Custom':6001}]}
+                    if method=='simulateTransaction' and case=='debit':result['value']['accounts'][0]['lamports']=1
+                    if method=='simulateTransaction' and case=='rent':result['value']['accounts'][1]['lamports']=6000000
+                    return result
+                self.e.rpc.side_effect=rpc
+                with self.assertRaises(live.TradeError):await self.e.prepare(MINT,'buy')
+                self.assertEqual(self.e.ledger.used(),0);self.e.transport.send.assert_not_called()
+
+    async def test_minimum_simulated_reception_rounds_up_and_incomplete_snapshots_fail_closed(self):
+        self.configure_buy_preparation(received=95000)
+        q=quote();q['outAmount']='100001';self.e.jup.side_effect=[q,payload(q)]
+        with self.assertRaisesRegex(live.TradeError,'Prix degrade'):await self.e.prepare(MINT,'buy')
+        self.configure_buy_preparation();original=self.e.rpc.side_effect
+        async def rpc(method,params):
+            result=await original(method,params)
+            if method=='getMultipleAccounts':result['value'].pop()
+            return result
+        self.e.rpc.side_effect=rpc
+        with self.assertRaisesRegex(live.TradeError,'Comptes anticipes incomplets'):await self.e.prepare(MINT,'buy')
+        self.assertEqual(self.e.ledger.used(),0)
 
     async def test_buy_is_committed_before_any_send_attempt(self):
         self.e.prepared_mint=MINT

@@ -1,4 +1,6 @@
-# Wallet Radar 2026.11.17.3 — premier essai reel
+# Wallet Radar 2026.11.17.5 — premier essai reel
+
+Preparation d'achat anticipee et filtre avant signature : [PREPARATION_RAPIDE_ET_PRIX.md](PREPARATION_RAPIDE_ET_PRIX.md). Si la simulation prevoit plus de **5 % de tokens en moins** que la cotation, l'achat est ignore ; cotation agee de2s maximum et simulation de0,5s maximum a la signature. Le glissement de transaction reste20% ; le prix peut bouger apres la simulation. Ce filtre ne garantit pas le prix final et peut faire manquer des achats.
 
 En cas de `SORTIE_INDISPONIBLE`, garder le processus actif et lancer le **diagnostic12 dans un second menu**, sans arret ni ordre : [DIAGNOSTIC_SORTIE_WALLET_RADAR.md](DIAGNOSTIC_SORTIE_WALLET_RADAR.md).
 

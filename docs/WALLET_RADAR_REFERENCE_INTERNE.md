@@ -15,7 +15,7 @@ Cette fiche décrit le dernier état connu ; le code et la configuration du dép
 
 ## État connu et wallet demandé
 
-- Version serveur du dépôt : **2026.11.17.4**, constante `VERSION` dans `scripts/wallet_alerts_ws.py` et `EXECUTION_VERSION` dans `scripts/wallet_radar_live.py` (mettre a jour ensemble).
+- Version serveur du dépôt : **2026.11.17.5**, constante `VERSION` dans `scripts/wallet_alerts_ws.py` et `EXECUTION_VERSION` dans `scripts/wallet_radar_live.py` (mettre a jour ensemble).
 - Extension Chrome : version **1.0.0**, dossier `chrome-gmgn`.
 - Dernière liste demandée : **BBIG BOSS uniquement**, adresse publique :
   `BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp`.
@@ -89,6 +89,7 @@ Menu principal Windows :
 - **10** : transferer puis controler les acces RPC/Jupiter avec les cles deja stockees, sans signature/envoi ni ressaisie.
 - **11** : remplacer uniquement la cle API Jupiter par saisie locale **visible** (demande utilisateur), puis controle ; ne lit/reecrit jamais wallet.json.
 - **12** : diagnostic sortie en processus separe, journal SQLiteRO sans mutation, RPC1/s, ni lectureclewallet, ni signature, ni envoi. Possible pendant mode8 ; ouvrirsecondmenu, nepasstopperprocessus pour l'utiliser.
+- **13** : rapprocher une vente manuelle totale finalisee, sans ordre. Apres preuve, cloture locale CAS preserve reserve et signatures ; si8actif, les nouveaux achats peuvent reprendre.
 - **0** : quitter le menu.
 
 Dans la gestion distante des wallets :
@@ -225,6 +226,8 @@ Autres cas :
 Les scripts `discord_*` sont partagés avec d'autres bots : ne pas changer leurs listes globales pour remplacer seulement la liste de Wallet Radar.
 
 ## Vérification et livraison
+
+Version **2026.11.17.5**, autorisee par «vas y» apres comparaison des achats : achat non signe construit des que quote arrive, comptes anticipes OWNER+ATA de chaque mint de route et deux variantesTOKEN/TOKEN22 dans1RPCgetMultipleAccounts pendant construction/quotaJupiter. RemplacegetBalance+ancienscomptesavant (unelecturede moins) ; fraisRPC puis simulationRPC restent. PasdebatchJSONRPC nihaussequotas. Soldes/snapshots valides, tokenpre0, rent/debit/feecaps revalides. Simaccounts inclutdestination ; token_amount layout>=165, mint/owner/program/init1 verifies. ENTRY_DRIFT_BPS500 : reception simulation>=ceil(quoteout*.95), sinonrefus avantsignature, pasenveloppe. QUOTE_MAX_AGE2s depuis receptionGET et agecontrole<=.5s au signed ; minContextSlot snapshot avant simulation. Guardpersisted dans ledger+report9 (quantitesbrutes,minimum,age) ; glissementonchainreste20%, peutderiverapressim et peutrefuserplusd'achats. Ni1sstrategie ni3sdeadline niUSD/frais/SLTP/budgetmodifies. Texteinitialmetenavertit. Aucun cache mutabledesoldeSOL,aucun SDKPumpdirect oucotationsupplementaire. **393 tests passent tous** (63modulelive), menusPowerShell+launcher mocksOK ; nouveauxcases formats/token2022,95%arrondi,prepos,staleguards,concurrenceprepare,fraisrentdebit/sim. Bancmockcomparatif50msHTTP/quotaRPC3Jup1/cachehash :17.4prepare1780ms/mockenvoi2066/5lectures contre17.5prepare1439/envoi1722/4lectures ; gain~340ms uniquementbanc, pasVPS. Guide PREPARATION_RAPIDE_ET_PRIX.md, archive wallet_radar_preparation_prix_2026.11.17.5.zip. Installerapres9sansactive:5arret0quitextrairepuis8, pas3simulation ; journal/cles/configpreserves, conditionssessionrepartmaisbudget4.80persistes. Aucunordrecloud, activationetgainVPSencoreattendus.
 
 Analyse publique suivante du17novembre : utilisateurfournit BBIGachat https://solscan.io/tx/4zhTwmyTVdMfCdqH3veAfzNhJjKKQiMLnf127i25whPGo9qBE6LAYpjqWjbyoCDpnKds7hrsSvWyeSue2DCeGq6P et propreachat https://solscan.io/tx/4NtCPKUuT2whJ9Q9tkk7HCnqykUoowrX532ZVwxb4LfNzC82X9xRhPwunoksDc5FU5qBSEMWJHZVb8fZjLaLps5t. DeuxpagesHTML SolscanHTTP200 JSON__NEXT_DATA__ txInfo.data verifie : signatairesBBIG/OWNER, memeswapmint **3spLPw2VURHqbRQvMzFNvggBsG5ytJQFb1Wu2Af7pump** (corrige transcriptionerroneeCAprecedente). BBIGtimestamp1794950222/slot470681134=22:17:02Paris ; OWN1794950224/slot470681146=22:17:04, succeslesdeux ; 2secondeshorodatagesblocs et12slots, pasprecisionms. BBIG3.333SOL/52782716.718811tokens vsOWN0.013679891/171301.122657 => prixmoyenSOL/token+26.4675% horsreseau/depot, paspurretardcours. Jupiterquoteinstruction203172.166424vsrecu171301.122657=>15.6867%tokensenmoins (prix+18.6053%vsquote), tolerance20%pasfraisfixe. PrioriteBBIG0.001SOLvsOWN0.00014, fraisreseau0.001005vs0.000145 ; ne prouvepascausedelai. Capturelocalememesignature1.021sdecision+1.137senvoi=2.158s, confirmationobservee3.201apres=5.359total ; pasretardexecutionBBIG. Preparationrestante837.246ms, filesRPC810.239/quota264.792 etquotaJup625.220 cumulesparallelesnonsommables. Rapport artifact `/workspace/artifacts/comparaison_achats_BBIG_Wallet_Radar_2026-11-17.md`. Aucun changementparametres/moteur niordre ; optimiserpreparationetderiveprixdemandeetapessuivantes. CloturesVPS13confirmeesparcapturesuser(dontpremiertimeoutRPCpuisretryreussi), deuxclosedreserve4.80. Ancienprocessus17.2peutresteractif aprescopiescripts4.
 
