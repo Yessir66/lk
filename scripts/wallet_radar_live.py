@@ -30,7 +30,7 @@ import urllib.request
 from wallet_radar_paper import PaperObserver, SOL, BBIG, USDC
 
 ROOT=Path(__file__).resolve().parents[1]
-EXECUTION_VERSION='2026.11.17.2'
+EXECUTION_VERSION='2026.11.17.3'
 OWNER='E23vfW9oA9CnANP5wzimpo3DM3WQtMuxzUP4oxFp97Jq'
 PRIVATE=ROOT/'private_wallet_radar'
 JUP='JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4'
@@ -54,6 +54,8 @@ PREPARE_PROFILE=ContextVar('radar_prepare_profile',default=None)
 async def measured_phase(profile,name,operation):
     started=time.monotonic()
     try:return await operation
+    except Exception:
+        profile['failed_phase']=name;raise
     finally:profile['phases_ms'][name]=round((time.monotonic()-started)*1000,3)
 
 
@@ -165,6 +167,21 @@ def key_format_problem(api):
     return None
 
 
+def simulation_error(err):
+    suffix=''
+    if isinstance(err,dict):
+        instruction=err.get('InstructionError')
+        if isinstance(instruction,list) and len(instruction)==2 and isinstance(instruction[0],int) and not isinstance(instruction[0],bool):
+            index,detail=instruction
+            if isinstance(detail,dict) and isinstance(detail.get('Custom'),int) and not isinstance(detail['Custom'],bool):
+                suffix=' ; instruction '+str(index)+' ; code programme '+str(detail['Custom'])
+            elif isinstance(detail,str) and detail in ('InsufficientFunds','InvalidAccountData','InvalidArgument','ComputationalBudgetExceeded','AccountNotInitialized'):
+                suffix=' ; instruction '+str(index)+' ; '+detail
+    elif isinstance(err,str) and err in ('BlockhashNotFound','InsufficientFundsForFee','AccountNotFound','AlreadyProcessed'):
+        suffix=' ; '+err
+    return TradeError('Simulation de transaction refusee'+suffix+'.')
+
+
 def update_jupiter():
     # Only this API credential is touched; never read or rewrite the wallet key.
     api=input('Nouvelle cle API Jupiter seule (saisie VISIBLE) : ').strip()
@@ -274,6 +291,7 @@ class Transport:
         self.url=rpc_url;self.key=api_key
         self.locks={'rpc':threading.Lock(),'jup':threading.Lock()};self.next_rpc=0;self.next_jup=0
         self.pause_rpc=0;self.pause_jup=0
+        self.rpc_interval=1/3
         self.rpc_condition=threading.Condition();self.rpc_waiters=[];self.rpc_sequence=0;self.rpc_busy=False
         # Use the installed client already used by the wallet monitor, without
         # changing hosts, credentials, TLS verification or authentication rules.
@@ -309,7 +327,7 @@ class Transport:
                     if delay>0:
                         started=time.monotonic();condition.wait(timeout=min(delay,max(.001,deadline-now)) if deadline is not None else delay)
                         quota_ms+=(time.monotonic()-started)*1000;continue
-                    self.rpc_waiters.remove(ticket);self.rpc_busy=True;self.next_rpc=time.monotonic()+1/3
+                    self.rpc_waiters.remove(ticket);self.rpc_busy=True;self.next_rpc=time.monotonic()+self.rpc_interval
                     break
             except BaseException:
                 self.rpc_waiters.remove(ticket);condition.notify_all();raise
@@ -664,7 +682,7 @@ class Executor:
             'encoding':'base64','sigVerify':False,'commitment':'confirmed',
             'accounts':{'encoding':'base64','addresses':[OWNER]+created}}]))
         sim=result['value']
-        if sim.get('err') is not None:raise TradeError('Simulation de transaction refusee.')
+        if sim.get('err') is not None:raise simulation_error(sim['err'])
         post=sim.get('accounts') or []
         if not post or post[0] is None or post[0].get('owner')!=SYSTEM:raise TradeError('Solde simule du wallet indisponible.')
         if len(post)!=len(created)+1:raise TradeError('Comptes simules incomplets.')
@@ -795,13 +813,16 @@ class Executor:
             rows=self.ledger.active()
             for row in rows:
                 mint=row['mint'];data=json.loads(row['data'])
+                stage='suivi de transaction'
                 try:
                     if row['state'].endswith('_pending'):await self.reconcile(row)
                     elif row['state']=='open':
+                        stage='lecture du solde token'
                         quantity=await self.holdings(mint)
                         if quantity!=data['quantity']:
                             self.ledger.save(mint,'manual',data);self.notify(mint,'INTERVENTION_REQUISE','Solde modifie hors bot ; nouveaux achats bloques.');continue
-                        q=await self.quote(mint,SOL,quantity)
+                        stage='cotation de vente Jupiter';q=await self.quote(mint,SOL,quantity)
+                        stage='cours SOL/USD'
                         value=Decimal(q['outAmount'])/10**9*self.price()
                         entry=Decimal(data['entry_usd'])
                         reason=data.get('exit_reason') or ('SL' if value<=entry*Decimal('.20') else 'TP' if value>=entry*Decimal('1.75') else None)
@@ -810,14 +831,17 @@ class Executor:
                             if data['sell_attempts']>=3:
                                 self.ledger.save(mint,'manual',data);self.notify(mint,'INTERVENTION_REQUISE','Trois tentatives de vente atteintes.');continue
                             self.ledger.save(mint,'open',data)
-                            p=await self.prepare(mint,'sell',quantity,q)
+                            stage='preparation de vente';p=await self.prepare(mint,'sell',quantity,q)
+                            stage='verification et signature locale'
                             data['sell']=self.signed(p);data['sell_attempts']+=1
+                            stage='journal de vente'
                             self.ledger.save(mint,'sell_pending',data)
                             await self.send(mint,data,'sell')
                 except asyncio.CancelledError:raise
-                except Exception:
+                except Exception as exc:
                     # Do not silently advertise protection when quotes/exits are unavailable.
-                    self.notify(mint,'SORTIE_INDISPONIBLE','Cotation, RPC ou preparation indisponible ; position conservee, nouvelle verification prevue.')
+                    cause=str(exc) if isinstance(exc,TradeError) else type(exc).__name__
+                    self.notify(mint,'SORTIE_INDISPONIBLE','Etape '+stage+' : '+cause+' Vente non confirmee ; suivi maintenu.',stage=stage)
             await asyncio.sleep(2)
 
     async def run(self):
@@ -855,6 +879,89 @@ class LiveObserver(PaperObserver):
             self.executor.ledger.db.close()
 
 
+class ExitReadOnlyTransport(Transport):
+    """Diagnostic access cannot submit transactions, even by accidental RPC call."""
+    READ_METHODS={'getTokenAccountsByOwner','getRecentPrioritizationFees','getLatestBlockhash','getFeeForMessage',
+                  'getMultipleAccounts','getBalance','simulateTransaction','getSignatureStatuses','getBlockHeight'}
+    def __init__(self,*args):
+        super().__init__(*args);self.rpc_interval=1
+
+    def rpc(self,method,params,capture=None):
+        if method not in self.READ_METHODS:raise TradeError('Diagnostic : RPC de mutation interdit.')
+        return super().rpc(method,params,capture)
+
+    def jup(self,path,body=None,capture=None):
+        if not ((path.startswith('/swap/v1/quote?') and body is None) or (path=='/swap/v1/swap-instructions' and isinstance(body,dict))):
+            raise TradeError('Diagnostic : seul devis ou construction non signee autorise.')
+        return super().jup(path,body,capture)
+
+    def send(self,*args,**kwargs):raise TradeError('Diagnostic : envoi interdit.')
+
+
+async def diagnose_exit(path,http):
+    """Read a snapshot; never instantiate a signer, Ledger, or live event loop."""
+    path=Path(path)
+    if not path.is_file():print('Aucun journal reel a examiner.');return
+    db=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True);db.row_factory=sqlite3.Row
+    try:rows=[dict(row) for row in db.execute("SELECT mint,state,data FROM trades WHERE state IN ('open','manual','buy_pending','sell_pending') LIMIT 1")]
+    finally:db.close()
+    if not rows:print('Aucune position ouverte ou transaction en attente dans le journal.');return
+    row=rows[0];data=json.loads(row['data']);mint=row['mint']
+    from solders.pubkey import Pubkey
+    Pubkey.from_string(mint)
+    print('DIAGNOSTIC SORTIE — lecture seule ; aucun ordre, aucune signature, journal inchange.',flush=True)
+    print('TOKEN : '+mint+' ; etat journal : '+row['state'],flush=True)
+    probe=Executor.__new__(Executor)
+    probe.transport=ExitReadOnlyTransport(http,secure_read(PRIVATE/'jupiter_api_key.txt'))
+    from wallet_radar_paper import Prices
+    probe.prices=Prices();probe.blockhash_cache=None;probe.blockhash_lock=asyncio.Lock()
+    probe.priority=None;probe.priority_at=0
+    stage='lecture position'
+    try:
+        if row['state'].endswith('_pending'):
+            side='buy' if row['state']=='buy_pending' else 'sell';signature=data[side]['signature']
+            print('Transaction en attente : '+signature,flush=True)
+            result=(await probe.rpc('getSignatureStatuses',[[signature],{'searchTransactionHistory':True}]))['value'][0]
+            status=result.get('confirmationStatus') if result else None
+            print('Statut observe : '+(status if status in ('processed','confirmed','finalized') else 'non disponible')+
+                  ' ; echec indique : '+str(bool(result and result.get('err') is not None)),flush=True)
+            return
+        quantity=await probe.holdings(mint)
+        print('Quantite enregistree : '+str(data.get('quantity'))+' ; quantite actuelle : '+str(quantity),flush=True)
+        if quantity!=data.get('quantity') or quantity<=0:
+            print('Quantite differente ou nulle : verifier le solde et le journal, aucune mutation effectuee.');return
+        stage='cotation de vente Jupiter';print('ETAPE : '+stage,flush=True)
+        q=await probe.quote(mint,SOL,quantity)
+        print('Cotation : OK ; segments : '+str(len(q['routePlan'])),flush=True)
+        stage='cours SOL/USD';print('ETAPE : '+stage,flush=True)
+        def price_data():
+            with urllib.request.urlopen('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd&include_last_updated_at=true',timeout=5) as response:return json.load(response)
+        probe.prices.update(await asyncio.to_thread(price_data),time.time())
+        value=Decimal(q['outAmount'])/10**9*probe.price();entry=Decimal(data['entry_usd'])
+        if not entry.is_finite() or entry<=0:raise TradeError('Reference entree invalide.')
+        reason=data.get('exit_reason') or ('SL' if value<=entry*Decimal('.20') else 'TP' if value>=entry*Decimal('1.75') else None)
+        print('Valeur de liquidation estimee USD : '+str(value.quantize(Decimal('.0001')))+
+              ' ; entree USD : '+str(entry)+' ; seuil ou decision sortie : '+str(reason or 'aucun'),flush=True)
+        if not reason:
+            print('Evaluation possible actuellement ; aucun seuil observe et aucune sortie deja demandee. Aucun ordre envoye.');return
+        stage='estimation priorite';print('ETAPE : '+stage,flush=True)
+        fees=await probe.rpc('getRecentPrioritizationFees',[[]])
+        values=sorted(int(r['prioritizationFee']) for r in fees if int(r['prioritizationFee'])>=0)
+        if not values:raise TradeError('Estimation de priorite indisponible.')
+        probe.priority=max(100_000,values[int((len(values)-1)*.75)]);probe.priority_at=time.monotonic()
+        stage='preparation et simulation non signee';print('ETAPE : '+stage,flush=True)
+        prepared=await probe.prepare(mint,'sell',quantity,q)
+        print('Preparation et simulation : OK ; frais reseau lamports : '+str(prepared['fee_lamports'])+
+              ' ; depot lamports : '+str(prepared['rent_lamports']),flush=True)
+        print('La sortie parait preparable a cet instant. Aucun ordre signe ou envoye ; aucun etat modifie.',flush=True)
+    except Exception as exc:
+        cause=str(exc) if isinstance(exc,TradeError) else 'HTTP '+str(exc.code) if isinstance(getattr(exc,'code',None),int) and 100<=exc.code<=599 else type(exc).__name__
+        profile=getattr(probe,'last_preparation_profile',None)
+        failed=profile[1].get('failed_phase') if profile else None
+        print('BLOCAGE : '+stage+(' / '+failed if failed else '')+' : '+cause,flush=True)
+        print('Diagnostic termine sans signature, ordre ou changement du journal.',flush=True)
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--setup',action='store_true')
@@ -862,9 +969,14 @@ def main():
     parser.add_argument('--report',action='store_true')
     parser.add_argument('--check',action='store_true',help='Verifier les acces en lecture seule, sans signature ou ordre')
     parser.add_argument('--update-jupiter',action='store_true',help='Remplacer localement la cle API Jupiter seule, sans toucher au wallet')
+    parser.add_argument('--diagnose-exit',action='store_true',help='Diagnostiquer la position ouverte sans signer/envoyer ni modifier le journal')
     args=parser.parse_args()
     try:
-        if args.update_jupiter:update_jupiter()
+        if args.diagnose_exit:
+            from wallet_alerts_ws import settings
+            _,_,http,_=settings(ROOT/'wallet_alerts_config.json')
+            asyncio.run(diagnose_exit(ROOT/'data/wallet_alerts_ws/live_trades.sqlite3',http))
+        elif args.update_jupiter:update_jupiter()
         elif args.setup or args.setup_if_missing:setup(reuse=args.setup_if_missing)
         elif args.check:
             from wallet_alerts_ws import settings

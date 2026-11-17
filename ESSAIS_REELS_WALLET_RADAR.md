@@ -1,4 +1,6 @@
-# Wallet Radar 2026.11.17.2 — premier essai reel
+# Wallet Radar 2026.11.17.3 — premier essai reel
+
+En cas de `SORTIE_INDISPONIBLE`, garder le processus actif et lancer le **diagnostic12 dans un second menu**, sans arret ni ordre : [DIAGNOSTIC_SORTIE_WALLET_RADAR.md](DIAGNOSTIC_SORTIE_WALLET_RADAR.md).
 
 Envoi prioritaire, cache de blockhash recent et profilage des attentes : [LATENCE_ENVOI_WALLET_RADAR.md](LATENCE_ENVOI_WALLET_RADAR.md). Les plafonds et controles d'execution sont conserves.
 
@@ -45,7 +47,7 @@ Le suivi SL/TP interroge les cotations, avec attente de deux secondes entre tour
 3. Pour une premiere installation, lancer `WALLET_RADAR.cmd`, choisir **7**. Les dependances sont installees sur le VPS ; cle privee wallet saisie masquee et cle API Jupiter saisie visible selon le choix de l'utilisateur. Les cles existantes sont reutilisees. **Ne jamais les envoyer dans une conversation, capture, argument de commande ou fichier a televerser.** L'adresse derivee de la cle doit correspondre exactement au wallet ci-dessus. Une simple mise a jour ne demande pas de refaire cette configuration.
 4. Le controle verifie le wallet, le RPC, une cotation et la construction d'instructions SOL/USDC **sans signature ni envoi**. Ne pas lancer 8 si cette verification echoue. Une reussite ne prouve pas qu'un futur token aura une route.
 5. Alimenter le wallet dedie en SOL pour l'essai, dans l'enveloppe souhaitee de 15 USD. Les retraits/depots manuels ne remettent pas le compteur du bot a zero. Une preparation d'achat requiert assez de SOL pour toute son enveloppe reservee.
-6. Chrome et l'extension ouverts, choisir **8**. La banniere doit afficher **2026.11.17.2 — ESSAI REEL**. Ce choix peut effectivement acheter/vendre avec les fonds du wallet.
+6. Chrome et l'extension ouverts, choisir **8**. La banniere doit afficher **2026.11.17.3 — ESSAI REEL**. Ce choix peut effectivement acheter/vendre avec les fonds du wallet. Une utilisation du diagnostic12 pendant une position ouverte ne demande pas de redemarrer le mode8.
 7. **9** dans un second menu affiche les transactions et les delais. **5** arrete le processus, donc suspend aussi les sorties : verifier la position avant de fermer. Apres un arret, le menu 8 reprend le suivi des transactions/positions persistantes.
 
 Fichiers prives sur le VPS : `/home/bot/wallet-alerts/private_wallet_radar/` (0700), `wallet.json` et `jupiter_api_key.txt` (0600). Exclus de Git et des archives. Ils ne sont jamais transmis au PC par le menu. La cle du wallet reste accessible au processus local qui doit signer ; l'acces au compte VPS doit rester prive.

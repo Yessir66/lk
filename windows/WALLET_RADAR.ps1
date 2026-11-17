@@ -54,6 +54,7 @@ try {
         Write-Host '9 - Afficher le bilan des transactions REELLES'
         Write-Host '10 - Verifier les acces REELS sans ordre ni ressaisie des cles'
         Write-Host '11 - Remplacer seulement la cle API Jupiter (wallet conserve)'
+        Write-Host '12 - Diagnostiquer la sortie de la position ouverte (sans ordre)'
         Write-Host '0 - Quitter'
         $choice = Read-Host 'Ton choix'
         if ($choice -eq '0') { break }
@@ -95,7 +96,11 @@ try {
                 Send-RadarScripts
                 & ssh.exe -t bot@2.24.62.69 '/home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_radar_live.py --update-jupiter && /home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_radar_live.py --check'
                 if ($LASTEXITCODE -ne 0) { throw 'Verification Jupiter incomplete ; cle wallet conservee.' }
-            } else { Write-Host 'Choisis un numero de 0 a 11.' }
+            } elseif ($choice -eq '12') {
+                Send-RadarScripts -AllowRunning
+                & ssh.exe -t bot@2.24.62.69 '/home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_radar_live.py --diagnose-exit'
+                if ($LASTEXITCODE -ne 0) { throw 'Diagnostic sortie interrompu ; aucun ordre demande.' }
+            } else { Write-Host 'Choisis un numero de 0 a 12.' }
         } catch { Write-Host $_.Exception.Message -ForegroundColor Red }
     }
 } catch {

@@ -435,6 +435,17 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.e.ledger.get(MINT)['state'],'manual')
         self.e.jup.assert_not_awaited();self.e.transport.send.assert_not_called()
 
+    async def test_exit_failure_names_its_stage_without_claiming_sale(self):
+        self.e.ledger.save(MINT,'open',{'quantity':42,'entry_usd':'1'},reserve=live.ENVELOPE)
+        self.e.holdings=AsyncMock(return_value=42)
+        self.e.quote=AsyncMock(side_effect=live.TradeError('Jupiter/cotation : NO_ROUTES_FOUND'))
+        task=asyncio.create_task(self.e.positions());await asyncio.sleep(.01)
+        task.cancel();await asyncio.gather(task,return_exceptions=True)
+        notice=json.loads(self.e.ledger.db.execute("SELECT data FROM notices WHERE code='SORTIE_INDISPONIBLE'").fetchone()[0])
+        self.assertEqual(notice['stage'],'cotation de vente Jupiter')
+        self.assertIn('NO_ROUTES_FOUND',notice['message']);self.assertEqual(self.e.ledger.get(MINT)['state'],'open')
+        self.e.transport.send.assert_not_called()
+
     async def test_preparation_checks_fees_and_simulation_before_local_signing(self):
         from solders.keypair import Keypair
         from solders.hash import Hash
@@ -575,6 +586,56 @@ class SetupAndCheckTest(unittest.TestCase):
         for step in ('1/3','2/3','3/3'):self.assertIn('CONTROLE '+step,output.getvalue())
         key.sign_message.assert_not_called();transport.send.assert_not_called();setup.assert_not_called();ledger.assert_not_called()
         self.assertNotIn('FAKE_TEST_KEY',output.getvalue())
+
+
+class ExitDiagnosticTest(unittest.IsolatedAsyncioTestCase):
+    async def test_full_exit_diagnostic_never_signs_sends_or_modifies_journal(self):
+        from solders.hash import Hash
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'live.sqlite3';ledger=live.Ledger(path)
+            ledger.save(MINT,'open',{'quantity':42,'entry_usd':'1','exit_reason':'SL'},reserve=live.ENVELOPE)
+            ledger.db.close();before=path.read_bytes();stamp=path.stat().st_mtime_ns
+            transport=Mock();q=quote(MINT,live.SOL,42);transport.jup.side_effect=[q,payload(q)]
+            def rpc(method,params,capture):
+                if method=='getTokenAccountsByOwner':return {'value':[{'account':{'data':{'parsed':{'info':{'tokenAmount':{'amount':'42'}}}}}}]}
+                if method=='getRecentPrioritizationFees':return [{'prioritizationFee':1}]
+                if method=='getLatestBlockhash':return {'value':{'blockhash':str(Hash.default()),'lastValidBlockHeight':100}}
+                if method=='getFeeForMessage':return {'value':5000}
+                if method=='getBalance':return {'value':500000000}
+                if method=='simulateTransaction':return {'value':{'err':None,'accounts':[{'owner':live.SYSTEM,'lamports':500000100}]}}
+                raise AssertionError('Forbidden RPC: '+method)
+            transport.rpc.side_effect=rpc;output=StringIO()
+            price=StringIO(json.dumps({'solana':{'usd':100,'last_updated_at':time.time()}}))
+            with patch.object(live,'ExitReadOnlyTransport',return_value=transport),patch.object(live,'secure_read',return_value='FAKE_TEST_KEY'),patch.object(live,'load_signer',side_effect=AssertionError('No wallet key read')),patch.object(live.Executor,'signed',side_effect=AssertionError('No signing')),patch.object(live,'Ledger',side_effect=AssertionError('No journal mutation')),patch('urllib.request.urlopen',return_value=price),patch('sys.stdout',output):
+                await live.diagnose_exit(path,'https://unused.invalid')
+            transport.send.assert_not_called();self.assertIn('Preparation et simulation : OK',output.getvalue())
+            self.assertNotIn('FAKE_TEST_KEY',output.getvalue());self.assertEqual(path.read_bytes(),before)
+            self.assertEqual(path.stat().st_mtime_ns,stamp)
+            for call in transport.rpc.call_args_list:self.assertIn(call.args[0],live.ExitReadOnlyTransport.READ_METHODS if isinstance(live.ExitReadOnlyTransport,type) else [])
+
+    async def test_unavailable_quote_is_explained_without_later_price_or_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'live.sqlite3';ledger=live.Ledger(path)
+            ledger.save(MINT,'open',{'quantity':42,'entry_usd':'1'},reserve=live.ENVELOPE);ledger.db.close()
+            before=path.read_bytes();transport=Mock()
+            transport.rpc.return_value={'value':[{'account':{'data':{'parsed':{'info':{'tokenAmount':{'amount':'42'}}}}}}]}
+            transport.jup.side_effect=live.TradeError('Jupiter/cotation : NO_ROUTES_FOUND')
+            output=StringIO()
+            with patch.object(live,'ExitReadOnlyTransport',return_value=transport),patch.object(live,'secure_read',return_value='FAKE'),patch('sys.stdout',output),patch('urllib.request.urlopen') as price:
+                await live.diagnose_exit(path,'https://unused.invalid')
+            self.assertIn('BLOCAGE : cotation de vente Jupiter',output.getvalue());self.assertIn('NO_ROUTES_FOUND',output.getvalue())
+            price.assert_not_called();transport.send.assert_not_called();self.assertEqual(path.read_bytes(),before)
+
+    async def test_read_only_transport_rejects_mutations_and_reports_safe_simulation_code(self):
+        transport=live.ExitReadOnlyTransport('https://unused.invalid','FAKE')
+        with patch.object(transport,'request') as network:
+            with self.assertRaises(live.TradeError):transport.rpc('sendTransaction',[])
+            with self.assertRaises(live.TradeError):transport.send('fake')
+            with self.assertRaises(live.TradeError):transport.jup('/swap/v1/swap',{})
+            network.assert_not_called()
+        self.assertEqual(transport.rpc_interval,1)
+        self.assertIn('6001',str(live.simulation_error({'InstructionError':[2,{'Custom':6001}]})))
+        self.assertNotIn('PRIVATE',str(live.simulation_error({'InstructionError':[2,'PRIVATE_SECRET']})))
 
 
 if __name__=='__main__':unittest.main()

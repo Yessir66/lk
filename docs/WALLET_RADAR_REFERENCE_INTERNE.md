@@ -15,7 +15,7 @@ Cette fiche décrit le dernier état connu ; le code et la configuration du dép
 
 ## État connu et wallet demandé
 
-- Version serveur du dépôt : **2026.11.17.2**, constante `VERSION` dans `scripts/wallet_alerts_ws.py` et `EXECUTION_VERSION` dans `scripts/wallet_radar_live.py` (mettre a jour ensemble).
+- Version serveur du dépôt : **2026.11.17.3**, constante `VERSION` dans `scripts/wallet_alerts_ws.py` et `EXECUTION_VERSION` dans `scripts/wallet_radar_live.py` (mettre a jour ensemble).
 - Extension Chrome : version **1.0.0**, dossier `chrome-gmgn`.
 - Dernière liste demandée : **BBIG BOSS uniquement**, adresse publique :
   `BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp`.
@@ -88,6 +88,7 @@ Menu principal Windows :
 - **9** : lire le bilan du journal reel sans ordre ni reinitialisation.
 - **10** : transferer puis controler les acces RPC/Jupiter avec les cles deja stockees, sans signature/envoi ni ressaisie.
 - **11** : remplacer uniquement la cle API Jupiter par saisie locale **visible** (demande utilisateur), puis controle ; ne lit/reecrit jamais wallet.json.
+- **12** : diagnostic sortie en processus separe, journal SQLiteRO sans mutation, RPC1/s, ni lectureclewallet, ni signature, ni envoi. Possible pendant mode8 ; ouvrirsecondmenu, nepasstopperprocessus pour l'utiliser.
 - **0** : quitter le menu.
 
 Dans la gestion distante des wallets :
@@ -224,6 +225,8 @@ Autres cas :
 Les scripts `discord_*` sont partagés avec d'autres bots : ne pas changer leurs listes globales pour remplacer seulement la liste de Wallet Radar.
 
 ## Vérification et livraison
+
+Version 2026.11.17.3 : utilisateur avait ferme fenetre, bilan9 toujoursopen, tentatives8 bloqueesverrou. Repriseguide5puis8 ; capture5«aucuneinstanceactive» puis8demarre17.2. Notification ensuiteSORTIE_INDISPONIBLE21:30/21:31 surpositionDSrh... ; nouvelleNON_SUPPORTE21:41AFk... autretoken (aucuneentree, ne prouvepas sortie). Cause de SORTIE encoreinconnue, messagegeneral ne prouvepas SL/TPfranchi ou venteenvoyee/confirmee. Men12 `--diagnose-exit` copieCSV4scriptsetexecutehelper pendantmode8 ; snapshot SQLiteURI modeRO fermeavantreseau, quantiteqteactuelle→quotevente→prixSOLfrais→seuil/exit_reasonsticky. Si pending: statutseul. Si pasdeseuil: retour evaluationOKsansprepare. Sinon Executor.__new__ sanssignataire/clewallet/Ledger, ReadOnlyTransport listeRPCrestreinte+sendinterdit, RPC1/s (normalreste3), prepare SELLsanssigned etsimulationSigVerifyFalse. Prix public CoinGecko unefois, metaSOLneprouvepasancienetat. Journal/signatures/enveloppesinchangés. Futuresnotifs runtime ajoutstage+TradeErrorfiltre, simulationInstructionError index/codeCustomnumerique whitelist sanslogsprives. **381 tests passent tous**, PowerShell7.5.4portable redownload/tmp/powershell-radar/pwsh pourinclure4testsNative etvalidernouveaumenu12viaSCP/SSHmock.4nouveaxtests diagreadonlysansloadsigner/sign/Ledger etbyte/mtimeDBimmuable, quoteerreurlocalisee, transportmutationinterdite/simcodefiltre, runtimestage. Guide `DIAGNOSTIC_SORTIE_WALLET_RADAR.md`, archive `wallet_radar_diagnostic_sortie_2026.11.17.3.zip`. NEPASdemander5/restart tantqueopen pour cecontrole : extrairependantprocessusactif et ouvrirsecondmenu12 ; ancienprocessusreste17.2inmemory, diag3independant. CauseVPSnonconnue, pasventeconfirmee ; attendreBLOCAGE/ETAPE avantcorrectionciblee.
 
 Version 2026.11.17.2 : utilisateur a montre premier achat `open`, `sell:-`, reserve2.40/15USD ; detection_decision1.011s, preparation1734ms, decision_envoi1025ms, confirmationobservee1110ms => envoi2.036s apres detection, confirmationlocale3.146s. Userdemande reduire validation→envoi et dit«allons y». Pasdepreuve de l'attente dominante dans ancienprofil : ne pas l'inventer. Code ajoute CVprioriteRPC0envoi/1preparation/2lecturefond, quota3/s+pause42960s preserves, paspreemptionHTTPenvole. Cacheblockhash refresh5s, lecturecacheTTL10s, age15smaxavant signature ; Hash/heightvalides, miss/perimerelecture, lockcoalescence. Fee/simRPC preserves. Retireuniquement duplicate save preHTTP : exactsignature durable+enveloppe dejaexigees, timestamp/statspostHTTP preserventstate plusrecent (courseconfirmation). ContextVarprofileRPC/Jup parprepare, phases/queue/quota/HTTP, filedecision/attenterestante/checksign/journal/envoiquota. Bilan9 backwardcompatible+5derniersachatsignores de cetteexecutionversion, pasretroprofil ancienachat. MesuresHTTPapresrequest_at distinctesdu tempsavantdepart. **377 tests,4PowerShellfacultatifsignores faute outil ;373passent**, 6nouveauxetguardsfraicheursource tests. Archive `wallet_radar_latence_2026.11.17.2.zip`, guide `LATENCE_ENVOI_WALLET_RADAR.md`. Pasordrecloud, gainVPSnonmesure. Attendrecloturepositionavant5/0installation ; signatures,budgetpersistes,repriseetats ; compteurconditionsrecommence maispasbudget. Ne pasrecommander augmenterplafondfrais pour optimiser latence sans demande.
 
