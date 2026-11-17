@@ -1,5 +1,7 @@
 # Wallet Radar
 
+**2026.11.17.4 : menu13, rapprochement d'une vente manuelle verifiee.** Cloture le suivi local apres preuve de vente totale finalisee, conserve budget et signatures. Debloque les nouveaux achats si le mode reel est actif. Voir [RAPPROCHEMENT_VENTE_MANUELLE.md](RAPPROCHEMENT_VENTE_MANUELLE.md).
+
 **2026.11.17.3 : menu12, diagnostic de sortie sans arreter le mode reel et sans ordre.** Voir [DIAGNOSTIC_SORTIE_WALLET_RADAR.md](DIAGNOSTIC_SORTIE_WALLET_RADAR.md). Ouvrir un second menu pour l'utiliser pendant le suivi de la position.
 
 **2026.11.17.2 : envoi RPC prioritaire, blockhash precharge et mesures detaillees dans9.** Voir [LATENCE_ENVOI_WALLET_RADAR.md](LATENCE_ENVOI_WALLET_RADAR.md). Installer apres cloture d'une eventuelle position pour ne pas suspendre son suivi SL/TP.

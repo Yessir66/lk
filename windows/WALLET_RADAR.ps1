@@ -55,6 +55,7 @@ try {
         Write-Host '10 - Verifier les acces REELS sans ordre ni ressaisie des cles'
         Write-Host '11 - Remplacer seulement la cle API Jupiter (wallet conserve)'
         Write-Host '12 - Diagnostiquer la sortie de la position ouverte (sans ordre)'
+        Write-Host '13 - Rapprocher une vente manuelle verifiee et debloquer les achats (sans ordre)'
         Write-Host '0 - Quitter'
         $choice = Read-Host 'Ton choix'
         if ($choice -eq '0') { break }
@@ -100,7 +101,11 @@ try {
                 Send-RadarScripts -AllowRunning
                 & ssh.exe -t bot@2.24.62.69 '/home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_radar_live.py --diagnose-exit'
                 if ($LASTEXITCODE -ne 0) { throw 'Diagnostic sortie interrompu ; aucun ordre demande.' }
-            } else { Write-Host 'Choisis un numero de 0 a 12.' }
+            } elseif ($choice -eq '13') {
+                Send-RadarScripts -AllowRunning
+                & ssh.exe -t bot@2.24.62.69 '/home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/wallet_radar_live.py --reconcile-external-sale'
+                if ($LASTEXITCODE -ne 0) { throw 'Rapprochement incomplet : journal conserve, aucun ordre envoye.' }
+            } else { Write-Host 'Choisis un numero de 0 a 13.' }
         } catch { Write-Host $_.Exception.Message -ForegroundColor Red }
     }
 } catch {

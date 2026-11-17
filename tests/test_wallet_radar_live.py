@@ -638,4 +638,117 @@ class ExitDiagnosticTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('PRIVATE',str(live.simulation_error({'InstructionError':[2,'PRIVATE_SECRET']})))
 
 
+class ExternalSaleTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        from solders.signature import Signature
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.path=Path(self.temp.name)/'live.sqlite3'
+        self.buy=str(Signature.from_bytes(bytes([1])*64));self.sell=str(Signature.from_bytes(bytes([2])*64))
+        self.data={'quantity':42,'entry_usd':'1','buy':{'signature':self.buy,'raw':'preserved'},
+                   'sell':{'signature':'earlier_failed_attempt'},'sell_attempts':1}
+        ledger=live.Ledger(self.path);ledger.save(MINT,'manual',self.data,reserve=live.ENVELOPE);ledger.db.close()
+        self.buy_tx=self.tx('buy',self.buy,10);self.sell_tx=self.tx('sell',self.sell,20)
+        self.history=[{'signature':self.sell,'slot':20,'err':None}]
+        self.holdings=[0,0];self.transport=Mock();self.transport.rpc.side_effect=self.rpc
+
+    def tx(self,side,signature,slot):
+        before,after=(0,42) if side=='buy' else (42,0)
+        token=live.associated(MINT);pool=public_key(bytes([7])*32)
+        balance=lambda amount:dict(accountIndex=1,mint=MINT,owner=live.OWNER,uiTokenAmount={'amount':str(amount),'decimals':6})
+        source,dest=(pool,token) if side=='buy' else (token,pool)
+        return {'slot':slot,'blockTime':1000+slot,'transaction':{'signatures':[signature],'message':{
+            'accountKeys':[{'pubkey':live.OWNER,'signer':True},{'pubkey':token,'signer':False}],
+            'instructions':[{'programId':live.JUP}]}},'meta':{'err':None,'fee':5000,
+            'preTokenBalances':[balance(before)],'postTokenBalances':[balance(after)],
+            'preBalances':[1000000000,2000000],'postBalances':[900000000 if side=='buy' else 1100000000,2000000],
+            'logMessages':['Program log: Instruction: Route'],'innerInstructions':[{'index':0,'instructions':[
+                {'programId':live.TOKEN,'parsed':{'type':'transfer','info':{'source':source,'destination':dest,'amount':'42'}}}]}]}}
+
+    def rpc(self,method,params,capture=None):
+        if method=='getTokenAccountsByOwner':
+            amount=self.holdings.pop(0)
+            return {'value':[{'account':{'data':{'parsed':{'info':{'tokenAmount':{'amount':str(amount)}}}}}}]}
+        if method=='getTransaction':
+            self.assertEqual(params[1]['commitment'],'finalized')
+            return self.buy_tx if params[0]==self.buy else self.sell_tx
+        if method=='getSignaturesForAddress':
+            self.assertEqual(params,[live.OWNER,{'limit':20,'commitment':'finalized','until':self.buy}])
+            return self.history
+        raise AssertionError('Forbidden RPC: '+method)
+
+    def row(self):
+        import sqlite3
+        with sqlite3.connect(self.path) as db:
+            db.row_factory=sqlite3.Row
+            return dict(db.execute('SELECT * FROM trades').fetchone())
+
+    async def run_probe(self):
+        with patch.object(live,'ExitReadOnlyTransport',return_value=self.transport),\
+             patch.object(live,'load_signer',side_effect=AssertionError('No wallet key')),\
+             patch.object(live,'secure_read',side_effect=AssertionError('No API key')),\
+             patch.object(live.Executor,'signed',side_effect=AssertionError('No signature')),\
+             patch.object(live,'Ledger',side_effect=AssertionError('No ledger initialization')),patch('sys.stdout',StringIO()):
+            await live.reconcile_external_sale(self.path,'https://unused.invalid')
+        self.transport.send.assert_not_called();self.transport.jup.assert_not_called()
+
+    async def test_finalized_full_sale_closes_only_local_state_preserves_budget_and_packets(self):
+        await self.run_probe()
+        row=self.row();self.assertEqual(row['state'],'closed');self.assertEqual(Decimal(row['reserved']),live.ENVELOPE)
+        data=json.loads(row['data'])
+        for field in ('quantity','entry_usd','buy','sell','sell_attempts'):self.assertEqual(data[field],self.data[field])
+        self.assertEqual(data['external_sale']['signature'],self.sell);self.assertEqual(data['exit_reason'],'MANUAL_EXTERNAL')
+        # Closed mint remains protected from another buy; the reserve remains used.
+        ledger=live.Ledger(self.path);self.addCleanup(ledger.db.close)
+        self.assertEqual(ledger.used(),live.ENVELOPE);self.assertFalse(ledger.active())
+        with self.assertRaises(live.TradeError):ledger.reserve(MINT,{})
+
+    async def test_no_proof_never_changes_database(self):
+        import copy
+        original=copy.deepcopy(self.sell_tx)
+        for case in ('transfer','failed','old','partial','wrong_owner','wrong_signature','no_sol','unavailable','wrong_initial_buy'):
+            with self.subTest(case=case):
+                self.sell_tx=copy.deepcopy(original);self.holdings=[0,0];self.buy_tx=self.tx('buy',self.buy,10)
+                if case=='transfer':self.sell_tx['meta']['innerInstructions']=[]
+                if case=='failed':self.sell_tx['meta']['err']={'InstructionError':[0,'invalid']}
+                if case=='old':self.sell_tx['slot']=9
+                if case=='partial':self.sell_tx['meta']['postTokenBalances'][0]['uiTokenAmount']['amount']='1'
+                if case=='wrong_owner':self.sell_tx['transaction']['message']['accountKeys'][0]['signer']=False
+                if case=='wrong_signature':self.sell_tx['transaction']['signatures']=[self.buy]
+                if case=='no_sol':self.sell_tx['meta']['postBalances'][0]=999995000
+                if case=='unavailable':self.sell_tx=None
+                if case=='wrong_initial_buy':self.buy_tx['meta']['postTokenBalances'][0]['uiTokenAmount']['amount']='41'
+                before=self.path.read_bytes();stamp=self.path.stat().st_mtime_ns
+                with self.assertRaises(live.TradeError):await self.run_probe()
+                self.assertEqual(self.path.read_bytes(),before);self.assertEqual(self.path.stat().st_mtime_ns,stamp)
+
+    async def test_nonzero_or_reappearing_balance_blocks_reconciliation(self):
+        for holdings in ([1],[0,1]):
+            self.holdings=list(holdings);before=self.path.read_bytes()
+            with self.assertRaises(live.TradeError):await self.run_probe()
+            self.assertEqual(self.path.read_bytes(),before)
+
+    async def test_concurrent_ledger_change_is_not_overwritten(self):
+        original=self.rpc
+        def rpc(method,params,capture=None):
+            value=original(method,params,capture)
+            if method=='getTokenAccountsByOwner' and not self.holdings:
+                import sqlite3
+                with sqlite3.connect(self.path) as db:db.execute("UPDATE trades SET data=?",(json.dumps(dict(self.data,external_note='changed')),))
+            return value
+        self.transport.rpc.side_effect=rpc
+        with self.assertRaises(live.TradeError):await self.run_probe()
+        row=self.row();self.assertEqual(row['state'],'manual');self.assertIn('external_note',json.loads(row['data']))
+
+    async def test_search_is_bounded_and_open_or_pending_rows_are_never_closed(self):
+        self.history=self.history*30;self.sell_tx=None
+        with self.assertRaises(live.TradeError):await self.run_probe()
+        self.assertEqual(sum(call.args[0]=='getTransaction' for call in self.transport.rpc.call_args_list),9)
+        import sqlite3
+        for state in ('open','buy_pending','sell_pending'):
+            with sqlite3.connect(self.path) as db:db.execute('UPDATE trades SET state=?',(state,))
+            self.transport.rpc.reset_mock()
+            with self.assertRaises(live.TradeError):await self.run_probe()
+            self.transport.rpc.assert_not_called();self.assertEqual(self.row()['state'],state)
+
+
 if __name__=='__main__':unittest.main()

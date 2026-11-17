@@ -30,7 +30,7 @@ import urllib.request
 from wallet_radar_paper import PaperObserver, SOL, BBIG, USDC
 
 ROOT=Path(__file__).resolve().parents[1]
-EXECUTION_VERSION='2026.11.17.3'
+EXECUTION_VERSION='2026.11.17.4'
 OWNER='E23vfW9oA9CnANP5wzimpo3DM3WQtMuxzUP4oxFp97Jq'
 PRIVATE=ROOT/'private_wallet_radar'
 JUP='JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4'
@@ -882,7 +882,8 @@ class LiveObserver(PaperObserver):
 class ExitReadOnlyTransport(Transport):
     """Diagnostic access cannot submit transactions, even by accidental RPC call."""
     READ_METHODS={'getTokenAccountsByOwner','getRecentPrioritizationFees','getLatestBlockhash','getFeeForMessage',
-                  'getMultipleAccounts','getBalance','simulateTransaction','getSignatureStatuses','getBlockHeight'}
+                  'getMultipleAccounts','getBalance','simulateTransaction','getSignatureStatuses','getBlockHeight',
+                  'getTransaction','getSignaturesForAddress'}
     def __init__(self,*args):
         super().__init__(*args);self.rpc_interval=1
 
@@ -962,6 +963,82 @@ async def diagnose_exit(path,http):
         print('Diagnostic termine sans signature, ordre ou changement du journal.',flush=True)
 
 
+async def reconcile_external_sale(path,http):
+    """Close only a manual row after a finalized full swap and a fresh zero balance.
+
+    Network access is read-only. The sole mutation is a compare-and-swap of the
+    original ledger snapshot; reserved budget and all previous packets survive.
+    """
+    from discord_token_analysis import parse_trade
+    from solders.signature import Signature
+    path=Path(path)
+    if path.is_symlink() or not path.is_file():raise TradeError('Journal reel absent ou symbolique : rapprochement refuse.')
+    db=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True);db.row_factory=sqlite3.Row
+    try:rows=[dict(row) for row in db.execute("SELECT * FROM trades WHERE state IN ('open','manual','buy_pending','sell_pending')")]
+    finally:db.close()
+    if not rows:print('Aucune position active a rapprocher.');return
+    if len(rows)!=1 or rows[0]['state']!='manual':
+        raise TradeError('Seule une position en intervention manuelle peut etre rapprochee ; utiliser le diagnostic 12.')
+    row=rows[0];data=json.loads(row['data']);mint=row['mint'];quantity=data.get('quantity')
+    if type(quantity) is not int or quantity<=0:raise TradeError('Quantite enregistree invalide.')
+    buy_signature=data.get('buy',{}).get('signature')
+    Signature.from_string(buy_signature)
+    # No Jupiter key and no wallet key needed for historical proof.
+    probe=Executor.__new__(Executor);probe.transport=ExitReadOnlyTransport(http,'')
+    print('RAPPROCHEMENT : lectures RPC uniquement ; aucun ordre ni signature nouvelle.',flush=True)
+    print('TOKEN : '+mint,flush=True)
+    print('Une cloture verifiee debloque les nouveaux achats si le mode reel est actif.',flush=True)
+    if await probe.holdings(mint)!=0:raise TradeError('Solde token non nul : position manuelle conservee.')
+
+    async def transaction(signature):
+        Signature.from_string(signature)
+        result=await probe.rpc('getTransaction',[signature,{'encoding':'jsonParsed','commitment':'finalized','maxSupportedTransactionVersion':1}])
+        if not result or result.get('meta',{}).get('err') is not None:return None
+        if (result.get('transaction') or {}).get('signatures',[None])[0]!=signature:return None
+        return result
+
+    def token_balance(tx,side):
+        return sum(int(b['uiTokenAmount']['amount']) for b in tx['meta'].get(side,[])
+                   if b.get('owner')==OWNER and b.get('mint')==mint)
+
+    buy=await transaction(buy_signature)
+    proof=parse_trade(buy,OWNER,mint,buy_signature) if buy else None
+    if (not proof or proof['kind']!='buy' or proof['swap_proof_version']!=1 or proof['raw']!=quantity
+            or token_balance(buy,'preTokenBalances')!=0 or token_balance(buy,'postTokenBalances')!=quantity):
+        raise TradeError('Achat initial non verifiable ou quantite differente : journal conserve.')
+    buy_slot=buy.get('slot')
+    if type(buy_slot) is not int:raise TradeError('Slot achat indisponible : journal conserve.')
+    recent=await probe.rpc('getSignaturesForAddress',[OWNER,{'limit':20,'commitment':'finalized','until':buy_signature}])
+    found=None;checked=0
+    for item in recent[:20]:
+        if item.get('err') is not None or type(item.get('slot')) is not int or item['slot']<=buy_slot:continue
+        if checked>=8:break
+        checked+=1;signature=item['signature'];tx=await transaction(signature)
+        if not tx or type(tx.get('slot')) is not int or tx['slot']<=buy_slot:continue
+        trade=parse_trade(tx,OWNER,mint,signature)
+        if (trade and trade['kind']=='sell' and trade['swap_proof_version']==1
+                and trade['raw']==quantity and Decimal(trade['quotes'].get('SOL','0'))>0
+                and token_balance(tx,'preTokenBalances')==quantity and token_balance(tx,'postTokenBalances')==0):
+            found={'signature':signature,'slot':tx['slot'],'quantity':quantity,'verified_at':time.time()};break
+    if not found:
+        raise TradeError('Vente totale non prouvee dans la recherche bornee (20 signatures, 8 transactions). Journal conserve ; fournir le lien public de vente pour poursuivre.')
+    if await probe.holdings(mint)!=0:raise TradeError('Solde token modifie pendant le controle : journal conserve.')
+    updated=dict(data,external_sale=found,exit_reason='MANUAL_EXTERNAL',closed_at=time.time())
+    # Preserve any earlier sell packet, including its signature. Report external
+    # provenance separately instead of inventing a bot submission.
+    db=sqlite3.connect(path.resolve().as_uri()+'?mode=rw',uri=True)
+    try:
+        db.execute('PRAGMA synchronous=FULL');db.execute('BEGIN IMMEDIATE')
+        result=db.execute("UPDATE trades SET state='closed',data=? WHERE mint=? AND state='manual' AND reserved=? AND data=?",
+                          (json.dumps(updated),mint,row['reserved'],row['data']))
+        if result.rowcount!=1:raise TradeError('Journal modifie pendant le controle : rapprochement annule, relancer le menu 13.')
+        db.commit()
+    except BaseException:db.rollback();raise
+    finally:db.close()
+    print('POSITION CLOTUREE : vente externe finalisee verifiee : '+found['signature'],flush=True)
+    print('Budget reserve et anciennes signatures conserves. Aucun ordre envoye.',flush=True)
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--setup',action='store_true')
@@ -970,9 +1047,14 @@ def main():
     parser.add_argument('--check',action='store_true',help='Verifier les acces en lecture seule, sans signature ou ordre')
     parser.add_argument('--update-jupiter',action='store_true',help='Remplacer localement la cle API Jupiter seule, sans toucher au wallet')
     parser.add_argument('--diagnose-exit',action='store_true',help='Diagnostiquer la position ouverte sans signer/envoyer ni modifier le journal')
+    parser.add_argument('--reconcile-external-sale',action='store_true',help='Cloturer le suivi manuel apres preuve RPC de vente totale, sans ordre')
     args=parser.parse_args()
     try:
-        if args.diagnose_exit:
+        if args.reconcile_external_sale:
+            from wallet_alerts_ws import settings
+            _,_,http,_=settings(ROOT/'wallet_alerts_config.json')
+            asyncio.run(reconcile_external_sale(ROOT/'data/wallet_alerts_ws/live_trades.sqlite3',http))
+        elif args.diagnose_exit:
             from wallet_alerts_ws import settings
             _,_,http,_=settings(ROOT/'wallet_alerts_config.json')
             asyncio.run(diagnose_exit(ROOT/'data/wallet_alerts_ws/live_trades.sqlite3',http))
@@ -1010,6 +1092,7 @@ def main():
             for mint,state,data in db.execute('SELECT mint,state,data FROM trades'):
                 value=json.loads(data);buy=value.get('buy',{})
                 print(mint,state,'buy:',buy.get('signature','-'),'sell:',value.get('sell',{}).get('signature','-'))
+                if value.get('external_sale'):print('Vente externe verifiee :',value['external_sale']['signature'])
                 metrics={'detection_decision_s':value.get('decision_elapsed_s'),'preparation_ms':value.get('prepare_ms')}
                 if buy.get('send_at') and value.get('decision_wall'):metrics['decision_envoi_HTTP_ms']=round((buy['send_at']-value['decision_wall'])*1000)
                 if buy.get('send_at') and value.get('confirmed_at'):metrics['envoi_confirmation_observee_ms']=round((value['confirmed_at']-buy['send_at'])*1000)

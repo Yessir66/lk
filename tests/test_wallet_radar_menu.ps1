@@ -54,9 +54,9 @@ try {
     & $menu
     if ($global:RadarCalls.Count -ne 2 -or $global:RadarCalls[0].kind -cne 'scp' -or $global:RadarCalls[1].values[-1] -notlike '*--paper-diagnose') { throw 'Read-only diagnostics dispatch missing' }
     $global:RadarCalls.Clear()
-    foreach ($answer in @('7','8','9','10','11','12','0')) { $global:RadarAnswers.Enqueue($answer) }
+    foreach ($answer in @('7','8','9','10','11','12','13','0')) { $global:RadarAnswers.Enqueue($answer) }
     & $menu
-    if ($global:RadarCalls.Count -ne 11 -or $global:RadarCalls[1].values[-1] -notlike '*--setup-if-missing*--check' -or $global:RadarCalls[3].values[-1] -cne '-LiveBuys' -or $global:RadarCalls[4].values[-1] -notlike '*--report' -or $global:RadarCalls[6].values[-1] -notlike '*--check' -or $global:RadarCalls[8].values[-1] -notlike '*--update-jupiter*--check' -or $global:RadarCalls[10].values[-1] -notlike '*--diagnose-exit') { throw 'Real setup/start/report/check/update/exit diagnostic dispatch missing' }
+    if ($global:RadarCalls.Count -ne 13 -or $global:RadarCalls[1].values[-1] -notlike '*--setup-if-missing*--check' -or $global:RadarCalls[3].values[-1] -cne '-LiveBuys' -or $global:RadarCalls[4].values[-1] -notlike '*--report' -or $global:RadarCalls[6].values[-1] -notlike '*--check' -or $global:RadarCalls[8].values[-1] -notlike '*--update-jupiter*--check' -or $global:RadarCalls[10].values[-1] -notlike '*--diagnose-exit' -or $global:RadarCalls[12].values[-1] -notlike '*--reconcile-external-sale') { throw 'Real setup/start/report/check/update/exit/reconciliation dispatch missing' }
     Write-Host 'Wallet Radar Windows menu tests OK; all external actions mocked.'
 } finally {
     Remove-Item Function:\scp.exe,Function:\ssh.exe,Function:\powershell.exe,Function:\Read-Host -ErrorAction SilentlyContinue
