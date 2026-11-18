@@ -105,6 +105,36 @@ class BudgetTest(unittest.TestCase):
 
 
 class InstructionTest(unittest.TestCase):
+    def test_send_preflight_matches_confirmed_blockhash_and_keeps_existing_limits(self):
+        transport=live.Transport('https://unused.invalid','FAKE')
+        with patch.object(transport,'request',return_value={'result':'fake'}) as request:
+            self.assertEqual(transport.send('FAKE_PACKET',123,{}),'fake')
+        options=request.call_args.args[1]['params'][1]
+        self.assertEqual(options,{'encoding':'base64','skipPreflight':False,'preflightCommitment':'confirmed','maxRetries':2})
+        self.assertEqual(request.call_args.kwargs['deadline'],123);self.assertEqual(request.call_args.kwargs['priority'],0)
+
+    def test_send_rpc_rejection_preserves_safe_preflight_codes_only(self):
+        for err,expected in [({'InstructionError':[6,{'Custom':6001}]},'6001'),('BlockhashNotFound','BlockhashNotFound')]:
+            with self.subTest(err=err):
+                transport=live.Transport('https://unused.invalid/PRIVATE_URL','PRIVATE_API');capture={}
+                payload={'error':{'code':-32002,'message':'PRIVATE_MESSAGE','data':{'err':err,'logs':['PRIVATE_LOG'],'accounts':['PRIVATE_ACCOUNT']}}}
+                with patch('urllib.request.urlopen',return_value=StringIO(json.dumps(payload))):
+                    with self.assertRaises(live.TradeError):transport.send('FAKE_PACKET',capture=capture)
+                detail=capture['send_result'];self.assertEqual(detail['outcome'],'rpc_rejected');self.assertEqual(detail['rpc_code'],-32002)
+                self.assertIn(expected,detail['simulation']);self.assertNotIn('PRIVATE',json.dumps(detail))
+
+    def test_send_unknown_rpc_body_and_network_failure_do_not_invent_preflight_cause(self):
+        transport=live.Transport('https://unused.invalid/PRIVATE_URL','PRIVATE_API');capture={}
+        with patch('urllib.request.urlopen',return_value=StringIO(json.dumps({'error':{'code':-32002,'message':'PRIVATE','data':{'err':'PRIVATE_UNKNOWN_ERROR','logs':['PRIVATE']}}}))):
+            with self.assertRaises(live.TradeError):transport.send('FAKE',capture=capture)
+        self.assertNotIn('PRIVATE',json.dumps(capture));self.assertEqual(capture['send_result']['simulation'],'Simulation de transaction refusee.')
+        transport.next_rpc=0;capture={}
+        with patch('urllib.request.urlopen',side_effect=TimeoutError('PRIVATE_NETWORK_BODY')):
+            with self.assertRaises(live.TradeError):transport.send('FAKE',capture=capture)
+        self.assertEqual(capture['send_result']['outcome'],'unknown');self.assertEqual(capture['send_result']['reason'],'delai depasse')
+        self.assertNotIn('PRIVATE',json.dumps(capture));self.assertIn('delai depasse',live.send_result_text(capture['send_result']))
+        self.assertEqual(live.rpc_send_rejection(None)['outcome'],'unknown')
+
     def test_simulated_token_account_requires_exact_mint_owner_and_initialized_layout(self):
         self.assertEqual(live.token_amount(token_snapshot(123),MINT),123)
         self.assertEqual(live.token_amount(token_snapshot(123,program=live.TOKEN22),MINT),123)
@@ -382,8 +412,25 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
         row=self.e.ledger.get(MINT)
         self.assertEqual(row['state'],'buy_pending');self.assertEqual(Decimal(row['reserved']),live.ENVELOPE)
         self.assertEqual(json.loads(row['data'])['buy']['signature'],'fake-signature')
+        self.assertEqual(json.loads(row['data'])['buy']['rpc_send']['outcome'],'unknown')
+        self.e.transport.send.assert_called_once()
         self.e.signal(dict(mint=MINT,code='SUIVI'))
         self.assertIsNone(self.e.preparing)
+
+    async def test_rejected_send_keeps_durable_packet_budget_and_prints_safe_reason(self):
+        data={'buy':{'raw':'fake','signature':'fake-signature','height':100},'decision_wall':time.time()}
+        self.e.ledger.reserve(MINT,data)
+        def submit(raw,deadline,capture):
+            capture.update(request_at=time.time(),send_result=live.rpc_send_rejection({'code':-32002,'data':{'err':'BlockhashNotFound','logs':['PRIVATE']}}))
+            raise live.TradeError('PRIVATE_PROVIDER_ERROR')
+        self.e.transport.send.side_effect=submit
+        await self.e.send(MINT,data,'buy')
+        row=self.e.ledger.get(MINT);saved=json.loads(row['data']);self.assertEqual(row['state'],'buy_pending')
+        self.assertEqual(Decimal(row['reserved']),live.ENVELOPE);self.assertEqual(saved['buy']['signature'],'fake-signature')
+        self.assertEqual(saved['buy']['rpc_send']['rpc_code'],-32002)
+        event=json.loads(self.e.ledger.db.execute("SELECT data FROM notices WHERE code='ORDRE_A_VERIFIER'").fetchone()[0])
+        self.assertIn('BlockhashNotFound',event['message']);self.assertNotIn('PRIVATE',json.dumps(event))
+        self.e.transport.send.assert_called_once()
 
     async def test_fast_confirmation_is_not_overwritten_by_late_send_response(self):
         import threading
@@ -406,6 +453,7 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
         row=self.e.ledger.get(MINT);saved=json.loads(row['data'])
         self.assertEqual(row['state'],'open');self.assertEqual(saved['quantity'],42)
         self.assertIn('send_at',saved['buy'])
+        self.assertEqual(saved['buy']['rpc_send']['outcome'],'accepted')
 
     async def test_confirmed_buy_opens_only_on_actual_token_delta(self):
         data={'buy':{'signature':'fake','send_at':time.time(),'height':100},'sell_attempts':0}
@@ -739,7 +787,7 @@ class SetupAndCheckTest(unittest.TestCase):
     def test_report_reads_old_records_and_new_latency_without_modifying_budget(self):
         with tempfile.TemporaryDirectory() as tmp,patch.object(live,'ROOT',Path(tmp)):
             path=Path(tmp)/'data/wallet_alerts_ws/live_trades.sqlite3';ledger=live.Ledger(path)
-            ledger.reserve(MINT,{'buy':{'signature':'fake'},'latency_breakdown':{'preparation_restante_ms':100},
+            ledger.reserve(MINT,{'buy':{'signature':'fake','rpc_send':live.rpc_send_rejection({'code':-32002,'data':{'err':'BlockhashNotFound'}})},'latency_breakdown':{'preparation_restante_ms':100},
                 'preparation_profile':{'phases_ms':{'simulation':10},'transport':{'RPC/test':[{'quota_wait_ms':5}]},'blockhash_cache_hit':True}})
             ledger.save('old-mint','closed',{'buy':{'signature':'old-fake'}},reserve='0')
             ledger.notice({'at':time.time(),'mint':MINT,'code':'ACHAT_IGNORE','message':'Preparation trop lente',
@@ -750,6 +798,7 @@ class SetupAndCheckTest(unittest.TestCase):
             self.assertIn('preparation_restante_ms',output.getvalue());self.assertIn('old-fake',output.getvalue())
             self.assertIn('blockhash precharge : True',output.getvalue());self.assertIn('2.40 / 45',output.getvalue())
             self.assertIn('mesures avec '+live.EXECUTION_VERSION+' : 1',output.getvalue())
+            self.assertIn('Refus RPC -32002',output.getvalue());self.assertIn('BlockhashNotFound',output.getvalue())
     def test_update_jupiter_does_not_read_or_rewrite_wallet(self):
         with tempfile.TemporaryDirectory() as tmp,patch.object(live,'PRIVATE',Path(tmp)):
             wallet=Path(tmp)/'wallet.json';wallet.write_text('private-wallet-must-stay-untouched')

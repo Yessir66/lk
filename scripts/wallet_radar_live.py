@@ -30,7 +30,7 @@ import urllib.request
 from wallet_radar_paper import PaperObserver, SOL, BBIG, USDC
 
 ROOT=Path(__file__).resolve().parents[1]
-EXECUTION_VERSION='2026.11.18.1'
+EXECUTION_VERSION='2026.11.18.2'
 OWNER='E23vfW9oA9CnANP5wzimpo3DM3WQtMuxzUP4oxFp97Jq'
 PRIVATE=ROOT/'private_wallet_radar'
 JUP='JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4'
@@ -185,6 +185,37 @@ def simulation_error(err):
     elif isinstance(err,str) and err in ('BlockhashNotFound','InsufficientFundsForFee','AccountNotFound','AlreadyProcessed'):
         suffix=' ; '+err
     return TradeError('Simulation de transaction refusee'+suffix+'.')
+
+
+def rpc_send_rejection(error):
+    """Persist machine codes/static labels only; never message/data/log bodies."""
+    info={'outcome':'rpc_rejected','preflight_commitment':'confirmed'}
+    if not isinstance(error,dict):return {'outcome':'unknown','preflight_commitment':'confirmed'}
+    code=error.get('code')
+    if type(code) is int:info['rpc_code']=code
+    if code==-32002:
+        info['reason']='preflight_simulation_refused'
+        data=error.get('data')
+        info['simulation']=str(simulation_error(data.get('err') if isinstance(data,dict) else None))
+    elif code==-32003:info['reason']='signature_verification_failed'
+    elif code==-32005:info['reason']='rpc_node_unhealthy'
+    else:info['reason']='rpc_request_refused'
+    return info
+
+
+def send_result_text(info):
+    outcome=info.get('outcome')
+    if outcome=='accepted':return 'Signature acceptee par le RPC ; ce retour ne prouve pas l execution.'
+    if outcome=='rpc_rejected':
+        code=info.get('rpc_code');text='Refus RPC'+(' '+str(code) if type(code) is int else '')
+        if info.get('reason')=='preflight_simulation_refused':text+=' ; '+info.get('simulation','simulation refusee')
+        elif info.get('reason')=='signature_verification_failed':text+=' ; verification de signature refusee'
+        elif info.get('reason')=='rpc_node_unhealthy':text+=' ; noeud RPC indisponible'
+        return text+'.'
+    if outcome=='http_error':return 'Envoi HTTP '+str(info['http_status'])+' ; resultat de transmission inconnu.'
+    if info.get('reason') in ('delai depasse','certificat/TLS','resolution DNS','connexion ou format JSON indisponible'):
+        return 'Envoi : '+info['reason']+' ; resultat de transmission inconnu.'
+    return 'Resultat de transmission inconnu ; aucune confirmation deduite.'
 
 
 def update_jupiter():
@@ -387,6 +418,8 @@ class Transport:
                             'certificat/TLS' if isinstance(reason,ssl.SSLError) or (jupiter and code==60) else
                             'resolution DNS' if isinstance(reason,socket.gaierror) or (jupiter and code==6) else 'connexion ou format JSON indisponible')
                 status=code if isinstance(code,int) and not isinstance(code,bool) and 100<=code<=599 else None
+                if not jupiter and isinstance(body,dict) and body.get('method')=='sendTransaction':
+                    capture['send_result']=dict(outcome='http_error',http_status=status,preflight_commitment='confirmed') if status else dict(outcome='unknown',reason=detail,preflight_commitment='confirmed')
                 raise TradeError(label+' : '+detail+'. URL, cles et reponse privee masquees.',status=status) from None
             finally:
                 if 'request_at' in capture:capture['http_response_ms']=round((time.monotonic()-http_started)*1000,3)
@@ -397,6 +430,8 @@ class Transport:
                 if jupiter:
                     safe=jupiter_reason(value)
                     if safe:detail+=' ; '+safe
+                elif isinstance(body,dict) and body.get('method')=='sendTransaction':
+                    capture['send_result']=rpc_send_rejection(error)
                 if code==429:setattr(self,'pause_'+name,time.monotonic()+60)
                 raise TradeError(label+' : reponse refusee ou invalide'+detail+'.')
             return value
@@ -455,7 +490,7 @@ class Transport:
 
     def send(self,raw,deadline=None,capture=None):
         return self.request(self.url,{'jsonrpc':'2.0','id':1,'method':'sendTransaction','params':[
-            raw,{'encoding':'base64','skipPreflight':False,'maxRetries':2}]},deadline=deadline,capture=capture,label='RPC/envoi',priority=0)['result']
+            raw,{'encoding':'base64','skipPreflight':False,'preflightCommitment':'confirmed','maxRetries':2}]},deadline=deadline,capture=capture,label='RPC/envoi',priority=0)['result']
 
 
 def lamports(usd,price):return int((Decimal(usd)*10**9/price).to_integral_value(rounding=ROUND_CEILING))
@@ -831,7 +866,7 @@ class Executor:
         if not current or current['state']!=side+'_pending' or json.loads(current['data']).get(side,{}).get('signature')!=data[side]['signature']:
             raise TradeError('Signature non enregistree durablement ; envoi refuse.')
         data[side]['queued_at']=time.time()
-        capture={}
+        capture={};result=None;diagnostic=None
         try:
             try:result=await asyncio.to_thread(self.transport.send,data[side]['raw'],deadline,capture)
             finally:
@@ -846,12 +881,16 @@ class Executor:
                 if 'request_at' in capture:
                     data[side]['send_at']=capture['request_at']
                     saved[side]['send_at']=capture['request_at']
+                diagnostic=(dict(outcome='accepted',preflight_commitment='confirmed') if result==data[side]['signature'] else
+                            capture.get('send_result') or dict(outcome='unknown',preflight_commitment='confirmed'))
+                saved[side]['rpc_send']=diagnostic
                 self.ledger.save(mint,current['state'],saved)
             if result!=data[side]['signature']:raise TradeError('Signature renvoyee incoherente.')
             self.notify(mint,'ORDRE_ENVOYE',side+' : transaction envoyee, confirmation attendue.',signature=result,
                         prepare_ms=data.get('prepare_ms'),decision_to_send_ms=round((data[side]['send_at']-data['decision_wall'])*1000) if data[side].get('send_at') and side=='buy' else None)
         except Exception:
-            self.notify(mint,'ORDRE_A_VERIFIER','Reponse inconnue ; suivi de la meme signature, aucun nouvel ordre.',signature=data[side]['signature'])
+            self.notify(mint,'ORDRE_A_VERIFIER',send_result_text(diagnostic or {})+' Suivi de la meme signature, aucun nouvel ordre.',
+                        signature=data[side]['signature'],rpc_send=diagnostic or {'outcome':'unknown'})
 
     async def reconcile(self,row):
         mint=row['mint'];data=json.loads(row['data']);side='buy' if row['state']=='buy_pending' else 'sell'
@@ -1183,6 +1222,10 @@ def main():
             for mint,state,data in db.execute('SELECT mint,state,data FROM trades'):
                 value=json.loads(data);buy=value.get('buy',{})
                 print(mint,state,'buy:',buy.get('signature','-'),'sell:',value.get('sell',{}).get('signature','-'))
+                for side in ('buy','sell'):
+                    result=value.get(side,{}).get('rpc_send')
+                    if result:print('Envoi '+side+' :',send_result_text(result),'; details :',json.dumps(result))
+                    elif side=='buy' and state=='expired':print('Envoi buy : ancien enregistrement, retour RPC original non conserve.')
                 if state=='open' and exit_deadline(value) is not None:
                     print('Sortie automatique : reste environ',max(0,math.ceil(exit_deadline(value)-time.time())),'s ; motif enregistre :',value.get('exit_reason','aucun'))
                 if value.get('external_sale'):print('Vente externe verifiee :',value['external_sale']['signature'])

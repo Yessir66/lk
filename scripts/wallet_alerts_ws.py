@@ -18,7 +18,7 @@ from discord_token_telegram import TelegramSender, amounts
 from discord_solana_watch import StateLock
 
 ROOT=Path(__file__).resolve().parents[1]
-VERSION='2026.11.18.1'
+VERSION='2026.11.18.2'
 DEFAULT_WALLETS={'BBIG BOSS':'BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp'}
 BACKFILL_PAGE_SIZE=1000
 BACKFILL_MAX_PAGES=10

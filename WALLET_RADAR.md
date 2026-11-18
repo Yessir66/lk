@@ -1,5 +1,7 @@
 # Wallet Radar
 
+**2026.11.18.2 : preflight aligne sur confirmed et retours RPC d'envoi conserves dans le bilan9.** Budget45USD et parametres de strategie conserves. Voir [ENVOI_RPC_ET_PREFLIGHT.md](ENVOI_RPC_ET_PREFLIGHT.md).
+
 **2026.11.18.1 : prise en charge des evenements PumpSwap et budget cumule45USD.** Reservations precedentes conservees. Voir [PUMPSWAP_ET_BUDGET_45.md](PUMPSWAP_ET_BUDGET_45.md).
 
 **2026.11.17.6 : vente totale apres60s si la position est encore ouverte, en plus du SL/TP.** Echeance conservee au redemarrage ; conversions MSFTx, COST et GTAVI ajoutees pour les volumes observes. Voir [SORTIE_60S_ET_COTATIONS.md](SORTIE_60S_ET_COTATIONS.md).

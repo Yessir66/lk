@@ -1,4 +1,6 @@
-# Wallet Radar 2026.11.18.1 — essai reel
+# Wallet Radar 2026.11.18.2 — essai reel
+
+L'envoi precise **preflightCommitment=confirmed**, comme le blockhash, et conserve les codes/causes RPC dans le bilan9 sans afficher les reponses privees : [ENVOI_RPC_ET_PREFLIGHT.md](ENVOI_RPC_ET_PREFLIGHT.md). Les anciens achats expires ne sont pas rejoues ; leur cause historique reste inconnue.
 
 PumpSwap pris en charge pour les nouveaux signaux ; **budget cumule45USD**, selon les demandes30USD puis15USD de plus. Reservations et signatures anterieures conservees : [PUMPSWAP_ET_BUDGET_45.md](PUMPSWAP_ET_BUDGET_45.md).
 
