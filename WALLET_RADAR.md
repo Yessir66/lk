@@ -1,5 +1,7 @@
 # Wallet Radar
 
+**2026.11.18.3 : filtre de reception5% retire et rapprochement automatique des ventes manuelles totales verifiees.** Glissement20%, budget45USD et sorties conserves. Voir [VENTES_MANUELLES_AUTO_SANS_FILTRE_5.md](VENTES_MANUELLES_AUTO_SANS_FILTRE_5.md).
+
 **2026.11.18.2 : preflight aligne sur confirmed et retours RPC d'envoi conserves dans le bilan9.** Budget45USD et parametres de strategie conserves. Voir [ENVOI_RPC_ET_PREFLIGHT.md](ENVOI_RPC_ET_PREFLIGHT.md).
 
 **2026.11.18.1 : prise en charge des evenements PumpSwap et budget cumule45USD.** Reservations precedentes conservees. Voir [PUMPSWAP_ET_BUDGET_45.md](PUMPSWAP_ET_BUDGET_45.md).

@@ -30,7 +30,7 @@ function Get-RadarDecision {
         try { $liveEvent = $Line.Substring(11) | ConvertFrom-Json } catch { return $null }
         if (-not $LiveBuys -or $liveEvent.v -ne 1 -or $liveEvent.type -cne 'live_decision' -or $liveEvent.mode -cne 'LIVE') { return $null }
         if ([string]$liveEvent.mint -cnotmatch '^[1-9A-HJ-NP-Za-km-z]{32,44}$') { return $null }
-        if ($liveEvent.code -cnotin @('SUIVI','DEV_EXCLU','SORTIE_TOTALE_1S','ATTENTE_VOLUME','CONDITIONS_VALIDEES','VOLUME_INSUFFISANT','DONNEES_INSUFFISANTES','NON_SUPPORTE','ACHAT_IGNORE','ORDRE_ENVOYE','ORDRE_A_VERIFIER','ORDRE_ECHOUE','ACHAT_CONFIRME','VENTE_CONFIRMEE','INTERVENTION_REQUISE','ORDRE_EXPIRE','SORTIE_INDISPONIBLE')) { return $null }
+        if ($liveEvent.code -cnotin @('SUIVI','DEV_EXCLU','SORTIE_TOTALE_1S','ATTENTE_VOLUME','CONDITIONS_VALIDEES','VOLUME_INSUFFISANT','DONNEES_INSUFFISANTES','NON_SUPPORTE','ACHAT_IGNORE','ORDRE_ENVOYE','ORDRE_A_VERIFIER','ORDRE_ECHOUE','ACHAT_CONFIRME','VENTE_CONFIRMEE','VENTE_MANUELLE_EN_VERIFICATION','INTERVENTION_REQUISE','ORDRE_EXPIRE','SORTIE_INDISPONIBLE')) { return $null }
         return $liveEvent
     }
     if (-not $Line.StartsWith('RADAR_DECISION ')) { return $null }
@@ -61,6 +61,10 @@ if ($Test) {
     $parsedReal = Get-RadarDecision ('RADAR_LIVE ' + ($real | ConvertTo-Json -Compress))
     if ($LiveBuys -and $null -eq $parsedReal) { throw 'Live notification rejected in live mode' }
     if (-not $LiveBuys -and $null -ne $parsedReal) { throw 'Live notification accepted outside explicit live mode' }
+    $real.code='VENTE_MANUELLE_EN_VERIFICATION'
+    $manual = Get-RadarDecision ('RADAR_LIVE ' + ($real | ConvertTo-Json -Compress))
+    if ($LiveBuys -and $null -eq $manual) { throw 'Automatic manual-sale notification rejected' }
+    if (-not $LiveBuys -and $null -ne $manual) { throw 'Manual-sale notification accepted outside live mode' }
     Write-Host 'Protocol tests OK; no network or browser opened.'
     exit 0
 }
@@ -100,7 +104,7 @@ try {
     Write-Host 'Connexion au VPS : utilise le mot de passe habituel si SSH le demande.'
     Write-Host 'Laisse cette fenetre ouverte. Ctrl+C pour arreter.'
     if ($PaperBuys -or $LiveBuys) {
-        if ($LiveBuys) { Write-Host 'ESSAIS REELS : 1 USD, budget 45 USD, SL -80 %, TP +75 %, sortie 60 s, glissement 20 %. Filtre prix simule 5 %. Arreter suspend les sorties.' -ForegroundColor Yellow }
+        if ($LiveBuys) { Write-Host 'ESSAIS REELS : 1 USD, budget 45 USD, SL -80 %, TP +75 %, sortie 60 s, glissement 20 %. Ventes manuelles rapprochees automatiquement. Arreter suspend les sorties.' -ForegroundColor Yellow }
         else { Write-Host 'SIMULATION 25 USD : aucun ordre reel. Notifications de decision activees.' -ForegroundColor Yellow }
         if ($env:OS -eq 'Windows_NT') {
             try {

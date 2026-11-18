@@ -30,7 +30,7 @@ import urllib.request
 from wallet_radar_paper import PaperObserver, SOL, BBIG, USDC
 
 ROOT=Path(__file__).resolve().parents[1]
-EXECUTION_VERSION='2026.11.18.2'
+EXECUTION_VERSION='2026.11.18.3'
 OWNER='E23vfW9oA9CnANP5wzimpo3DM3WQtMuxzUP4oxFp97Jq'
 PRIVATE=ROOT/'private_wallet_radar'
 JUP='JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4'
@@ -41,11 +41,11 @@ SYSTEM='11111111111111111111111111111111'
 COMPUTE='ComputeBudget111111111111111111111111111111'
 ALT_PROGRAM='AddressLookupTab1e1111111111111111111111111'
 SLIPPAGE=2000
-# A stricter pre-sign check of the already mandatory simulation. The on-chain
-# slippage cap stays at 20%; price can still change after simulation.
-ENTRY_DRIFT_BPS=500
+# Keep quote/simulation freshness; the separate 5% reception filter was removed
+# at the user's request. The transaction still enforces SLIPPAGE (20%).
 QUOTE_MAX_AGE=2
 MAX_HOLD_SECONDS=60
+MANUAL_CHECK_INTERVAL=15
 BUDGET=Decimal('45')
 BUY=Decimal('1')
 FEE=Decimal('.10')
@@ -438,8 +438,8 @@ class Transport:
 
     def rpc(self,method,params,capture=None):
         known={'getBalance','getLatestBlockhash','getFeeForMessage','getMultipleAccounts','getTokenAccountsByOwner',
-               'getRecentPrioritizationFees','simulateTransaction','getSignatureStatuses','getTransaction','getBlockHeight'}
-        priority=2 if method in ('getRecentPrioritizationFees','getLatestBlockhash','getSignatureStatuses','getTransaction','getBlockHeight') else 1
+               'getRecentPrioritizationFees','simulateTransaction','getSignatureStatuses','getTransaction','getBlockHeight','getSignaturesForAddress'}
+        priority=2 if method in ('getRecentPrioritizationFees','getLatestBlockhash','getSignatureStatuses','getTransaction','getBlockHeight','getSignaturesForAddress') else 1
         value=self.request(self.url,{'jsonrpc':'2.0','id':1,'method':method,'params':params},capture=capture,
                            label='RPC/'+method if method in known else 'RPC',priority=priority)
         if 'result' not in value:raise TradeError('Resultat RPC absent.')
@@ -607,6 +607,7 @@ class Executor:
         self.jobs=asyncio.Queue(maxsize=1)
         self.last_notice={}
         self.blockhash_cache=None;self.blockhash_lock=asyncio.Lock()
+        self.manual_check_after={}
 
     async def rpc(self,method,params):
         capture={}
@@ -792,11 +793,10 @@ class Executor:
         if debit>cap:raise TradeError('Depense SOL simulee au-dessus du plafond achat/frais/depots.')
         if side=='buy':
             received=token_amount(post[addresses.index(target)],mint)-token_before
-            minimum=(int(q['outAmount'])*(10000-ENTRY_DRIFT_BPS)+9999)//10000
-            if received<minimum:raise TradeError('Prix degrade : simulation sous 95 % des tokens cotes ; achat ignore avant signature.')
+            if received<=0:raise TradeError('Aucun token recu en simulation ; achat ignore avant signature.')
             if time.monotonic()-quote_at>QUOTE_MAX_AGE:raise TradeError('Cotation de plus de 2 s : achat ignore avant signature.')
-            entry_guard={'quoted_tokens':int(q['outAmount']),'simulated_tokens':received,'minimum_simulated_tokens':minimum,
-                         'max_drift_bps':ENTRY_DRIFT_BPS,'quote_at':quote_at,'checked_at':time.monotonic()}
+            entry_guard={'quoted_tokens':int(q['outAmount']),'simulated_tokens':received,
+                         'quote_at':quote_at,'checked_at':time.monotonic()}
         return dict(message=base64.b64encode(to_bytes_versioned(message)).decode(),height=block['value']['lastValidBlockHeight'],
                     amount=amount,price=str(price),fee_lamports=fee,rent_lamports=rent,
                     prepared=time.monotonic(),prepare_ms=round((time.monotonic()-start)*1000),side=side,
@@ -809,9 +809,8 @@ class Executor:
         if p['side']=='buy':
             guard=p.get('entry_guard')
             if (not guard or not 0<=time.monotonic()-guard['quote_at']<=QUOTE_MAX_AGE
-                or not 0<=time.monotonic()-guard['checked_at']<=.5
-                or guard['simulated_tokens']<guard['minimum_simulated_tokens']):
-                raise TradeError('Controle du prix absent ou perime : achat ignore avant signature.')
+                or not 0<=time.monotonic()-guard['checked_at']<=.5):
+                raise TradeError('Cotation ou simulation absente ou perimee : achat ignore avant signature.')
         if (time.monotonic()-p['prepared']>2 or time.monotonic()-p['blockhash_at']>15 or time.monotonic()-self.priority_at>30
             or p['fee_lamports']>lamports(FEE,price) or p['rent_lamports']>lamports(RENT,price)
             or (p['side']=='buy' and p['amount']>lamports(BUY,price))):
@@ -844,8 +843,8 @@ class Executor:
                           decision_wall=time.time()-(3-elapsed-(deadline-time.monotonic())),signed_at=time.time(),
                           latency_breakdown=latency,preparation_profile=p.get('preparation_profile'),execution_version=EXECUTION_VERSION)
                 if p.get('entry_guard'):
-                    guard=p['entry_guard'];data['entry_guard']={key:guard[key] for key in ('quoted_tokens','simulated_tokens','minimum_simulated_tokens','max_drift_bps')}
-                    data['entry_guard']['quote_age_at_sign_ms']=round((time.monotonic()-guard['quote_at'])*1000,3)
+                    guard=p['entry_guard'];data['entry_quote']={key:guard[key] for key in ('quoted_tokens','simulated_tokens')}
+                    data['entry_quote']['quote_age_at_sign_ms']=round((time.monotonic()-guard['quote_at'])*1000,3)
                 if time.monotonic()>deadline:raise TradeError('Limite de trois secondes depassee avant envoi.')
                 storing=time.monotonic()
                 self.ledger.reserve(mint,data)  # Durable BEFORE any possible network submission.
@@ -928,6 +927,25 @@ class Executor:
                 self.ledger.save(mint,state,data)
                 self.notify(mint,'ORDRE_EXPIRE','Signature expiree sans confirmation ; aucun achat rejoue.')
 
+    async def reconcile_manual(self,row):
+        if row['state']!='manual':return False
+        mint=row['mint'];now=time.monotonic()
+        if not hasattr(self,'manual_check_after'):self.manual_check_after={}
+        if now<self.manual_check_after.get(mint,0):return False
+        self.manual_check_after[mint]=now+MANUAL_CHECK_INTERVAL
+        try:
+            found=await verify_external_sale(row,self)
+            close_external_sale(self.ledger.db,row,found,automatic=True)
+        except asyncio.CancelledError:raise
+        except Exception:
+            # No proof yet (finality, unsupported/partial transfer, unavailable
+            # provider). Keep the blocker and retry at the bounded cadence.
+            return False
+        finally:self.manual_check_after[mint]=time.monotonic()+MANUAL_CHECK_INTERVAL
+        self.notify(mint,'VENTE_CONFIRMEE','Vente manuelle finalisee verifiee automatiquement ; suivi cloture.',
+                    signature=found['signature'],external=True)
+        return True
+
     async def positions(self):
         while True:
             rows=self.ledger.active()
@@ -936,6 +954,7 @@ class Executor:
                 stage='suivi de transaction'
                 try:
                     if row['state'].endswith('_pending'):await self.reconcile(row)
+                    elif row['state']=='manual':await self.reconcile_manual(row)
                     elif row['state']=='open':
                         deadline=exit_deadline(data)
                         if deadline is not None and time.time()>=deadline and not data.get('exit_reason'):
@@ -945,7 +964,10 @@ class Executor:
                         stage='lecture du solde token'
                         quantity=await self.holdings(mint)
                         if quantity!=data['quantity']:
-                            self.ledger.save(mint,'manual',data);self.notify(mint,'INTERVENTION_REQUISE','Solde modifie hors bot ; nouveaux achats bloques.');continue
+                            self.ledger.save(mint,'manual',data)
+                            if quantity==0:self.notify(mint,'VENTE_MANUELLE_EN_VERIFICATION','Solde nul ; verification automatique de la vente avant reprise des achats.')
+                            else:self.notify(mint,'INTERVENTION_REQUISE','Solde modifie hors bot ; vente partielle ou mouvement a verifier.')
+                            await self.reconcile_manual(self.ledger.get(mint));continue
                         stage='cotation de vente Jupiter';q=await self.quote(mint,SOL,quantity)
                         stage='cours SOL/USD'
                         value=Decimal(q['outAmount'])/10**9*self.price()
@@ -996,7 +1018,8 @@ class LiveObserver(PaperObserver):
     async def run(self):
         print('ESSAI REEL : 1 USD/achat, budget cumule 45 USD ; SL -80 %, TP +75 %, glissement 20 %.',flush=True)
         print('Sortie totale : SL, TP ou 60 s apres confirmation achat ; premier declenchement, delai reseau possible.',flush=True)
-        print('Filtre achat : au plus 5 % de tokens en moins a la simulation ; cotation <=2 s avant signature.',flush=True)
+        print('Filtre de reception 5 % retire ; simulation obligatoire et glissement maximum 20 % conserves.',flush=True)
+        print('Ventes manuelles : rapprochement automatique des ventes totales finalisees ; controle toutes les 15 s.',flush=True)
         print('Une position a la fois. Arreter le processus suspend les sorties automatiques.',flush=True)
         tasks=[asyncio.create_task(super().run()),asyncio.create_task(self.executor.run()),
                asyncio.create_task(self.prices.run()),asyncio.create_task(self.prices.run_doge())]
@@ -1093,31 +1116,14 @@ async def diagnose_exit(path,http):
         print('Diagnostic termine sans signature, ordre ou changement du journal.',flush=True)
 
 
-async def reconcile_external_sale(path,http):
-    """Close only a manual row after a finalized full swap and a fresh zero balance.
-
-    Network access is read-only. The sole mutation is a compare-and-swap of the
-    original ledger snapshot; reserved budget and all previous packets survive.
-    """
+async def verify_external_sale(row,probe):
+    """Bounded read-only proof, shared by the live loop and menu13."""
     from discord_token_analysis import parse_trade
     from solders.signature import Signature
-    path=Path(path)
-    if path.is_symlink() or not path.is_file():raise TradeError('Journal reel absent ou symbolique : rapprochement refuse.')
-    db=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True);db.row_factory=sqlite3.Row
-    try:rows=[dict(row) for row in db.execute("SELECT * FROM trades WHERE state IN ('open','manual','buy_pending','sell_pending')")]
-    finally:db.close()
-    if not rows:print('Aucune position active a rapprocher.');return
-    if len(rows)!=1 or rows[0]['state']!='manual':
-        raise TradeError('Seule une position en intervention manuelle peut etre rapprochee ; utiliser le diagnostic 12.')
-    row=rows[0];data=json.loads(row['data']);mint=row['mint'];quantity=data.get('quantity')
+    if row['state']!='manual':raise TradeError('Position non manuelle : rapprochement refuse.')
+    data=json.loads(row['data']);mint=row['mint'];quantity=data.get('quantity')
     if type(quantity) is not int or quantity<=0:raise TradeError('Quantite enregistree invalide.')
-    buy_signature=data.get('buy',{}).get('signature')
-    Signature.from_string(buy_signature)
-    # No Jupiter key and no wallet key needed for historical proof.
-    probe=Executor.__new__(Executor);probe.transport=ExitReadOnlyTransport(http,'')
-    print('RAPPROCHEMENT : lectures RPC uniquement ; aucun ordre ni signature nouvelle.',flush=True)
-    print('TOKEN : '+mint,flush=True)
-    print('Une cloture verifiee debloque les nouveaux achats si le mode reel est actif.',flush=True)
+    buy_signature=data.get('buy',{}).get('signature');Signature.from_string(buy_signature)
     if await probe.holdings(mint)!=0:raise TradeError('Solde token non nul : position manuelle conservee.')
 
     async def transaction(signature):
@@ -1153,17 +1159,42 @@ async def reconcile_external_sale(path,http):
     if not found:
         raise TradeError('Vente totale non prouvee dans la recherche bornee (20 signatures, 8 transactions). Journal conserve ; fournir le lien public de vente pour poursuivre.')
     if await probe.holdings(mint)!=0:raise TradeError('Solde token modifie pendant le controle : journal conserve.')
-    updated=dict(data,external_sale=found,exit_reason='MANUAL_EXTERNAL',closed_at=time.time())
-    # Preserve any earlier sell packet, including its signature. Report external
-    # provenance separately instead of inventing a bot submission.
-    db=sqlite3.connect(path.resolve().as_uri()+'?mode=rw',uri=True)
+    return found
+
+
+def close_external_sale(db,row,found,automatic=False):
+    """CAS preserves budget/packets and never overwrites a concurrent update."""
+    data=json.loads(row['data']);mint=row['mint']
+    proof=dict(found)
+    if automatic:proof['automatic']=True
+    updated=dict(data,external_sale=proof,exit_reason='MANUAL_EXTERNAL',closed_at=time.time())
+    db.execute('PRAGMA synchronous=FULL');db.execute('BEGIN IMMEDIATE')
     try:
-        db.execute('PRAGMA synchronous=FULL');db.execute('BEGIN IMMEDIATE')
         result=db.execute("UPDATE trades SET state='closed',data=? WHERE mint=? AND state='manual' AND reserved=? AND data=?",
                           (json.dumps(updated),mint,row['reserved'],row['data']))
-        if result.rowcount!=1:raise TradeError('Journal modifie pendant le controle : rapprochement annule, relancer le menu 13.')
+        if result.rowcount!=1:raise TradeError('Journal modifie pendant le controle : rapprochement annule.')
         db.commit()
     except BaseException:db.rollback();raise
+
+
+async def reconcile_external_sale(path,http):
+    """Explicit menu13 uses the same proof as automatic live reconciliation."""
+    path=Path(path)
+    if path.is_symlink() or not path.is_file():raise TradeError('Journal reel absent ou symbolique : rapprochement refuse.')
+    db=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True);db.row_factory=sqlite3.Row
+    try:rows=[dict(row) for row in db.execute("SELECT * FROM trades WHERE state IN ('open','manual','buy_pending','sell_pending')")]
+    finally:db.close()
+    if not rows:print('Aucune position active a rapprocher.');return
+    if len(rows)!=1 or rows[0]['state']!='manual':
+        raise TradeError('Seule une position en intervention manuelle peut etre rapprochee ; utiliser le diagnostic 12.')
+    row=rows[0]
+    probe=Executor.__new__(Executor);probe.transport=ExitReadOnlyTransport(http,'')
+    print('RAPPROCHEMENT : lectures RPC uniquement ; aucun ordre ni signature nouvelle.',flush=True)
+    print('TOKEN : '+row['mint'],flush=True)
+    print('Une cloture verifiee debloque les nouveaux achats si le mode reel est actif.',flush=True)
+    found=await verify_external_sale(row,probe)
+    db=sqlite3.connect(path.resolve().as_uri()+'?mode=rw',uri=True)
+    try:close_external_sale(db,row,found)
     finally:db.close()
     print('POSITION CLOTUREE : vente externe finalisee verifiee : '+found['signature'],flush=True)
     print('Budget reserve et anciennes signatures conserves. Aucun ordre envoye.',flush=True)
@@ -1228,8 +1259,10 @@ def main():
                     elif side=='buy' and state=='expired':print('Envoi buy : ancien enregistrement, retour RPC original non conserve.')
                 if state=='open' and exit_deadline(value) is not None:
                     print('Sortie automatique : reste environ',max(0,math.ceil(exit_deadline(value)-time.time())),'s ; motif enregistre :',value.get('exit_reason','aucun'))
+                if state=='manual':print('Vente manuelle : rapprochement automatique si le mode reel est actif ; menu 13 disponible en secours.')
                 if value.get('external_sale'):print('Vente externe verifiee :',value['external_sale']['signature'])
                 if value.get('entry_guard'):print('Controle prix avant signature (quantites brutes) :',json.dumps(value['entry_guard']))
+                if value.get('entry_quote'):print('Cotation/simulation avant signature (quantites brutes, sans filtre 5 %) :',json.dumps(value['entry_quote']))
                 metrics={'detection_decision_s':value.get('decision_elapsed_s'),'preparation_ms':value.get('prepare_ms')}
                 if buy.get('send_at') and value.get('decision_wall'):metrics['decision_envoi_HTTP_ms']=round((buy['send_at']-value['decision_wall'])*1000)
                 if buy.get('send_at') and value.get('confirmed_at'):metrics['envoi_confirmation_observee_ms']=round((value['confirmed_at']-buy['send_at'])*1000)

@@ -1,4 +1,6 @@
-# Wallet Radar 2026.11.18.2 — essai reel
+# Wallet Radar 2026.11.18.3 — essai reel
+
+**Filtre de reception5% retire sur demande utilisateur. Ventes manuelles totales contreSOL rapprochees automatiquement apres preuve et solde nul.** Voir [VENTES_MANUELLES_AUTO_SANS_FILTRE_5.md](VENTES_MANUELLES_AUTO_SANS_FILTRE_5.md). Budget et signatures conserves.
 
 L'envoi precise **preflightCommitment=confirmed**, comme le blockhash, et conserve les codes/causes RPC dans le bilan9 sans afficher les reponses privees : [ENVOI_RPC_ET_PREFLIGHT.md](ENVOI_RPC_ET_PREFLIGHT.md). Les anciens achats expires ne sont pas rejoues ; leur cause historique reste inconnue.
 
@@ -6,7 +8,7 @@ PumpSwap pris en charge pour les nouveaux signaux ; **budget cumule45USD**, selo
 
 **Sortie totale apres60secondes** depuis la confirmation d'achat observee si la position est encore ouverte. SL-80% et TP+75% peuvent sortir avant. Echeance persistante, suivi actif necessaire et delais reseau possibles. Voir [SORTIE_60S_ET_COTATIONS.md](SORTIE_60S_ET_COTATIONS.md), qui decrit aussi les nouvelles conversions MSFTx/COST/GTAVI.
 
-Preparation d'achat anticipee et filtre avant signature : [PREPARATION_RAPIDE_ET_PRIX.md](PREPARATION_RAPIDE_ET_PRIX.md). Si la simulation prevoit plus de **5 % de tokens en moins** que la cotation, l'achat est ignore ; cotation agee de2s maximum et simulation de0,5s maximum a la signature. Le glissement de transaction reste20% ; le prix peut bouger apres la simulation. Ce filtre ne garantit pas le prix final et peut faire manquer des achats.
+La preparation anticipee est conservee, avec cotation agee de2s maximum et simulation de0,5s maximum a la signature. Le seuil supplementaire5% introduit dans la version17.5 a ete retire en18.3. La simulation et le glissement de transaction20% restent actifs.
 
 En cas de `SORTIE_INDISPONIBLE`, garder le processus actif et lancer le **diagnostic12 dans un second menu**, sans arret ni ordre : [DIAGNOSTIC_SORTIE_WALLET_RADAR.md](DIAGNOSTIC_SORTIE_WALLET_RADAR.md).
 

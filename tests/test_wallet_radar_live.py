@@ -613,10 +613,11 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
                 if method=='getMultipleAccounts':return {'context':{'slot':10},'value':[{'owner':live.SYSTEM,'lamports':100000000} if address==live.OWNER else None for address in params[0]]}
                 if method=='simulateTransaction':
                     self.assertEqual(params[1]['minContextSlot'],10)
-                    return {'value':{'err':None,'accounts':[{'owner':live.SYSTEM,'lamports':90000000},token_snapshot(100000)]}}
+                    return {'value':{'err':None,'accounts':[{'owner':live.SYSTEM,'lamports':90000000},token_snapshot(90000)]}}
                 raise AssertionError('Unexpected method: '+method)
             self.e.rpc.side_effect=rpc
             prepared=await self.e.prepare(MINT,'buy')
+            self.assertEqual(prepared['entry_guard']['simulated_tokens'],90000)
             self.assertIn('simulation',prepared['preparation_profile']['phases_ms'])
             self.e.transport.send.assert_not_called()
             methods=[call.args[0] for call in self.e.rpc.call_args_list]
@@ -647,16 +648,14 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
             raise AssertionError('Unexpected RPC: '+method)
         self.e.rpc.side_effect=rpc
 
-    async def test_simulation_rejects_over_five_percent_quote_deterioration_without_sign_or_budget(self):
-        self.configure_buy_preparation(received=94999)
-        with patch.object(self.e,'signed') as sign:
-            with self.assertRaisesRegex(live.TradeError,'Prix degrade'):await self.e.prepare(MINT,'buy')
-            sign.assert_not_called()
-        self.assertEqual(self.e.ledger.used(),0);self.e.transport.send.assert_not_called()
-        self.configure_buy_preparation(received=95000)
-        prepared=await self.e.prepare(MINT,'buy')
-        self.assertEqual(prepared['entry_guard']['simulated_tokens'],95000)
-        self.assertEqual(prepared['entry_guard']['minimum_simulated_tokens'],95000)
+    async def test_five_percent_reception_filter_is_removed_and_twenty_percent_slippage_remains(self):
+        for received in (94999,84000,80000):
+            with self.subTest(received=received):
+                self.configure_buy_preparation(received=received)
+                prepared=await self.e.prepare(MINT,'buy')
+                self.assertEqual(prepared['entry_guard']['simulated_tokens'],received)
+                self.assertNotIn('minimum_simulated_tokens',prepared['entry_guard'])
+                self.assertEqual(self.e.ledger.used(),0);self.e.transport.send.assert_not_called()
         self.assertEqual(live.SLIPPAGE,2000)
 
     async def test_appearing_position_is_rejected_from_anticipated_accounts(self):
@@ -671,9 +670,9 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
             with self.subTest(field=field):
                 p=dict(prepared,entry_guard=dict(prepared['entry_guard']))
                 p['entry_guard'][field]=time.monotonic()-age
-                with self.assertRaisesRegex(live.TradeError,'Controle du prix'):self.e.signed(p)
+                with self.assertRaisesRegex(live.TradeError,'Cotation ou simulation'):self.e.signed(p)
         p=dict(prepared,entry_guard=None)
-        with self.assertRaisesRegex(live.TradeError,'Controle du prix'):self.e.signed(p)
+        with self.assertRaisesRegex(live.TradeError,'Cotation ou simulation'):self.e.signed(p)
         self.e.transport.send.assert_not_called();self.assertEqual(self.e.ledger.used(),0)
 
     async def test_construction_and_account_reads_do_not_wait_for_holdings(self):
@@ -713,10 +712,9 @@ class ExecutorTest(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(live.TradeError):await self.e.prepare(MINT,'buy')
                 self.assertEqual(self.e.ledger.used(),0);self.e.transport.send.assert_not_called()
 
-    async def test_minimum_simulated_reception_rounds_up_and_incomplete_snapshots_fail_closed(self):
-        self.configure_buy_preparation(received=95000)
-        q=quote();q['outAmount']='100001';self.e.jup.side_effect=[q,payload(q)]
-        with self.assertRaisesRegex(live.TradeError,'Prix degrade'):await self.e.prepare(MINT,'buy')
+    async def test_zero_reception_and_incomplete_snapshots_still_fail_closed(self):
+        self.configure_buy_preparation(received=0)
+        with self.assertRaisesRegex(live.TradeError,'Aucun token recu'):await self.e.prepare(MINT,'buy')
         self.configure_buy_preparation();original=self.e.rpc.side_effect
         async def rpc(method,params):
             result=await original(method,params)
@@ -941,6 +939,75 @@ class ExternalSaleTest(unittest.IsolatedAsyncioTestCase):
              patch.object(live,'Ledger',side_effect=AssertionError('No ledger initialization')),patch('sys.stdout',StringIO()):
             await live.reconcile_external_sale(self.path,'https://unused.invalid')
         self.transport.send.assert_not_called();self.transport.jup.assert_not_called()
+
+    def executor(self):
+        e=live.Executor.__new__(live.Executor);e.ledger=live.Ledger(self.path);self.addCleanup(e.ledger.db.close)
+        e.transport=self.transport;e.last_notice={};e.manual_check_after={}
+        e.signed=Mock(side_effect=AssertionError('No signing during reconciliation'))
+        e.send=AsyncMock(side_effect=AssertionError('No transaction sent during reconciliation'))
+        e.prepare=AsyncMock(side_effect=AssertionError('No transaction preparation'))
+        return e
+
+    async def test_automatic_manual_reconciliation_preserves_history_and_unblocks_entries(self):
+        e=self.executor()
+        with patch('sys.stdout',StringIO()):self.assertTrue(await e.reconcile_manual(e.ledger.get(MINT)))
+        row=e.ledger.get(MINT);data=json.loads(row['data'])
+        self.assertEqual(row['state'],'closed');self.assertEqual(e.ledger.used(),live.ENVELOPE)
+        self.assertEqual(data['buy'],self.data['buy']);self.assertEqual(data['sell'],self.data['sell'])
+        self.assertEqual(data['external_sale']['signature'],self.sell);self.assertTrue(data['external_sale']['automatic'])
+        self.assertFalse(e.ledger.active());e.signed.assert_not_called();e.send.assert_not_awaited();e.prepare.assert_not_awaited()
+        self.transport.jup.assert_not_called();self.transport.send.assert_not_called()
+        with self.assertRaises(live.TradeError):e.ledger.reserve(MINT,{})
+        e.ledger.reserve('another-mint',{'buy':{'signature':'fake'}})
+        self.assertEqual(e.ledger.used(),2*live.ENVELOPE)
+
+    async def test_live_positions_detects_zero_balance_and_closes_without_menu(self):
+        e=self.executor();e.ledger.save(MINT,'open',self.data);self.holdings=[0,0,0]
+        with patch('sys.stdout',StringIO()):
+            task=asyncio.create_task(e.positions())
+            try:
+                for _ in range(100):
+                    if e.ledger.get(MINT)['state']=='closed':break
+                    await asyncio.sleep(.002)
+                self.assertEqual(e.ledger.get(MINT)['state'],'closed')
+            finally:task.cancel();await asyncio.gather(task,return_exceptions=True)
+        e.prepare.assert_not_awaited();e.send.assert_not_awaited()
+        codes=[row[0] for row in e.ledger.db.execute('SELECT code FROM notices')]
+        self.assertIn('VENTE_MANUELLE_EN_VERIFICATION',codes);self.assertIn('VENTE_CONFIRMEE',codes)
+
+    async def test_automatic_retry_waits_for_finalized_proof_and_respects_cooldown(self):
+        e=self.executor();self.history=[];self.holdings=[0];before=self.path.read_bytes()
+        self.assertFalse(await e.reconcile_manual(e.ledger.get(MINT)))
+        calls=self.transport.rpc.call_count
+        self.assertFalse(await e.reconcile_manual(e.ledger.get(MINT)));self.assertEqual(self.transport.rpc.call_count,calls)
+        self.assertEqual(self.path.read_bytes(),before)
+        self.history=[{'signature':self.sell,'slot':20,'err':None}];self.holdings=[0,0];e.manual_check_after[MINT]=0
+        with patch('sys.stdout',StringIO()):self.assertTrue(await e.reconcile_manual(e.ledger.get(MINT)))
+        self.assertEqual(e.ledger.get(MINT)['state'],'closed');e.send.assert_not_awaited()
+
+    async def test_partial_sale_transfer_and_network_error_do_not_close_automatically(self):
+        e=self.executor();self.holdings=[1]
+        self.assertFalse(await e.reconcile_manual(e.ledger.get(MINT)))
+        e.manual_check_after[MINT]=0;self.holdings=[0];self.sell_tx['meta']['innerInstructions']=[]
+        self.assertFalse(await e.reconcile_manual(e.ledger.get(MINT)))
+        e.manual_check_after[MINT]=0;self.transport.rpc.side_effect=TimeoutError('PRIVATE_PROVIDER_ERROR');output=StringIO()
+        with patch('sys.stdout',output):self.assertFalse(await e.reconcile_manual(e.ledger.get(MINT)))
+        self.assertNotIn('PRIVATE',output.getvalue());self.assertEqual(e.ledger.get(MINT)['state'],'manual')
+        self.assertEqual(e.ledger.used(),live.ENVELOPE);e.send.assert_not_awaited();e.signed.assert_not_called()
+
+    async def test_automatic_cas_does_not_overwrite_manual_menu_update(self):
+        e=self.executor();original=self.rpc
+        def rpc(method,params,capture=None):
+            result=original(method,params,capture)
+            if method=='getTokenAccountsByOwner' and not self.holdings:
+                other=live.Ledger(self.path)
+                try:other.save(MINT,'closed',dict(self.data,closed_elsewhere=True))
+                finally:other.db.close()
+            return result
+        self.transport.rpc.side_effect=rpc
+        self.assertFalse(await e.reconcile_manual(e.ledger.get(MINT)))
+        row=e.ledger.get(MINT);self.assertEqual(row['state'],'closed');self.assertTrue(json.loads(row['data'])['closed_elsewhere'])
+        self.assertEqual(e.ledger.used(),live.ENVELOPE);e.send.assert_not_awaited()
 
     async def test_finalized_full_sale_closes_only_local_state_preserves_budget_and_packets(self):
         await self.run_probe()
