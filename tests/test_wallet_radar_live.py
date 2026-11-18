@@ -67,15 +67,15 @@ class BudgetTest(unittest.TestCase):
     def test_persistent_budget_never_recycles_sales_or_failed_fees(self):
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'live.sqlite3';ledger=live.Ledger(path)
-            for i in range(6):
+            for i in range(18):
                 mint=str(i);ledger.reserve(mint,{'buy':{'signature':'fake'}})
                 with self.assertRaises(live.TradeError):ledger.reserve('parallel',{})
                 ledger.save(mint,'closed',{})
-            self.assertEqual(ledger.used(),Decimal('14.40'))
+            self.assertEqual(ledger.used(),Decimal('43.20'))
             with self.assertRaises(live.TradeError):ledger.reserve('too-much',{})
             with self.assertRaises(live.TradeError):ledger.reserve('0',{})
             ledger.db.close();ledger=live.Ledger(path)
-            self.assertEqual(ledger.used(),Decimal('14.40'))
+            self.assertEqual(ledger.used(),Decimal('43.20'))
             self.assertEqual(path.stat().st_mode&0o777,0o600)
             ledger.db.close()
 
@@ -86,6 +86,22 @@ class BudgetTest(unittest.TestCase):
             path.chmod(0o600);self.assertEqual(live.secure_read(path),'fake-secret')
             link=Path(tmp)/'link';link.symlink_to(path)
             with self.assertRaises(OSError):live.secure_read(link)
+
+    def test_budget_increase_preserves_old_reserved_fees_and_signatures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'live.sqlite3';ledger=live.Ledger(path)
+            with patch.object(live,'BUDGET',Decimal('15')):
+                for i in range(6):
+                    mint='old-'+str(i);ledger.reserve(mint,{'buy':{'signature':'old-signature-'+str(i)}})
+                    ledger.save(mint,'expired' if i<2 else 'closed',{'buy':{'signature':'old-signature-'+str(i)}})
+                with self.assertRaises(live.TradeError):ledger.reserve('old-over-budget',{})
+            old=ledger.rows();ledger.db.close();ledger=live.Ledger(path)
+            self.assertEqual(ledger.used(),Decimal('14.40'));self.assertEqual(ledger.rows(),old)
+            for i in range(12):
+                mint='new-'+str(i);ledger.reserve(mint,{'buy':{'signature':'new-signature-'+str(i)}});ledger.save(mint,'closed',{'buy':{'signature':'new-signature-'+str(i)}})
+            self.assertEqual(ledger.used(),Decimal('43.20'));self.assertEqual(ledger.rows()[:6],old)
+            with self.assertRaises(live.TradeError):ledger.reserve('over-45',{})
+            ledger.db.close()
 
 
 class InstructionTest(unittest.TestCase):
@@ -732,7 +748,7 @@ class SetupAndCheckTest(unittest.TestCase):
             with patch.object(sys,'argv',['wallet_radar_live.py','--report']),patch('sys.stdout',output):live.main()
             self.assertEqual(path.stat().st_mtime_ns,before)
             self.assertIn('preparation_restante_ms',output.getvalue());self.assertIn('old-fake',output.getvalue())
-            self.assertIn('blockhash precharge : True',output.getvalue());self.assertIn('2.40 / 15',output.getvalue())
+            self.assertIn('blockhash precharge : True',output.getvalue());self.assertIn('2.40 / 45',output.getvalue())
             self.assertIn('mesures avec '+live.EXECUTION_VERSION+' : 1',output.getvalue())
     def test_update_jupiter_does_not_read_or_rewrite_wallet(self):
         with tempfile.TemporaryDirectory() as tmp,patch.object(live,'PRIVATE',Path(tmp)):

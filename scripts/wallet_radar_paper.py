@@ -11,6 +11,7 @@ import time
 import urllib.request
 import uuid
 from collections import Counter
+from wallet_radar_pumpswap import PROGRAM as PUMPSWAP, decode_trade as decode_swap, decode_pool, normalize as normalize_swap
 
 BBIG='BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp'
 BWAM='bwamJzztZsepfkteWRChggmXuiiCQvpLqPietdNfSXa'
@@ -102,9 +103,13 @@ def native_trades(value,slot,wall,mono):
             if stack and stack[-1]==end[1]:stack.pop()
             else:stack.clear()
             continue
-        if stack and stack[-1]==PUMP and line.startswith('Program data: '):
-            try:event=decode_event(base64.b64decode(line[14:],validate=True))
-            except (ValueError,UnicodeError,struct.error):continue
+        if stack and stack[-1] in (PUMP,PUMPSWAP) and line.startswith('Program data: '):
+            try:
+                raw=base64.b64decode(line[14:],validate=True)
+                event=decode_event(raw) if stack[-1]==PUMP else decode_swap(raw)
+            except (ValueError,UnicodeError,struct.error):
+                if stack[-1]!=PUMPSWAP:continue
+                event=dict(platform='PumpSwap',decode_error=True)
             if event:
                 event.update(signature=signature,slot=slot,wall=wall,mono=mono,index=len(events))
                 events.append(event)
@@ -235,6 +240,7 @@ class Candidate:
     unknown_volume:bool=False
     unknown_position:bool=False
     terminal:str|None=None
+    pending_pools:set=field(default_factory=set)
     subscribed_at:float|None=None
     reasons:set=field(default_factory=set)
     pending_prices:list=field(default_factory=list)
@@ -254,8 +260,10 @@ class Decisions:
             subscription_gap_ms=round((c.subscribed_at-c.t0)*1000) if c.subscribed_at is not None else None,
             ordering='processed_receipt',coverage='observed_lower_bound',missing_reasons=sorted(c.reasons),at=time.time()))
 
-    def observe(self,event):
+    def observe(self,event,evaluated_at=None):
         now=event['mono'];mint=event['mint'];c=self.candidates.get(mint)
+        evaluated=now if evaluated_at is None else max(now,evaluated_at)
+        if c is not None and evaluated-c.t0>3:self.tick(evaluated);return
         if c is None:
             if event['user']!=BBIG or not event['is_buy']:return
             if mint in self.sampled or len(self.sampled)>=self.limit:return
@@ -265,7 +273,7 @@ class Decisions:
                 for old in list(self.candidates):
                     if self.candidates[old].terminal:del self.candidates[old];break
             self.candidates[mint]=c
-            self.notify(c,'SUIVI','Achat BBIG BOSS observe ; analyse 1 s / 3 s en simulation.',now)
+            self.notify(c,'SUIVI','Achat BBIG BOSS observe ; analyse 1 s / 3 s en simulation.',evaluated)
             if c.creator==BWAM:self.notify(c,'DEV_EXCLU','Createur declare bwam : token exclu.',now,True)
             elif event.get('unparsed_tail_bytes'):
                 c.reasons.add('FORMAT_EVENEMENT_INCONNU')
@@ -292,7 +300,7 @@ class Decisions:
             c.movements.append((now,event['token_amount'] if event['is_buy'] else -event['token_amount']))
         if event['is_buy']:
             c.pending_prices.append(event)
-        self.tick(now)
+        self.tick(evaluated)
 
     def value_pending(self,c,now):
         wall=c.wall+max(0,now-c.t0);remaining=[]
@@ -359,9 +367,10 @@ class Decisions:
                 if c.terminal:continue
             if elapsed>3:
                 if balance is None:c.reasons.add('POSITION_INITIALE_NON_VALIDEE')
-                code='DONNEES_INSUFFISANTES' if balance is None or c.unknown_position or c.unknown_volume or c.pending_prices else 'VOLUME_INSUFFISANT'
+                if c.pending_pools:c.reasons.add('POOL_PUMPSWAP_EN_COURS')
+                code='DONNEES_INSUFFISANTES' if balance is None or c.unknown_position or c.unknown_volume or c.pending_prices or c.pending_pools else 'VOLUME_INSUFFISANT'
                 self.notify(c,code,'Fin des 3 s : '+('donnees incompletes.' if code=='DONNEES_INSUFFISANTES' else '400 USD non observes.'),now,True);continue
-            if elapsed>=1 and balance is not None and not c.unknown_position:
+            if elapsed>=1 and balance is not None and not c.unknown_position and not c.pending_pools:
                 if not c.gate:
                     c.gate=True
                     self.notify(c,'ATTENTE_VOLUME','Premiere seconde validee ; attente de 400 USD observes.',now)
@@ -397,6 +406,120 @@ class PaperObserver:
         self.ws_url=ws_url;self.path=journal_path;self.prices=Prices()
         self.decisions=Decisions(self.prices,self.emit);self.connected=False;self.ready_wall=float('inf')
         self.unsupported=set();self.session=uuid.uuid4().hex;self.results={}
+        self.read_rpc=None;self.swap_pools={};self.swap_pending={};self.swap_tasks={}
+        self.swap_confirmations={};self.swap_errors={};self.swap_epoch=0
+
+    @staticmethod
+    def has_pumpswap(tx):
+        return any(isinstance(line,str) and line.startswith('Program '+PUMPSWAP+' invoke') for line in (tx.get('meta') or {}).get('logMessages',[]))
+
+    def needs_position_check(self,trade,tx):
+        return trade.get('wallet')==BBIG and trade.get('kind')=='buy' and trade.get('swap_proof_version')==1 and self.has_pumpswap(tx)
+
+    def fail_swap(self,signature,reason):
+        self.swap_errors[signature]=reason
+        if len(self.swap_errors)>64:self.swap_errors.pop(next(iter(self.swap_errors)))
+        saved=self.swap_confirmations.pop(signature,None)
+        if not saved:return
+        trade=saved[0];mint=trade['mint'];c=self.decisions.candidates.get(mint)
+        if c and not c.terminal:
+            c.reasons.add(reason);self.decisions.notify(c,'DONNEES_INSUFFISANTES','PumpSwap : donnees du pool indisponibles ou incompletes.',time.monotonic(),True)
+        elif mint not in self.decisions.sampled and len(self.decisions.sampled)<self.decisions.limit:
+            self.decisions.sampled.add(mint)
+            self.emit(dict(v=1,type='paper_decision',mode='SIMULATION',code='DONNEES_INSUFFISANTES',mint=mint,
+                initial_signature=signature,missing_reasons=[reason],message='PumpSwap : '+reason+' ; aucune decision.',at=time.time()))
+
+    def reject_swap(self,event,reason):
+        self.fail_swap(event['signature'],reason)
+        if event.get('user')==BBIG:
+            for c in self.decisions.candidates.values():
+                if not c.terminal and 0<=event['mono']-c.t0<=1:
+                    c.unknown_position=True;c.reasons.add(reason)
+
+    def observe_native(self,events,target,value):
+        truncated=any(isinstance(line,str) and 'truncated' in line.lower() for line in value.get('logs',[]))
+        receipt=min((e['mono'] for e in events),default=time.monotonic())
+        if truncated:self.decisions.unparsed(target,value,receipt)
+        for event in events:
+            if event.get('platform')!='PumpSwap':
+                self.decisions.observe(event);continue
+            if event.get('decode_error'):
+                self.decisions.unparsed(target,value,event['mono']);self.fail_swap(event['signature'],'FORMAT_PUMPSWAP_INCONNU');continue
+            if target[0]=='wallet' and event['user']!=BBIG:continue
+            if (target[0]=='wallet' and not event['is_buy'] and not self.swap_tasks and not self.swap_confirmations
+                and not any(not c.terminal for c in self.decisions.candidates.values())):continue
+            pool=event['pool'];cached=self.swap_pools.get(pool)
+            if cached and 0<=time.monotonic()-cached['_cached_at']<=60:
+                self.apply_swap(event,target,cached);continue
+            if pool not in self.swap_tasks:
+                if self.read_rpc is None or len(self.swap_tasks)>=8:
+                    self.reject_swap(event,'LECTURE_POOL_PUMPSWAP_INDISPONIBLE');continue
+                self.swap_pending[pool]=[]
+                task=asyncio.create_task(self.resolve_swap(pool));self.swap_tasks[pool]=task
+                task.add_done_callback(lambda task:None if task.cancelled() else task.exception())
+            pending=self.swap_pending[pool]
+            if event['user']==BBIG:
+                for c in self.decisions.candidates.values():
+                    if not c.terminal and 0<=event['mono']-c.t0<=1:c.pending_pools.add(pool)
+            identity=(event['signature'],event['index'])
+            if not any((e['signature'],e['index'])==identity for e,_,_ in pending):
+                if len(pending)>=64:self.reject_swap(event,'CAPACITE_PUMPSWAP_DEPASSEE')
+                else:pending.append((event,target,self.swap_epoch))
+        if truncated:self.decisions.unparsed(target,value,receipt)
+
+    def apply_swap(self,event,target,pool):
+        try:normalized=normalize_swap(event,pool)
+        except ValueError:
+            self.swap_pools.pop(event['pool'],None);self.reject_swap(event,'POOL_PUMPSWAP_INCOHERENT');return
+        if target[0]=='token' and normalized['mint']!=target[1]:return
+        now=time.monotonic()
+        if now-event['mono']>3:
+            self.fail_swap(event['signature'],'POOL_PUMPSWAP_VALIDE_TROP_TARD')
+            self.decisions.tick(now);return
+        fresh=normalized['mint'] not in self.decisions.candidates
+        self.decisions.observe(normalized,evaluated_at=now)
+        if fresh:
+            c=self.decisions.candidates.get(normalized['mint'])
+            if c and not c.terminal:
+                # Other notifications may have arrived before this mint could
+                # be identified. Keep its first-second gate closed until every
+                # potentially relevant buffered BBIG movement is resolved.
+                for pending_pool,batch in self.swap_pending.items():
+                    if any(e.get('user')==BBIG and 0<=e['mono']-c.t0<=1 for e,_,_ in batch):
+                        c.pending_pools.add(pending_pool)
+        saved=self.swap_confirmations.pop(event['signature'],None)
+        if saved:
+            if normalized['mint']!=saved[0]['mint']:
+                self.swap_confirmations[event['signature']]=saved;self.fail_swap(event['signature'],'ORIENTATION_POOL_PUMPSWAP_NON_SUPPORTEE')
+            else:self.confirmed(saved[0],saved[1],max(saved[2],now),processed_mono=saved[3],processed_wall=saved[4],account_snapshot=saved[5])
+
+    async def resolve_swap(self,pool):
+        verified=False
+        try:
+            result=await self.read_rpc('getAccountInfo',[pool,{'encoding':'base64','commitment':'confirmed'}],background=False)
+            # A just-created pool may not yet exist at confirmed commitment.
+            # At most one extra read, under the same shared quota and deadline.
+            oldest=min((e['mono'] for e,_,_ in self.swap_pending.get(pool,[])),default=0)
+            if isinstance(result,dict) and result.get('value') is None and self.connected and time.monotonic()-oldest<2.5:
+                await asyncio.sleep(.1)
+                result=await self.read_rpc('getAccountInfo',[pool,{'encoding':'base64','commitment':'confirmed'}],background=False)
+            metadata=decode_pool(result,pool);metadata['_cached_at']=time.monotonic()
+            if len(self.swap_pools)>=64:self.swap_pools.pop(next(iter(self.swap_pools)))
+            self.swap_pools[pool]=metadata
+            verified=True
+            for event,target,epoch in self.swap_pending.get(pool,[]):
+                if self.connected and epoch==self.swap_epoch:self.apply_swap(event,target,metadata)
+                else:self.fail_swap(event['signature'],'FLUX_INTERROMPU')
+        except asyncio.CancelledError:raise
+        except Exception:
+            for event,_,_ in self.swap_pending.get(pool,[]):self.fail_swap(event['signature'],'POOL_PUMPSWAP_NON_VERIFIE')
+        finally:
+            self.swap_pending.pop(pool,None);self.swap_tasks.pop(pool,None)
+            for c in self.decisions.candidates.values():
+                if pool in c.pending_pools:
+                    c.pending_pools.discard(pool)
+                    if not verified:c.unknown_position=True;c.reasons.add('POOL_PUMPSWAP_NON_VERIFIE')
+            self.decisions.tick(time.monotonic())
 
     def emit(self,event):
         event=dict(event,session_id=self.session)
@@ -420,11 +543,22 @@ class PaperObserver:
         if (trade.get('wallet')==BBIG and trade.get('kind')=='buy' and trade.get('source')=='websocket'
             and trade['mint'] not in self.decisions.candidates and trade['mint'] not in self.unsupported
             and len(self.decisions.sampled)<self.decisions.limit):
-            self.unsupported.add(trade['mint'])
-            self.decisions.sampled.add(trade['mint'])
             covered=self.connected and (trade.get('processed_seen_at') or 0)>=self.ready_wall
+            if covered and self.needs_position_check(trade,tx):
+                self.swap_confirmations[trade['signature']]=(trade,tx,max(mono,time.monotonic()),processed_mono,processed_wall,account_snapshot)
+                if len(self.swap_confirmations)>64:self.swap_confirmations.pop(next(iter(self.swap_confirmations)))
+                if trade['signature'] in self.swap_errors:
+                    self.fail_swap(trade['signature'],self.swap_errors[trade['signature']]);return
+                events=native_trades({'signature':trade['signature'],'err':(tx.get('meta') or {}).get('err'),
+                    'logs':(tx.get('meta') or {}).get('logMessages',[])},tx.get('slot',0),
+                    processed_wall if processed_wall is not None else time.time(),processed_mono if processed_mono is not None else mono)
+                events=[event for event in events if event.get('platform')=='PumpSwap' and (event.get('decode_error') or event.get('user')==BBIG)]
+                if not events:self.fail_swap(trade['signature'],'EVENEMENT_PUMPSWAP_ABSENT')
+                else:self.observe_native(events,('wallet',BBIG),{'logs':(tx.get('meta') or {}).get('logMessages',[])})
+                return
+            self.unsupported.add(trade['mint']);self.decisions.sampled.add(trade['mint'])
             self.emit(dict(v=1,type='paper_decision',mode='SIMULATION',code='NON_SUPPORTE' if covered else 'DONNEES_INSUFFISANTES',mint=trade['mint'],
-                           message='Pas de TradeEvent Pump.fun exploitable ou flux non pret au signal ; aucune decision.',at=time.time()))
+                           message='Pas d evenement Pump.fun/PumpSwap exploitable ou flux non pret au signal ; aucune decision.',at=time.time()))
 
     async def run(self):
         from websockets.asyncio.client import connect
@@ -440,7 +574,7 @@ class PaperObserver:
                         await ws.send(json.dumps({'jsonrpc':'2.0','id':1,'method':'logsSubscribe',
                             'params':[{'mentions':[BBIG]},{'commitment':'processed'}]}))
                         self.connected=False
-                        print('CONDITIONS REELLES : flux Pump.fun.' if getattr(self,'is_live',False) else 'SIMULATION : connexion gratuite, logs Pump.fun ; aucun achat reel.',flush=True)
+                        print('CONDITIONS REELLES : flux Pump.fun et PumpSwap.' if getattr(self,'is_live',False) else 'SIMULATION : logs Pump.fun et PumpSwap ; aucun achat reel.',flush=True)
                         while True:
                             try:raw=await asyncio.wait_for(ws.recv(),.02)
                             except asyncio.TimeoutError:
@@ -464,7 +598,7 @@ class PaperObserver:
                                     result=params.get('result') or {};value=result.get('value') or {}
                                     if target:
                                         events=native_trades(value,(result.get('context') or {}).get('slot',0),wall,mono)
-                                        for event in events:self.decisions.observe(event)
+                                        self.observe_native(events,target,value)
                                         if not events:self.decisions.unparsed(target,value,mono)
                             self.decisions.tick(mono)
                             if len(self.results)>=self.decisions.limit:
@@ -484,13 +618,14 @@ class PaperObserver:
                                     await ws.send(json.dumps({'jsonrpc':'2.0','id':identity,'method':'logsUnsubscribe','params':[sub]}))
                 except asyncio.CancelledError:raise
                 except Exception:
-                    self.connected=False;self.decisions.interrupted(time.monotonic())
+                    self.connected=False;self.swap_epoch+=1;self.decisions.interrupted(time.monotonic())
                     print('SIMULATION : flux indisponible, reprise dans 3 s ; decisions actives abandonnees.',flush=True)
                     await asyncio.sleep(3)
         finally:
             self.decisions.interrupted(time.monotonic())
-            for task in price_tasks:task.cancel()
-            await asyncio.gather(*price_tasks,return_exceptions=True)
+            tasks=price_tasks+list(self.swap_tasks.values())
+            for task in tasks:task.cancel()
+            await asyncio.gather(*tasks,return_exceptions=True)
 
 
 def latest_session(path):

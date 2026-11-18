@@ -19,7 +19,7 @@ try {
     & $menu -ManageWallets
     if ($global:RadarCalls.Count -ne 2) { throw 'Manager must transfer scripts then start one SSH session' }
     $files = $global:RadarCalls[0].values
-    if ($files.Count -ne 7 -or $files[0] -notlike '*configure_wallet_alerts.py' -or $files[1] -notlike '*wallet_alerts_ws.py' -or $files[2] -notlike '*wallet_radar_paper.py' -or $files[3] -notlike '*wallet_radar_diagnostics.py' -or $files[4] -notlike '*wallet_radar_live.py' -or $files[5] -notlike '*requirements-wallet-radar-live.txt') {
+    if ($files.Count -ne 8 -or $files[0] -notlike '*configure_wallet_alerts.py' -or $files[1] -notlike '*wallet_alerts_ws.py' -or $files[2] -notlike '*wallet_radar_paper.py' -or $files[3] -notlike '*wallet_radar_diagnostics.py' -or $files[4] -notlike '*wallet_radar_live.py' -or $files[5] -notlike '*wallet_radar_pumpswap.py' -or $files[6] -notlike '*requirements-wallet-radar-live.txt') {
         throw 'Unexpected transfer source files'
     }
     if ($global:RadarCalls[1].values[-1] -cne '/home/bot/wallet-alerts/.venv/bin/python /home/bot/wallet-alerts/scripts/configure_wallet_alerts.py --manage-wallets') {

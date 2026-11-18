@@ -18,7 +18,7 @@ from discord_token_telegram import TelegramSender, amounts
 from discord_solana_watch import StateLock
 
 ROOT=Path(__file__).resolve().parents[1]
-VERSION='2026.11.17.6'
+VERSION='2026.11.18.1'
 DEFAULT_WALLETS={'BBIG BOSS':'BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp'}
 BACKFILL_PAGE_SIZE=1000
 BACKFILL_MAX_PAGES=10
@@ -32,7 +32,21 @@ class MeasuredRPC(ReadRPC):
         start=time.monotonic()
         time.sleep(max(0,self.next_at-start))
         request_start=time.monotonic()
-        try:return super().call(method,params)
+        try:
+            if method!='getAccountInfo':return super().call(method,params)
+            if (not isinstance(params,list) or len(params)!=2 or not valid_address(params[0])
+                or params[1]!={'encoding':'base64','commitment':'confirmed'}):raise ValueError('Lecture de pool non autorisee')
+            self.next_at=time.monotonic()+self.interval
+            try:
+                response=self.http.post(self.url,json={'jsonrpc':'2.0','id':1,'method':method,'params':params},timeout=15)
+                if response.status_code!=200:raise RemoteError('Lecture pool : HTTP '+str(response.status_code),status=response.status_code)
+                data=response.json()
+                if not isinstance(data,dict) or data.get('error') is not None or 'result' not in data:
+                    code=(data.get('error') or {}).get('code') if isinstance(data,dict) else None
+                    raise RemoteError('Lecture pool refusee',status=429 if code==429 else None,rpc_code=code if type(code) is int else None)
+                return data['result']
+            except RemoteError:raise
+            except Exception:raise RemoteError('Lecture pool indisponible') from None
         finally:
             end=time.monotonic()
             self.last_timing={'rate_limit_wait_ms':max(0,request_start-start)*1000,
@@ -207,6 +221,7 @@ class Service:
         self.names={w:n for n,w in wallets.items()};self.sender=sender;self.early=early;self.max_age=max_age
         self.browser_events=browser_events
         self.paper=paper
+        if paper is not None:paper.read_rpc=self.call
         self.live_only=live_only
         self.paper_checks=set()
         self.rpc_condition=asyncio.Condition();self.rpc_waiters=[];self.rpc_sequence=0;self.rpc_busy=False
@@ -427,7 +442,8 @@ class Service:
             try:
                 for trade in trades:
                     c=self.paper.decisions.candidates.get(trade['mint'])
-                    if (c and not c.terminal and trade.get('kind')=='buy' and trade.get('signature')==c.signature):
+                    if ((c and not c.terminal and trade.get('kind')=='buy' and trade.get('signature')==c.signature)
+                        or (c is None and self.paper.needs_position_check(trade,tx))):
                         task=asyncio.create_task(self.verify_paper_position(trade,tx))
                         self.paper_checks.add(task);task.add_done_callback(self.paper_checks.discard)
                     else:self.paper.confirmed(trade,tx,time.monotonic())
@@ -455,6 +471,9 @@ class Service:
                 c.reasons.add('ERREUR_VERIFICATION_POSITION')
                 self.paper.decisions.notify(c,'DONNEES_INSUFFISANTES',
                     'Verification des comptes de position indisponible ('+label+').',time.monotonic(),True)
+            elif self.paper.needs_position_check(trade,tx):
+                self.paper.confirmed(trade,tx,time.monotonic(),processed_mono=self.journal.timings.get((trade['wallet'],trade['signature']),{}).get('processed'),processed_wall=trade.get('processed_seen_at'))
+                self.paper.fail_swap(trade['signature'],'ERREUR_VERIFICATION_POSITION')
 
     async def deliver_one(self,now):
         if not self.sender:return False
@@ -654,8 +673,8 @@ def main():
     parser.add_argument('--timing-report',action='store_true',help='Afficher les mesures enregistrées sans réseau ni modification du journal')
     parser.add_argument('--rpc-rps',type=float,default=5,help='Plafond local partagé HTTPS, défaut 5/s ; maximum 10/s')
     parser.add_argument('--browser-events',action='store_true',help='Émettre les achats vérifiés récents pour le lanceur Chrome Windows via SSH')
-    parser.add_argument('--paper-buys',action='store_true',help='SIMULATION BBIG BOSS : volume Pump.fun, aucun ordre reel')
-    parser.add_argument('--live-trades',action='store_true',help='ESSAI REEL explicite : 1 USD, budget 15 USD, signature locale requise')
+    parser.add_argument('--paper-buys',action='store_true',help='SIMULATION BBIG BOSS : volume Pump.fun/PumpSwap, aucun ordre reel')
+    parser.add_argument('--live-trades',action='store_true',help='ESSAI REEL explicite : 1 USD, budget 45 USD, signature locale requise')
     parser.add_argument('--paper-report',action='store_true',help='Bilan hors reseau du dernier essai de 30 tokens')
     parser.add_argument('--stop',action='store_true',help='Arreter proprement les instances de ce script appartenant au compte Linux courant')
     parser.add_argument('--paper-diagnose',action='store_true',help='Diagnostiquer au maximum 4 cas de simulation, requetes en lecture seule')
@@ -672,12 +691,12 @@ def main():
         config,wallets,http,ws=settings(args.config)
         if args.paper_diagnose and not args.check:
             from wallet_radar_diagnostics import diagnose
-            diagnose(args.state.parent/'paper_decisions.jsonl',args.state,ReadRPC(http,None,rps=1));return
+            diagnose(args.state.parent/'paper_decisions.jsonl',args.state,MeasuredRPC(http,None,rps=1));return
         if args.paper_buys or args.live_trades:
             from wallet_radar_paper import BBIG, PaperObserver
             if BBIG not in wallets.values():parser.error('La simulation necessite BBIG BOSS dans les wallets suivis')
             args.early=True
-        print('Wallet Radar '+VERSION+(' — ESSAI REEL 1 USD, budget reserve cumule 15 USD.' if args.live_trades else ' — lecture seule, aucun achat ni publication.'),flush=True)
+        print('Wallet Radar '+VERSION+(' — ESSAI REEL 1 USD, budget reserve cumule 45 USD.' if args.live_trades else ' — lecture seule, aucun achat ni publication.'),flush=True)
         print('Wallets : '+', '.join(wallets),flush=True)
         if args.live_only:
             print(f'RPC HTTPS : plafond local {args.rpc_rps:g}/s ; mode DIRECT UNIQUEMENT, rattrapage desactive.',flush=True)

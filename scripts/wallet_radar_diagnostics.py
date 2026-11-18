@@ -6,6 +6,7 @@ import time
 
 from discord_token_analysis import valid_address
 from wallet_radar_paper import latest_session, native_trades, BBIG, PUMP, SOL, USDC, PUMP_TOKEN, TTWO, DOGE, ZERO, EXTRA_QUOTES
+from wallet_radar_pumpswap import decode_pool, normalize
 
 SWAP='pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA'
 
@@ -69,8 +70,19 @@ def diagnose(path,state_path,rpc):
             if SWAP in programs:labels.append('PumpSwap')
             print('PROGRAMMES : '+(', '.join(labels) if labels else 'autre plateforme'),flush=True)
             events=native_trades({'signature':signature,'err':meta.get('err'),'logs':logs},tx.get('slot',0),time.time(),time.monotonic())
-            events=[event for event in events if event['mint']==mint]
+            normalized=[];pools={}
+            for event in events:
+                if event.get('decode_error'):continue
+                if event.get('platform')=='PumpSwap':
+                    pool=event['pool']
+                    if pool not in pools:
+                        if len(pools)>=2:continue
+                        pools[pool]=decode_pool(rpc.call('getAccountInfo',[pool,{'encoding':'base64','commitment':'confirmed'}]),pool)
+                    event=normalize(event,pools[pool])
+                if event['mint']==mint:normalized.append(event)
+            events=normalized
             print('EVENEMENTS PUMP : '+str(len(events))+' ; utilisateurs BBIG BOSS : '+str(sum(e['user']==BBIG for e in events)),flush=True)
+            if any(event.get('platform')=='PumpSwap' for event in events):print('EVENEMENTS PUMPSWAP : '+str(sum(event.get('platform')=='PumpSwap' for event in events)),flush=True)
             for event in events[:2]:
                 quote=event.get('quote_mint',ZERO)
                 currency={USDC:'USDC',PUMP_TOKEN:'PUMP',TTWO:'TTWO',DOGE:'DOGE'}.get(quote,'SOL' if quote in (ZERO,SOL) else 'autre '+quote)

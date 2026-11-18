@@ -1,4 +1,6 @@
-# Wallet Radar 2026.11.17.6 — premier essai reel
+# Wallet Radar 2026.11.18.1 — essai reel
+
+PumpSwap pris en charge pour les nouveaux signaux ; **budget cumule45USD**, selon les demandes30USD puis15USD de plus. Reservations et signatures anterieures conservees : [PUMPSWAP_ET_BUDGET_45.md](PUMPSWAP_ET_BUDGET_45.md).
 
 **Sortie totale apres60secondes** depuis la confirmation d'achat observee si la position est encore ouverte. SL-80% et TP+75% peuvent sortir avant. Echeance persistante, suivi actif necessaire et delais reseau possibles. Voir [SORTIE_60S_ET_COTATIONS.md](SORTIE_60S_ET_COTATIONS.md), qui decrit aussi les nouvelles conversions MSFTx/COST/GTAVI.
 
@@ -21,14 +23,14 @@ Ce mode ajoute des achats et ventes reels **uniquement via le menu 8**. Le menu 
 - Wallet surveille : BBIG BOSS, `BLw4fXAc9P7NYhnRH9GyccXKUmvpUSiqc67BGbanxcDp`.
 - Wallet d'execution dedie : `E23vfW9oA9CnANP5wzimpo3DM3WQtMuxzUP4oxFp97Jq`.
 - Achat : equivalent indicatif de **1 USD de SOL engage dans le swap**, hors frais reseau et depots de comptes. La quantite de tokens effectivement recue depend du cours, des frais du DEX et du glissement.
-- Budget cumule **15 USD**, sans recycler les ventes/gains. Les conversions USD utilisent les cours SOL/USD recents observes ; ce n'est pas un compte bancaire en dollars.
+- Budget cumule **45 USD**, sans recycler les ventes/gains. Les conversions USD utilisent les cours SOL/USD recents observes ; ce n'est pas un compte bancaire en dollars.
 - SL **-80 %**, TP **+75 %**, vente totale au premier seuil observe. Comparaison du produit SOL estime pour toute la position, converti en USD, avec le montant USD de notre entree. Frais reseau exclus du calcul du rendement. Le prix BBIG BOSS n'est pas notre prix d'entree.
 - Glissement maximum **20 %**, achat et vente. Le SL est un seuil de declenchement, pas un prix garanti : la vente peut executer plus bas avec le glissement.
 - Plafond reseau/priorite **0,10 USD par transaction**, sans Jito. Estimation de priorite en arriere-plan toutes les 10 s, perimee apres 30 s, puis frais verifies sur le message avant signature. Pas de depense automatique de tout le plafond.
 - Depot de comptes : maximum estime **0,50 USD par cote**, dans le budget. Ce depot peut etre recuperable ; aucun remboursement n'est recycle pour augmenter le nombre de tests.
 - Une seule position ouverte ou incertaine a la fois. Trois tentatives de vente maximum si les precedentes ont echoue ou expire ; jamais plusieurs signatures de vente simultanees.
 
-L'enveloppe est volontairement prudente : **2,40 USD reserves definitivement par achat signe**, couvrant le dollar achete, les plafonds d'achat et de sortie et jusqu'a trois frais de vente. Cela permet **au maximum six achats signes**, plutot que quinze achats qui laisseraient les frais hors budget. Une transaction echouee ou expiree garde son enveloppe ; la somme reservee n'est pas une mesure des frais reellement payes. Le journal ne se reinitialise pas au redemarrage. Ne pas le supprimer pour remettre le compteur a zero pendant cet essai.
+L'enveloppe est volontairement prudente : **2,40 USD reserves definitivement par achat signe**, couvrant le dollar achete, les plafonds d'achat et de sortie et jusqu'a trois frais de vente. Cela permet **au maximum18achats signes au total** sous45USD. Une transaction echouee ou expiree garde son enveloppe ; la somme reservee n'est pas une mesure des frais reellement payes. Le journal ne se reinitialise pas au redemarrage. Ne pas le supprimer pour remettre le compteur a zero pendant cet essai.
 
 ## Chemin d'execution et delais
 

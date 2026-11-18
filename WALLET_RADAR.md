@@ -1,5 +1,7 @@
 # Wallet Radar
 
+**2026.11.18.1 : prise en charge des evenements PumpSwap et budget cumule45USD.** Reservations precedentes conservees. Voir [PUMPSWAP_ET_BUDGET_45.md](PUMPSWAP_ET_BUDGET_45.md).
+
 **2026.11.17.6 : vente totale apres60s si la position est encore ouverte, en plus du SL/TP.** Echeance conservee au redemarrage ; conversions MSFTx, COST et GTAVI ajoutees pour les volumes observes. Voir [SORTIE_60S_ET_COTATIONS.md](SORTIE_60S_ET_COTATIONS.md).
 
 **2026.11.17.5 : preparation d'achat anticipee et filtre de reception simulee a 5 %.** Une lecture RPC de moins, solde/comptes lus pendant la construction Jupiter, controle avant signature sans cotation supplementaire. Voir [PREPARATION_RAPIDE_ET_PRIX.md](PREPARATION_RAPIDE_ET_PRIX.md). Installer apres cloture des positions puis relancer **8**.

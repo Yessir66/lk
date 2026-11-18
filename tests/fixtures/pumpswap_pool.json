@@ -1,0 +1,17 @@
+{
+  "context": {
+    "apiVersion": "4.4.0",
+    "slot": 471045159
+  },
+  "value": {
+    "data": [
+      "8ZptBBGxbbz/AADBPVuhpv9Xg/KHa7renHjItzues/THz4RpRrWM6+EBoSXetZn11l45Eih5INIA8iFk2cD0REkvJoRttPkHZIBfBpuIV/6rgYT7aH9jRhjANdrEOdwa6ztVmKDwAAAAAAG505yvdlPiyYRZPM22TQu6536AkFjL/xerubOmKJskY4G3L3bpPRrWPozRftNYuORSpdeR1L4lLO84mJXXkBoAITTHIhxUX+gKYvVyxXWKXuQJLuTgoXsS6vRsP/u4socEQ2tZ0AMAAO9ERcLQZ2xkiJy81DXDkW5+VWqlo8MqfNZaqhJcDNbHAADIQR4YBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+      "base64"
+    ],
+    "executable": false,
+    "lamports": 2179320,
+    "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+    "rentEpoch": 18446744073709551615,
+    "space": 301
+  }
+}

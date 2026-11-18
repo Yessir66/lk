@@ -30,7 +30,7 @@ import urllib.request
 from wallet_radar_paper import PaperObserver, SOL, BBIG, USDC
 
 ROOT=Path(__file__).resolve().parents[1]
-EXECUTION_VERSION='2026.11.17.6'
+EXECUTION_VERSION='2026.11.18.1'
 OWNER='E23vfW9oA9CnANP5wzimpo3DM3WQtMuxzUP4oxFp97Jq'
 PRIVATE=ROOT/'private_wallet_radar'
 JUP='JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4'
@@ -46,7 +46,7 @@ SLIPPAGE=2000
 ENTRY_DRIFT_BPS=500
 QUOTE_MAX_AGE=2
 MAX_HOLD_SECONDS=60
-BUDGET=Decimal('15')
+BUDGET=Decimal('45')
 BUY=Decimal('1')
 FEE=Decimal('.10')
 RENT=Decimal('.50')
@@ -955,7 +955,7 @@ class LiveObserver(PaperObserver):
         self.executor.notify(event['mint'],'CONDITIONS_VALIDEES' if event['code']=='ACHAT_SIMULE' else event['code'],message)
 
     async def run(self):
-        print('ESSAI REEL : 1 USD/achat, budget cumule 15 USD ; SL -80 %, TP +75 %, glissement 20 %.',flush=True)
+        print('ESSAI REEL : 1 USD/achat, budget cumule 45 USD ; SL -80 %, TP +75 %, glissement 20 %.',flush=True)
         print('Sortie totale : SL, TP ou 60 s apres confirmation achat ; premier declenchement, delai reseau possible.',flush=True)
         print('Filtre achat : au plus 5 % de tokens en moins a la simulation ; cotation <=2 s avant signature.',flush=True)
         print('Une position a la fois. Arreter le processus suspend les sorties automatiques.',flush=True)
@@ -1179,7 +1179,7 @@ def main():
             path=ROOT/'data/wallet_alerts_ws/live_trades.sqlite3'
             if not path.is_file():print('Aucun essai reel enregistre.');return
             db=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True)
-            print('Budget reserve cumule (non recycle) :',sum((Decimal(r[0]) for r in db.execute('SELECT reserved FROM trades')),Decimal(0)),'/ 15 USD')
+            print('Budget reserve cumule (non recycle) :',sum((Decimal(r[0]) for r in db.execute('SELECT reserved FROM trades')),Decimal(0)),'/',BUDGET,'USD')
             for mint,state,data in db.execute('SELECT mint,state,data FROM trades'):
                 value=json.loads(data);buy=value.get('buy',{})
                 print(mint,state,'buy:',buy.get('signature','-'),'sell:',value.get('sell',{}).get('signature','-'))
